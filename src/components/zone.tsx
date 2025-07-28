@@ -13,11 +13,11 @@ export default function ZoneComponent(props: ZoneProps) {
   const [model] = createResource(() => props.zone.name, async zoneName => {
     console.time("load-mesh");
 
-    const filename = zoneName.replace(" - ", "-")
-      .replace(" ", "_")
-      .replace("'", "")
-      .replace("(", "")
-      .replace(")", "");
+    const filename = zoneName.replaceAll(" - ", "-")
+      .replaceAll(" ", "_")
+      .replaceAll("'", "")
+      .replaceAll("(", "")
+      .replaceAll(")", "");
 
     const url = `${import.meta.env.BASE_URL}/ximeshes/${filename}.ximesh`;
     const compressed = await fetchProgress(url, (progress: number) => {
