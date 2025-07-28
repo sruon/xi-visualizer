@@ -17,7 +17,8 @@ export default function ZoneComponent(props: ZoneProps) {
       .replaceAll(" ", "_")
       .replaceAll("'", "")
       .replaceAll("(", "")
-      .replaceAll(")", "");
+      .replaceAll(")", "")
+      .replaceAll("#", "");
 
     const url = `${import.meta.env.BASE_URL}/ximeshes/${filename}.ximesh`;
     const compressed = await fetchProgress(url, (progress: number) => {
