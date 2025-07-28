@@ -20,7 +20,7 @@ export const routes: RouteDefinition[] = [
     component: PathPage,
   },
   {
-    path: "/zone",
+    path: "/zone/:id?",
     component: ZonesPage,
   },
   {

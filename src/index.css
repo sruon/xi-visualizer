@@ -37,6 +37,10 @@ input:focus {
         disabled:hover:border-slate-600;
   }
 
+  button.active {
+    @apply bg-green-800;
+  }
+
   input {
     @apply block m-1 py-1 px-2 rounded-md
         bg-slate-700 border border-slate-400 
@@ -138,5 +142,15 @@ input:focus {
     .solid-select-input {
       @apply my-1 py-1;
     }
+  }
+
+  .hide-spin-buttons::-webkit-inner-spin-button,
+  .hide-spin-buttons::-webkit-outer-spin-button {
+      -webkit-appearance: none;
+  }
+
+  .hide-spin-buttons {
+      -moz-appearance: textfield;
+      appearance: textfield;
   }
 }

@@ -1,6 +1,6 @@
 import CameraControls from "camera-controls";
 import { IoHelpCircle } from "solid-icons/io";
-import { batch, createEffect, createMemo, createSignal, mapArray, Match, onCleanup, onMount, Show, Switch } from "solid-js";
+import { batch, createEffect, createMemo, createSignal, mapArray, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import * as THREE from "three";
 import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from "three-mesh-bvh";
@@ -8,7 +8,7 @@ import { FlyControls, MapControls } from "three/examples/jsm/Addons.js";
 import { CSS2DObject, CSS2DRenderer } from "three/examples/jsm/renderers/CSS2DRenderer.js";
 import { addCustomCameraControls, addMapControls, adjustCameraAspect, fitCameraToContents } from "../graphics/camera";
 import { setupBaseScene } from "../graphics/scene";
-import { cleanupNode } from "../graphics/util";
+import { cleanupNode, parseCoordinatesToVector3, roundDecimals } from "../graphics/util";
 import { EntityUpdate, EntityUpdateKind, Position, PositionUpdate, ZoneEntityUpdates } from "../parse_packets";
 import { ByZone } from "../types";
 import { binarySearchLower } from "../util";
@@ -16,6 +16,8 @@ import AreaMenu, { Area, Point } from "./area_menu";
 import LookupInput from "./lookup_input";
 import RangeInput from "./range_input";
 import Table from "./table";
+import { ColorKind, colorMesh, createZoneMesh, getHitData, getMapId, markLineCollisions, prepareMeshData, RayHit } from "../graphics/ximesh";
+import { ZoneInfoBox, TargetInfo } from "./zone_info_box";
 
 // @ts-ignore
 import Stats from "three/addons/libs/stats.module.js";
@@ -27,6 +29,7 @@ THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
 interface ZoneDataProps {
   zoneData: ByZone<ZoneData>;
+  showZoneTools?: boolean;
   entityUpdates?: ZoneEntityUpdates;
   clientUpdates?: PositionUpdate[];
 }
@@ -162,63 +165,30 @@ export default function ZoneModel(props: ZoneDataProps) {
   const raycaster = new THREE.Raycaster();
   raycaster.firstHitOnly = true;
 
-  // Create zones
-  const zoneMeshes = createMemo((prevZoneMeshes: ByZone<THREE.Mesh>) => {
-    const zoneMeshes = {};
+  // Prepare mesh data
+  const prepMeshData = createMemo(() => {
+    const preparedMeshesData = {};
     for (const zoneId in props.zoneData) {
+      const zoneData = props.zoneData[zoneId];
+      const preparedMeshData = prepareMeshData(zoneData.mesh);
 
-      console.time("setup-mesh-" + zoneId);
-      const buffer = props.zoneData[zoneId].mesh;
+      preparedMeshesData[zoneData.id] = preparedMeshData;
+    }
 
-      const color = new THREE.Color();
-      color.setRGB(0.2, 0.2, 0.2);
+    return preparedMeshesData;
+  }, {});
 
-      const header = new Uint32Array(buffer, 0, 2);
-      const triangleCount = header[0];
-      const vertexCount = header[1];
-      const vertices = new Float32Array(buffer, 8, vertexCount * 3);
-      const indices = new Uint32Array(buffer, 8 + vertexCount * 3 * 4, triangleCount * 3);
-
-      const colors = new Uint8Array(vertexCount * 3);
-      for (let i = 0; i < vertexCount * 3; i += 3) {
-        colors.set([color.r * 255, color.g * 255, color.b * 255], i);
-      }
-
-      const geometry = new THREE.BufferGeometry();
-      geometry.setAttribute("position", new THREE.BufferAttribute(vertices, 3));
-      geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-      geometry.index = new THREE.Uint32BufferAttribute(indices, 1);
-
-      geometry.computeVertexNormals();
-      geometry.computeBoundingBox();
-      geometry.computeBoundsTree();
-
-      const material = new THREE.MeshLambertMaterial({
-        color: 0x333333,
-        vertexColors: true,
-        polygonOffset: true,
-        polygonOffsetFactor: 1, // positive value pushes polygon further away
-        polygonOffsetUnits: 1,
-      });
-
-      const mesh = new THREE.Mesh(geometry, material);
-
-      // Add wireframe
-      var geo = new THREE.WireframeGeometry(mesh.geometry); // EdgesGeometry or WireframeGeometry
-      var mat = new THREE.LineBasicMaterial({
-        color: 0x333333,
-        transparent: true,
-        opacity: 0.2,
-        depthTest: true,
-      });
-      var wireframe = new THREE.LineSegments(geo, mat);
-      mesh.add(wireframe);
+  // Create zones
+  const zoneMeshes = createMemo(() => {
+    const zoneMeshes: { [zoneid: number]: THREE.Mesh } = {};
+    for (const zoneId in props.zoneData) {
+      const zoneData = props.zoneData[zoneId];
+      const prep = prepMeshData()[zoneId];
+      const mesh = createZoneMesh(zoneData.id, zoneData.mesh, prep, ColorKind.None);
       mesh.visible = false;
 
-      zoneMeshes[parseInt(zoneId)] = mesh;
-
+      zoneMeshes[zoneData.id] = mesh;
       scene().add(mesh);
-      console.timeEnd("setup-mesh-" + zoneId);
     }
 
     onCleanup(() => {
@@ -630,15 +600,17 @@ export default function ZoneModel(props: ZoneDataProps) {
       coordLabelRef.style.display = "none";
     });
 
+    // Area details clicking
     canvasElement.addEventListener("click", event => {
-      if (!event.ctrlKey) {
+      if (!getShowAreaDetails() || !event.ctrlKey) {
         return;
       }
 
-      const pos = castRayOntoMesh();
-      if (!pos) {
+      const hits = castRayOntoMesh();
+      if (!hits) {
         return;
       }
+      const hit = hits[0];
 
       setShowAreaDetails(true);
 
@@ -652,10 +624,10 @@ export default function ZoneModel(props: ZoneDataProps) {
       const polygon = area.polygon;
       if (polygon.length == 0 && area.y == 0) {
         // Update y if it's default and there's no vertices
-        setAreas(getSelectedAreaIdx(), "y", Math.round(-pos.y));
+        setAreas(getSelectedAreaIdx(), "y", Math.round(-hit.y));
       }
 
-      const newVertex = { x: Math.round(pos.x), z: Math.round(-pos.z) };
+      const newVertex = { x: Math.round(hit.x), z: Math.round(-hit.z) };
 
       let setPoints;
       let points;
@@ -678,6 +650,41 @@ export default function ZoneModel(props: ZoneDataProps) {
         // Else just add the new vertex at the end
         setPoints(points.length, newVertex);
         setSelectedVertexIdx(points.length - 1);
+      }
+    });
+
+    // Ray clicking
+    canvasElement.addEventListener("click", event => {
+      if (getShowAreaDetails() || !event.ctrlKey && !event.shiftKey) {
+        return;
+      }
+
+      raycaster.firstHitOnly = false;
+      const hits = castRayOntoMesh();
+      raycaster.firstHitOnly = true;
+
+      if (!hits || hits.length == 0) {
+        return;
+      }
+
+      const hitsData = getHitData(zoneMeshes()[getSelectedZone()], props.zoneData[getSelectedZone()].mesh, prepMeshData()[getSelectedZone()], hits);
+
+      for (let i = 0; i < hitsData.length; i++) {
+        const hitData = hitsData[i];
+        console.log(`======================= Hit ${i} =======================`)
+        console.log("Hit", hitData.hit);
+        console.log("Block", hitData.block);
+        console.log("Placement", hitData.placement);
+        console.log("Material", hitData.material);
+      }
+
+      const firstHit = hits[0];
+      const markerPos = new THREE.Vector3(roundDecimals(firstHit.x, 3), roundDecimals(-firstHit.y - 2.25, 3), roundDecimals(-firstHit.z, 3));
+
+      if (event.ctrlKey) {
+        setStartPos(markerPos);
+      } else if (event.shiftKey) {
+        setEndPos(markerPos);
       }
     });
 
@@ -707,23 +714,54 @@ export default function ZoneModel(props: ZoneDataProps) {
   const screenMouse = new THREE.Vector2(1, 1);
 
   function updatePosLabel() {
-    const position = castRayOntoMesh();
-    if (position) {
-      coordLabelRef.textContent = `${position.x.toFixed(1)}, ${(position.y * -1).toFixed(1)}, ${(position.z * -1).toFixed(1)}`;
+    const hits = castRayOntoMesh();
+    if (hits) {
+      const hitsData = getHitData(zoneMeshes()[getSelectedZone()], props.zoneData[getSelectedZone()].mesh, prepMeshData()[getSelectedZone()], hits);
+      const hitData = hitsData[0];
+      setTargetInfo({
+        x: hitData.hit.x,
+        y: hitData.hit.y * -1,
+        z: hitData.hit.z * -1,
+        mapId: getMapId(hitData.placement),
+        material: hitData.material,
+        cellIdx: hitData.cellIdx,
+        cellEntryIdx: hitData.entryIdx,
+        block: hitData.block,
+        placement: hitData.placement,
+      });
+
+      coordLabelRef.textContent = `${hitData.hit.x.toFixed(1)}, ${(hitData.hit.y * -1).toFixed(1)}, ${(hitData.hit.z * -1).toFixed(1)}`;
       coordLabelRef.style.left = `${screenMouse.x + 20}px`;
       coordLabelRef.style.top = `${screenMouse.y - 20}px`;
       coordLabelRef.style.display = "block";
     } else {
       coordLabelRef.style.display = "none";
+      setTargetInfo(undefined);
     }
   }
 
-  function castRayOntoMesh(): Position | undefined {
+  function castRayOntoMesh(): RayHit[] | undefined {
     raycaster.setFromCamera(cameraMouse, camera());
-    const intersections = raycaster.intersectObjects([zoneMeshes()[getSelectedZone()]]);
-    if (intersections.length > 0) {
-      return { x: intersections[0].point.x, y: intersections[0].point.y, z: intersections[0].point.z };
+    const intersections = raycaster.intersectObjects([zoneMeshes()[getSelectedZone()]], false);
+    if (intersections.length == 0) {
+      return;
     }
+
+    let result = [];
+    for (const int of intersections) {
+      const p = int.point;
+      const face = int.face ? { a: int.face.a, b: int.face.b, c: int.face.c } : undefined;
+      result.push({
+        x: p.x,
+        y: p.y,
+        z: p.z,
+        object: int.object,
+        index: int.index!,
+        faceIndex: int.faceIndex!,
+        face,
+      });
+    }
+    return result;
   }
 
   function animate(renderer: THREE.WebGLRenderer, labelRenderer: CSS2DRenderer) {
@@ -945,6 +983,204 @@ export default function ZoneModel(props: ZoneDataProps) {
     </Show>
   );
 
+  const [getColorKind, setColorKind] = createSignal<ColorKind>(ColorKind.Materials);
+  const [getStartPos, setStartPos] = createSignal<THREE.Vector3 | undefined>();
+  const [getEndPos, setEndPos] = createSignal<THREE.Vector3 | undefined>();
+
+  const [getTargetInfo, setTargetInfo] = createSignal<TargetInfo | undefined>();
+
+
+  // Start marker mesh
+  createEffect(on(getStartPos, (pos?: THREE.Vector3, _prevPos?: THREE.Vector3, prevMesh?: THREE.Mesh) => {
+    if (!pos) {
+      if (prevMesh) {
+        onCleanup(() => {
+          scene().remove(prevMesh);
+          cleanupNode(prevMesh);
+        });
+      }
+      return;
+    }
+
+    let mesh = prevMesh;
+    if (!mesh) {
+      const geo = new THREE.SphereGeometry(0.5);
+      const mat = new THREE.MeshPhongMaterial({
+        color: new THREE.Color(0, 1, 0),
+      });
+      mesh = new THREE.Mesh(geo, mat);
+      mesh.visible = true;
+      scene().add(mesh);
+    }
+
+    mesh.position.copy(pos);
+
+    return mesh;
+  }));
+
+  // End marker mesh
+  createEffect(on(getEndPos, (pos?: THREE.Vector3, _prevPos?: THREE.Vector3, prevMesh?: THREE.Mesh) => {
+    if (!pos) {
+      if (prevMesh) {
+        onCleanup(() => {
+          scene().remove(prevMesh);
+          cleanupNode(prevMesh);
+        });
+      }
+      return;
+    }
+
+    let mesh = prevMesh;
+    if (!mesh) {
+      const geo = new THREE.SphereGeometry(0.5);
+      const mat = new THREE.MeshPhongMaterial({
+        color: new THREE.Color(0, 0, 1),
+      });
+      mesh = new THREE.Mesh(geo, mat);
+      scene().add(mesh);
+    }
+
+    mesh.position.copy(pos);
+
+    return mesh;
+  }));
+
+  // Line between markers
+  createEffect(on([getStartPos, getEndPos], (
+    value: [THREE.Vector3 | undefined, THREE.Vector3 | undefined],
+    _prevValue?: [THREE.Vector3 | undefined, THREE.Vector3 | undefined],
+    prevLine?: THREE.Line) => {
+    if (!value[0] || !value[1]) {
+      if (prevLine) {
+        onCleanup(() => {
+          scene().remove(prevLine);
+          cleanupNode(prevLine);
+        });
+      }
+      return;
+    }
+
+    const mesh = zoneMeshes()[getSelectedZone()];
+    if (!mesh) {
+      return;
+    }
+
+    let line = prevLine;
+    if (!line) {
+      const geo = new THREE.BufferGeometry();
+      const positions = new Float32Array(2 * 3);
+      geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+      const mat = new THREE.LineBasicMaterial({
+        color: new THREE.Color(1, 0, 0),
+        linewidth: 1,
+        depthTest: true,
+      });
+      line = new THREE.Line(geo, mat);
+      scene().add(line);
+    }
+
+    const positions = line.geometry.attributes.position;
+    positions.array.set(value[0].toArray(), 0);
+    positions.array.set(value[1].toArray(), 3);
+    positions.needsUpdate = true;
+
+    // Recompute box and sphere to ensure the new position doesn't get culled from the camera
+    line.geometry.computeBoundingBox();
+    line.geometry.computeBoundingSphere();
+
+    markLineCollisions(mesh, props.zoneData[getSelectedZone()].mesh, prepMeshData()![getSelectedZone()], value[0], value[1]);
+
+    return line;
+  }));
+
+  createEffect(on(getColorKind, (colorKind) => {
+    const meshes = zoneMeshes();
+    const prep = prepMeshData();
+    for (const zoneId of Object.keys(meshes)) {
+      const mesh = meshes[zoneId];
+      colorMesh(mesh, prep[zoneId]!, colorKind);
+    }
+  }));
+
+  const colorKindButton = (colorKind: ColorKind, name: string) => (
+    <button
+      classList={{ "active": getColorKind() == colorKind }}
+      onClick={() => {
+        setColorKind(colorKind);
+      }}>
+      {name}
+    </button>
+  );
+
+  const positionField = (getter: () => THREE.Vector3 | undefined, setter: (val: THREE.Vector3) => THREE.Vector3) => {
+    let copyTimer: number | undefined;
+
+    return <>
+      <input class="w-24 text-center hide-spin-buttons" type="number" lang="en-US"
+        value={getter()?.x}
+        placeholder="x"
+        onInput={(e) => {
+          let pos = getter()?.clone() ?? new THREE.Vector3();
+          pos.x = parseFloat(e.target.value);
+          setter(pos);
+        }}></input>
+
+      <input class="w-24 text-center hide-spin-buttons" type="number" lang="en-US"
+        value={getter()?.y}
+        placeholder="y"
+        onInput={(e) => {
+          let pos = getter()?.clone() ?? new THREE.Vector3();
+          pos.y = parseFloat(e.target.value);
+          setter(pos);
+        }}></input>
+
+      <input class="w-24 text-center hide-spin-buttons" type="number" lang="en-US"
+        value={getter()?.z}
+        placeholder="z"
+        onInput={(e) => {
+          let pos = getter()?.clone() ?? new THREE.Vector3();
+          pos.z = parseFloat(e.target.value);
+          setter(pos);
+        }}></input>
+
+      <button class="w-20" onClick={(e) => {
+        const pos = getter();
+        if (!pos) {
+          return;
+        }
+        let value;
+        if (e.shiftKey) {
+          value = `${pos.x} ${pos.y} ${pos.z}`;
+        } else {
+          value = `${pos.x},${pos.y},${pos.z}`;
+        }
+        navigator.clipboard.writeText(value);
+
+        e.target.textContent = "Copied"
+        if (copyTimer) {
+          clearTimeout(copyTimer);
+        }
+        copyTimer = setTimeout(() => {
+          e.target.textContent = "Copy"
+          copyTimer = undefined;
+        }, 2000);
+      }}>
+        Copy
+      </button>
+
+
+      <button class="w-20" onClick={async () => {
+        let coords = parseCoordinatesToVector3(await navigator.clipboard.readText());
+        if (coords) {
+          setter(coords);
+        }
+      }}>
+        Paste
+      </button>
+    </>
+  };
+
   return (
     <div class="w-full h-full">
       <div class="m-auto relative" style={{ height: "60vh" }}>
@@ -963,6 +1199,7 @@ export default function ZoneModel(props: ZoneDataProps) {
           setSelectedVertexIdx={setSelectedVertexIdx}
         >
         </AreaMenu>
+        <ZoneInfoBox targetInfo={getTargetInfo()}></ZoneInfoBox>
         <div
           class="absolute hidden p-1 text-white bg-black pointer-events-none rounded font-mono opacity-70 text-sm noselect"
           ref={coordLabelRef}
@@ -996,7 +1233,7 @@ export default function ZoneModel(props: ZoneDataProps) {
                 </li>
                 <li>
                   <b>Add a new area node:</b>{" "}
-                  CTRL + left-click. If an existing node is selected, the new one will be inserted after it. While having a node selected, you can also press
+                  With the Area Manager expanded: CTRL + left-click. If an existing node is selected, the new one will be inserted after it. While having a node selected, you can also press
                   SHIFT + N to create a copy.
                 </li>
                 <li>
@@ -1018,6 +1255,36 @@ export default function ZoneModel(props: ZoneDataProps) {
           </Show>
         </div>
       </div>
+
+      <Show when={props.showZoneTools}>
+        <div class="flex items-start justify-around pt-3 flex-wrap">
+          <div class="flex flex-col items-center pb-5">
+            <span class="font-semibold">Colors</span>
+            <div class="flex items-center justify-center gap-2 flex-wrap">
+              {colorKindButton(ColorKind.None, "Clear")}
+              {colorKindButton(ColorKind.Barriers, "Barriers")}
+              {colorKindButton(ColorKind.Materials, "Materials")}
+              {colorKindButton(ColorKind.Maps, "Map")}
+              {colorKindButton(ColorKind.IsRoofed, "Roofed")}
+            </div>
+          </div>
+
+          <div class="flex flex-col items-center">
+            <span class="font-semibold">Ray testing</span>
+            <div class="text-sm">CTRL- and SHIFT-clicking works with Area Manager minimized</div>
+            <div class="flex items-center gap-1 flex-wrap">
+              <span class="w-32">Start (CTRL+click):</span>
+              {positionField(getStartPos, setStartPos)}
+            </div>
+
+            <div class="flex items-center gap-1 flex-wrap">
+              <span class="w-32">End (SHIFT+click):</span>
+              {positionField(getEndPos, setEndPos)}
+            </div>
+          </div>
+        </div>
+      </Show>
+
       <Show when={props.entityUpdates}>
         <Show
           fallback={zoneSelector}

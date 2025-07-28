@@ -10,9 +10,16 @@ export interface ZoneProps {
 export default function ZoneComponent(props: ZoneProps) {
   const [getLoadingMessage, setLoadingMessage] = createSignal<string | undefined>();
 
-  const [model] = createResource(() => props.zone.id, async zoneId => {
+  const [model] = createResource(() => props.zone.name, async zoneName => {
     console.time("load-mesh");
-    const url = `${import.meta.env.BASE_URL}/zone_meshes/${zoneId}.ximesh`;
+
+    const filename = zoneName.replace(" - ", "-")
+      .replace(" ", "_")
+      .replace("'", "")
+      .replace("(", "")
+      .replace(")", "");
+
+    const url = `${import.meta.env.BASE_URL}/ximeshes/${filename}.ximesh`;
     const compressed = await fetchProgress(url, (progress: number) => {
       if (progress === undefined) {
         setLoadingMessage(undefined);
@@ -50,6 +57,7 @@ export default function ZoneComponent(props: ZoneProps) {
                 mesh: model(),
               },
             }}
+            showZoneTools={true}
           >
           </ZoneModel>
         </Match>

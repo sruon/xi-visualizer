@@ -1,0 +1,3 @@
+[submodule "public/ximeshes"]
+    path = public/ximeshes
+    url = ../../InoUno/ximeshes.git

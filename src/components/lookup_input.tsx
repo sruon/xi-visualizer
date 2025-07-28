@@ -13,7 +13,7 @@ interface LookupInputProps<T, K extends string | number> {
   skipNameSort?: boolean;
 }
 
-interface Option<T> {
+export interface Option<T> {
   id: string;
   name: string;
   data: T;

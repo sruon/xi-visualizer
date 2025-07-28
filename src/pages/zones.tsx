@@ -1,10 +1,12 @@
 import { createSignal, Show } from "solid-js";
-import LookupInput from "../components/lookup_input";
+import LookupInput, { Option } from "../components/lookup_input";
 import ZoneComponent from "../components/zone";
 import zones, { ZoneInfo } from "../data/zones";
+import { useNavigate, useParams } from "@solidjs/router";
 
 export default function ZonesPage() {
-  const [getZone, setZone] = createSignal<ZoneInfo>(undefined);
+  const navigate = useNavigate();
+  const params = useParams();
 
   return (
     <section class="p-8">
@@ -13,14 +15,14 @@ export default function ZonesPage() {
         options={zones}
         nameFn={v => v.name}
         autofocus
-        onChange={value => {
-          setZone(value.data);
+        onChange={(value: Option<ZoneInfo>) => {
+          navigate(`/zone/${value.data.id}`);
         }}
       >
       </LookupInput>
 
-      <Show when={getZone()}>
-        <ZoneComponent zone={getZone()}></ZoneComponent>
+      <Show when={params.id}>
+        <ZoneComponent zone={zones[params.id]}></ZoneComponent>
       </Show>
     </section>
   );

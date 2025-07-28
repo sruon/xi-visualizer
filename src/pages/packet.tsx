@@ -59,12 +59,12 @@ export default function PacketPage({ }: PacketPageProps) {
         new Promise(async resolve => {
           console.time(`load-mesh-${zoneId}`);
 
-          const url = `${import.meta.env.BASE_URL}/zone_meshes/${zoneId}.ximesh`;
+          const url = `${import.meta.env.BASE_URL}/ximeshes/${zoneId}.ximesh`;
           const compressed = await fetchProgress(url, (progress: number) => {
             if (progress === undefined) {
               setZoneProgress(zoneIdNum, undefined);
             } else {
-              setZoneProgress(zoneIdNum, `${(progress * 100).toFixed(0).padStart(3, " ")}% - Downloading mesh for ${zones[zoneId].name}`);
+              setZoneProgress(zoneIdNum, `${(progress * 100).toFixed(0).padStart(3, " ")}% - Downloading ximesh for ${zones[zoneId].name}`);
             }
           });
 
