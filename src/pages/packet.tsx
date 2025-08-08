@@ -55,11 +55,20 @@ export default function PacketPage({ }: PacketPageProps) {
     for (const zoneId in parsedPackets.zoneEntityUpdates) {
       const zoneIdNum = parseInt(zoneId);
 
+      const zone = zones[zoneIdNum];
+
+      const filename = zone.name.replaceAll(" - ", "-")
+        .replaceAll(" ", "_")
+        .replaceAll("'", "")
+        .replaceAll("(", "")
+        .replaceAll(")", "")
+        .replaceAll("#", "");
+
       promises.push(
         new Promise(async resolve => {
           console.time(`load-mesh-${zoneId}`);
 
-          const url = `${import.meta.env.BASE_URL}/ximeshes/${zoneId}.ximesh`;
+          const url = `${import.meta.env.BASE_URL}/ximeshes/${filename}.ximesh`;
           const compressed = await fetchProgress(url, (progress: number) => {
             if (progress === undefined) {
               setZoneProgress(zoneIdNum, undefined);
@@ -108,7 +117,10 @@ export default function PacketPage({ }: PacketPageProps) {
       >
         <Match when={getParsedPackets() !== undefined && getZoneModels() !== undefined}>
           <button onClick={_ => setParsedPackets(undefined)}>Clear packets</button>
-          <ZoneModel entityUpdates={getParsedPackets().zoneEntityUpdates} clientUpdates={getParsedPackets().clientUpdates} zoneData={getZoneModels()}>
+          <ZoneModel
+            entityUpdates={getParsedPackets().zoneEntityUpdates}
+            clientUpdates={getParsedPackets().clientUpdates}
+            zoneData={getZoneModels()}>
           </ZoneModel>
         </Match>
         <Match when={getStatus() && !getZoneModels()}>
