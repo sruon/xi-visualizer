@@ -1,4 +1,4 @@
-import { createEffect, createResource, createSignal, Match, onMount, Show, Switch } from "solid-js";
+import { createResource, createSignal, Match, Switch } from "solid-js";
 import { ZoneInfo } from "../data/zones";
 import { decompress, fetchProgress } from "../util";
 import ZoneModel from "./zone_model";
