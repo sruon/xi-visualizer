@@ -1,5 +1,5 @@
 import { IoCheckmarkDoneSharp, IoChevronDown, IoChevronUp, IoCopy, IoExitOutline, IoEye, IoEyeOff, IoLocate, IoTrash } from "solid-icons/io";
-import { createEffect, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
+import { batch, createEffect, createSignal, For, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
 import { createStore, produce, SetStoreFunction } from "solid-js/store";
 
 export interface AreaMenuProps {
@@ -21,7 +21,12 @@ export interface Point {
 }
 
 export interface Area {
-  y: number;
+  yMin?: number;
+  yMax?: number;
+
+  yMid?: number;
+  yExtent?: number;
+
   polygon: Point[];
   holes?: Point[][];
   hidden?: boolean;
@@ -31,18 +36,14 @@ export interface Area {
 export default function AreaMenu(ps: AreaMenuProps) {
   const selectedArea = () => ps.selectedAreaIdx !== undefined ? ps.areas[ps.selectedAreaIdx] : undefined;
 
-  const setY = (element: Element) => {
-    const newNum = parseInt(element.textContent);
+  const setYValue = (element: HTMLInputElement, key: "yMid" | "yMax" | "yMin" | "yExtent") => {
+    const newNum = parseInt(element.value);
     if (isNaN(newNum)) {
-      element.textContent = ps.areas[ps.selectedAreaIdx].y + "";
+      element.textContent = ps.areas[ps.selectedAreaIdx][key] + "";
       return;
     }
-    ps.setAreas(ps.selectedAreaIdx, "y", newNum);
-    element.textContent = ps.areas[ps.selectedAreaIdx].y + "";
-  };
-
-  const setAreaDescription = (description: string) => {
-
+    ps.setAreas(ps.selectedAreaIdx, key, newNum);
+    element.textContent = ps.areas[ps.selectedAreaIdx][key] + "";
   };
 
   const setActivePoints = (...args: any[]) => {
@@ -71,7 +72,7 @@ export default function AreaMenu(ps: AreaMenuProps) {
   };
 
   const addNewArea = () => {
-    ps.setAreas(ps.areas.length, { y: 0, polygon: [] });
+    ps.setAreas(ps.areas.length, { polygon: [] });
     ps.setSelectedAreaIdx(ps.areas.length - 1);
   };
 
@@ -195,7 +196,24 @@ export default function AreaMenu(ps: AreaMenuProps) {
     if (area.description) {
       lines.push(`-- ${area.description.trim()}`);
     }
-    lines.push(`y = ${area.y},`);
+
+    // Add y-value lines, prioritizing yMin and yMax if they are present.
+    if (area.yMin !== undefined || area.yMax !== undefined) {
+      if (area.yMin !== undefined) {
+        lines.push(`yMin = ${area.yMin},`);
+      }
+      if (area.yMax !== undefined) {
+        lines.push(`yMax = ${area.yMax},`);
+      }
+    } else {
+      if (area.yMid !== undefined) {
+        lines.push(`y = ${area.yMid},`);
+        if (area.yExtent !== undefined) {
+          lines.push(`yExtent = ${area.yExtent},`);
+        }
+      }
+    }
+
     lines.push(`polygon = {`);
     for (const point of area.polygon) {
       lines.push(`    { x = ${point.x}, z = ${point.z} },`);
@@ -393,16 +411,98 @@ export default function AreaMenu(ps: AreaMenuProps) {
               >
               </input>
 
-              <div class="py-2">
-                <span class="font-semibold">Y:</span>{" "}
-                <span
-                  contentEditable={true}
-                  class="p-1 font-mono text-lime-300"
-                  onFocusOut={e => setY(e.target)}
-                >
-                  {selectedArea()?.y}
-                </span>
+              <div>
+                Y range:
+                <select
+                  class="font-mono inline-block"
+                  value={(() => {
+                    if (selectedArea()?.yMin !== undefined || selectedArea()?.yMax !== undefined) {
+                      return "1";
+                    }
+                    if (selectedArea()?.yMid !== undefined) {
+                      return "2";
+                    }
+                    return "0";
+                  })()}
+                  onChange={(e) => {
+                    switch (e.currentTarget.value) {
+                      default:
+                      case "0":
+                        ps.setAreas(ps.selectedAreaIdx, produce((area) => {
+                          area.yMin = undefined;
+                          area.yMax = undefined;
+                          area.yMid = undefined;
+                          area.yExtent = undefined;
+                        }));
+                        break;
+                      case "1":
+                        ps.setAreas(ps.selectedAreaIdx, produce((area) => {
+                          area.yMin = area.yMin ?? -10;
+                          area.yMax = area.yMax ?? area.yMin + 20;
+                          area.yMid = undefined;
+                          area.yExtent = undefined;
+                        }));
+                        break;
+                      case "2":
+                        ps.setAreas(ps.selectedAreaIdx, produce((area) => {
+                          area.yMin = undefined;
+                          area.yMax = undefined;
+                          area.yMid = area.yMid ?? 0;
+                          area.yExtent = area.yExtent ?? undefined;
+                        }));
+                        break;
+                    }
+                  }}>
+                  <option value="0">Unlimited</option>
+                  <option value="1">Min Max</option>
+                  <option value="2">Extent</option>
+                </select>
               </div>
+              <Switch>
+                <Match when={selectedArea()?.yMin !== undefined || selectedArea()?.yMax !== undefined}>
+                  <div class="pt-2">
+                    <span class="font-semibold">Min Y:</span>{" "}
+                    <input
+                      type="number"
+                      class="p-1 font-mono text-lime-300 w-16 inline-block"
+                      value={selectedArea()?.yMin}
+                      onChange={e => setYValue(e.currentTarget, "yMin")}
+                    ></input>
+                  </div>
+                  <div class="pt-2">
+                    <span class="font-semibold">Max Y:</span>{" "}
+                    <input
+                      type="number"
+                      class="p-1 font-mono text-lime-300 w-16 inline-block"
+                      value={selectedArea()?.yMax}
+                      onChange={e => setYValue(e.currentTarget, "yMax")}
+                    ></input>
+                  </div>
+                </Match>
+
+                <Match when={selectedArea()?.yMid !== undefined}>
+                  <div class="pt-2">
+                    <span class="font-semibold">Y:</span>{" "}
+                    <input
+                      type="number"
+                      class="p-1 font-mono text-lime-300 w-16 inline-block"
+                      value={selectedArea()?.yMid}
+                      onChange={e => setYValue(e.currentTarget, "yMid")}
+                    ></input>
+                  </div>
+
+                  <div class="pb-2">
+                    <span class="font-semibold">Extent:</span>{" "}
+                    <input
+                      type="number"
+                      class="p-1 font-mono text-lime-300 w-16 inline-block"
+                      value={selectedArea()?.yExtent}
+                      onChange={e => setYValue(e.currentTarget, "yExtent")}
+                    ></input>
+                  </div>
+
+                </Match>
+              </Switch>
 
               <div>
                 <div class="flex flex-row">
@@ -560,23 +660,24 @@ export default function AreaMenu(ps: AreaMenuProps) {
           </div>
         </Show>
       </div>
-    </div>
+    </div >
   );
 }
 
-const Y_PATTERN = /^y\s*=\s*(\-?\d+)\s*,?/;
+const KV_NUM_PATTERN = /^([a-zA-Z]+)\s*=\s*(\-?\d+)\s*,?/;
 const POLYGON_PATTERN = /^polygon\s*=\s*\{/;
 const XZ_PATTERN = /^\{\s*x\s*=\s*(\-?\d+)\s*,\s*z\s*=\s*(\-?\d+),?\s*\}\s*,?/;
 const HOLES_PATTERN = /^holes\s*=\s*\{/;
 const START_BRACKET = /^\{/;
 const END_BRACKET = /^\},?/;
-const COMMENT_PATTERN = /--([^\r\n]+)\r?\n/;
+const COMMENT_PATTERN = /^--([^\r\n]+)\r?\n/;
 
 function skipWhitespaceAndComments(str: string): number {
   let idx = 0;
   while (idx < str.length) {
     switch (str[idx]) {
       case " ":
+      case "\t":
       case "\n":
       case "\r":
         idx++;
@@ -601,22 +702,71 @@ function skipWhitespaceAndComments(str: string): number {
   return idx;
 }
 
+
+function skipWhitespace(str: string): number {
+  let idx = 0;
+  while (idx < str.length) {
+    switch (str[idx]) {
+      case " ":
+      case "\t":
+      case "\n":
+      case "\r":
+        idx++;
+        continue;
+      default:
+        break;
+    }
+
+    break;
+  }
+  return idx;
+}
+
 /// Returns the number of characters to skip to proceed
 function parseAreaDef(fullStr: string, startIdx: number, areas: Area[]): number {
   const str = fullStr.substring(startIdx);
 
-  // Parse y
-  const yMatch = Y_PATTERN.exec(str);
-  if (!yMatch) {
-    return 1;
+  // Parse y values
+  let idx = skipWhitespace(str);
+  let yMin: number, yMax: number, yMid: number, yExtent: number;
+  let description: string | undefined;
+
+  const commentMatch = COMMENT_PATTERN.exec(str.substring(idx));
+  if (commentMatch) {
+    description = commentMatch[1].trim();
+    idx += commentMatch[0].length;
+    idx += skipWhitespaceAndComments(str.substring(idx));
   }
 
-  const y = parseFloat(yMatch[1]);
-  if (isNaN(y)) {
-    return 1;
+  let kvMatch = KV_NUM_PATTERN.exec(str.substring(idx));
+  while (kvMatch) {
+    const val = parseFloat(kvMatch[2]);
+    if (isNaN(val)) {
+      return 1;
+    }
+
+    switch (kvMatch[1]) {
+      case "yMin":
+        yMin = val;
+        break;
+      case "yMax":
+        yMax = val;
+        break;
+      case "y":
+        yMid = val;
+        break;
+      case "yExtent":
+        yExtent = val;
+        break;
+      default:
+        break;
+    }
+
+    idx += kvMatch[0].length;
+    idx += skipWhitespaceAndComments(str.substring(idx));
+
+    kvMatch = KV_NUM_PATTERN.exec(str.substring(idx));
   }
-  let idx = yMatch[0].length;
-  idx += skipWhitespaceAndComments(str.substring(idx));
 
   // Find polygon key
   const polygonMatch = POLYGON_PATTERN.exec(str.substring(idx));
@@ -627,7 +777,11 @@ function parseAreaDef(fullStr: string, startIdx: number, areas: Area[]): number 
   idx += skipWhitespaceAndComments(str.substring(idx));
 
   let area: Area = {
-    y,
+    yMin,
+    yMax,
+    yMid,
+    yExtent,
+    description,
     polygon: [],
   };
 
@@ -674,24 +828,6 @@ function parseAreaDef(fullStr: string, startIdx: number, areas: Area[]): number 
     }
     idx += endBracketMatch[0].length;
     idx += skipWhitespaceAndComments(str.substring(idx));
-  }
-
-  // Find description before startIdx
-  // Skip to start of line before startIdx
-  let descIdx = startIdx
-  while (descIdx >= 0 && fullStr[descIdx] != "\n") {
-    descIdx--;
-  }
-  descIdx--;
-  while (descIdx >= 0 && fullStr[descIdx] != "\n") {
-    descIdx--;
-  }
-  if (descIdx < 0) {
-    descIdx = 0;
-  }
-  const commentMatch = COMMENT_PATTERN.exec(fullStr.substring(descIdx, startIdx));
-  if (commentMatch) {
-    area.description = commentMatch[1].trim();
   }
 
   areas.push(area);
@@ -750,7 +886,8 @@ function parseAreasDef(str: string): Area[] | undefined {
   let areas: Area[] = [];
   let i = 0;
   while (i < str.length) {
-    if (str[i] == "y") {
+    if (str[i] == "{") {
+      i++;
       i += parseAreaDef(str, i, areas);
     } else {
       i++;
@@ -762,4 +899,21 @@ function parseAreasDef(str: string): Area[] | undefined {
   }
 
   return areas;
+}
+
+export function deriveAreaYs(area: Area): { yMin: number; yMax: number; unlimited: boolean } {
+  let yMin = -1000, yMax = 1000, unlimited = true;
+
+  if (area.yMin !== undefined || area.yMax !== undefined) {
+    yMin = area.yMin ?? yMin;
+    yMax = area.yMax ?? yMax;
+    unlimited = false;
+  } else if (area.yMid !== undefined) {
+    const extent = area.yExtent ?? 10;
+    yMin = area.yMid - extent;
+    yMax = area.yMid + extent;
+    unlimited = false;
+  }
+
+  return { yMin, yMax, unlimited };
 }

@@ -1,7 +1,7 @@
 import CameraControls from "camera-controls";
 import { IoHelpCircle } from "solid-icons/io";
 import { batch, createEffect, createMemo, createSignal, mapArray, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
-import { createStore, produce } from "solid-js/store";
+import { createStore, produce, SetStoreFunction } from "solid-js/store";
 import * as THREE from "three";
 import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from "three-mesh-bvh";
 import { FlyControls, MapControls } from "three/examples/jsm/Addons.js";
@@ -12,7 +12,7 @@ import { cleanupNode, parseCoordinatesToVector3, roundDecimals } from "../graphi
 import { EntityUpdate, EntityUpdateKind, Position, PositionUpdate, ZoneEntityUpdates } from "../parse_packets";
 import { ByZone } from "../types";
 import { binarySearchLower } from "../util";
-import AreaMenu, { Area, Point } from "./area_menu";
+import AreaMenu, { Area, deriveAreaYs as deriveAreaYRange, Point } from "./area_menu";
 import LookupInput from "./lookup_input";
 import RangeInput from "./range_input";
 import Table from "./table";
@@ -616,21 +616,17 @@ export default function ZoneModel(props: ZoneDataProps) {
 
       // Add a new polygon if none is selected
       if (getSelectedAreaIdx() == undefined) {
-        setAreas(areas.length, { y: 0, polygon: [] });
+        setAreas(areas.length, { polygon: [] });
         setSelectedAreaIdx(areas.length - 1);
       }
 
       const area = areas[getSelectedAreaIdx()];
       const polygon = area.polygon;
-      if (polygon.length == 0 && area.y == 0) {
-        // Update y if it's default and there's no vertices
-        setAreas(getSelectedAreaIdx(), "y", Math.round(-hit.y));
-      }
 
       const newVertex = { x: Math.round(hit.x), z: Math.round(-hit.z) };
 
-      let setPoints;
-      let points;
+      let setPoints: SetStoreFunction<Point[]>;
+      let points: Point[];
       if (getSelectedSubPolygonIdx() !== undefined) {
         setPoints = setAreas.bind(null, getSelectedAreaIdx(), "holes", getSelectedSubPolygonIdx());
         points = area.holes?.[getSelectedSubPolygonIdx()];
@@ -764,6 +760,44 @@ export default function ZoneModel(props: ZoneDataProps) {
     return result;
   }
 
+  function getFirstYForPoint(
+    point: Point,
+    zoneMesh: THREE.Mesh,
+    origin: THREE.Vector3,
+    direction: THREE.Vector3,
+  ): number | undefined {
+    origin.x = point.x;
+    origin.z = -point.z;
+    raycaster.set(origin, direction)
+    const intersections = raycaster.intersectObject(zoneMesh, false);
+    if (intersections.length == 0) {
+      return undefined;
+    }
+    return intersections[0].point.y;
+  }
+
+  function updateYRangeForPoint(
+    range: { yMin: number, yMax: number },
+    point: Point,
+    zoneMesh: THREE.Mesh,
+    origin: THREE.Vector3,
+    direction: THREE.Vector3,
+  ) {
+    origin.x = point.x;
+    origin.z = -point.z;
+    raycaster.set(origin, direction)
+    const intersections = raycaster.intersectObject(zoneMesh, false);
+    for (const intersection of intersections) {
+      const y = intersection.point.y;
+      if (y < range.yMin) {
+        range.yMin = y;
+      }
+      if (y > range.yMax) {
+        range.yMax = y;
+      }
+    }
+  }
+
   function animate(renderer: THREE.WebGLRenderer, labelRenderer: CSS2DRenderer) {
     stats.update();
 
@@ -838,9 +872,17 @@ export default function ZoneModel(props: ZoneDataProps) {
 
   // Draw areas
   createEffect(() => {
+    const zoneMesh = zoneMeshes()[getSelectedZone()];
+    if (!zoneMesh) {
+      return;
+    }
+
     let meshes: THREE.Mesh[] = [];
     let elements: Element[] = [];
     let labels: CSS2DObject[] = [];
+
+    let origin = new THREE.Vector3();
+    const direction = new THREE.Vector3(0, -1, 0);
 
     for (let i = 0; i < areas.length; i++) {
       const area = areas[i];
@@ -848,6 +890,7 @@ export default function ZoneModel(props: ZoneDataProps) {
         continue;
       }
 
+      // Create the polygon shape
       const shape = new THREE.Shape(area.polygon.map(p => new THREE.Vector2(p.x, p.z)));
       if (area.holes?.length > 0) {
         for (const hole of area.holes) {
@@ -857,17 +900,50 @@ export default function ZoneModel(props: ZoneDataProps) {
           shape.holes.push(new THREE.Shape(hole.map(p => new THREE.Vector2(p.x, p.z))));
         }
       }
-      const geo = new THREE.ExtrudeGeometry(shape, { depth: 20, bevelEnabled: false });
+
+
+      // Determine where the area should be displayed on the Y-axis
+      const areaYRange = deriveAreaYRange(area);
+
+      let visualYRange = { yMax: -areaYRange.yMin, yMin: -areaYRange.yMax };
+      if (areaYRange.unlimited) {
+        visualYRange.yMin = 1000;
+        visualYRange.yMax = -1000;
+        origin.y = -areaYRange.yMin;
+
+        for (const p of area.polygon) {
+          updateYRangeForPoint(visualYRange, p, zoneMesh, origin, direction);
+        }
+        if (area.holes) {
+          for (const hole of area.holes) {
+            for (const p of hole) {
+              updateYRangeForPoint(visualYRange, p, zoneMesh, origin, direction);
+            }
+          }
+        }
+
+        if (visualYRange.yMin == 1000) {
+          // No intersections, so lower it to some default min max
+          visualYRange.yMin = -100;
+          visualYRange.yMax = 100;
+        } else {
+          visualYRange.yMin -= 10;
+          visualYRange.yMax += 10;
+        }
+      }
+
+      const geo = new THREE.ExtrudeGeometry(shape, { depth: Math.abs(visualYRange.yMax - visualYRange.yMin), bevelEnabled: false });
       geo.rotateX(Math.PI / 2);
-      geo.translate(0, -area.y + 10, 0);
+      geo.translate(0, -visualYRange.yMin, 0);
       geo.computeBoundingBox();
 
       const mat = getSelectedAreaIdx() == i ? selectedAreaMat : areaMat;
-      const mesh = new THREE.Mesh(geo, mat);
+      const areaMesh = new THREE.Mesh(geo, mat);
 
-      mesh.layers.enableAll();
+      areaMesh.layers.enableAll();
 
       if (getSelectedAreaIdx() !== i) {
+        // Add area labels for non-selected areas
         const div = document.createElement("div");
         div.textContent = `Area ${i + 1}`;
         div.className = "vertex-label noselect pointer-events-auto cursor-pointer text-sm font-mono";
@@ -878,18 +954,27 @@ export default function ZoneModel(props: ZoneDataProps) {
 
         const label = new CSS2DObject(div);
         const box = geo.boundingBox;
+
         label.position.set(
           box.min.x + (box.max.x - box.min.x) / 2,
-          box.min.y + (box.max.y - box.min.y) / 2 + 5,
+          box.min.y + (box.max.y - box.min.y) / 2 - 10,
           box.min.z + (box.max.z - box.min.z) / 2,
         );
-        mesh.add(label);
+
+        // If possible, place the area label according to the y position of the underlying mesh
+        origin.y = -areaYRange.yMin;
+        const y = getFirstYForPoint({ x: label.position.x, z: label.position.z }, zoneMesh, origin, direction);
+        if (y !== undefined) {
+          label.position.y = y - 20;
+        }
+
+        areaMesh.add(label);
         label.layers.set(0);
         labels.push(label);
       }
 
-      meshes.push(mesh);
-      scene().add(mesh);
+      meshes.push(areaMesh);
+      scene().add(areaMesh);
     }
 
     onCleanup(() => {
@@ -921,14 +1006,39 @@ export default function ZoneModel(props: ZoneDataProps) {
       return;
     }
 
+    const zoneMesh = zoneMeshes()[getSelectedZone()];
+    if (!zoneMesh) {
+      return;
+    }
+
+    const areaYRange = deriveAreaYRange(area);
+    let origin = new THREE.Vector3();
+    const direction = new THREE.Vector3(0, -1, 0);
+    origin.y = -areaYRange.yMin;
+
+    // Default Y to place the handles at, if they do not intersect the zone mesh
+    let defaultY = 0;
+    if (!areaYRange.unlimited) {
+      if (areaYRange.yMax > 1000) {
+        defaultY = areaYRange.yMin;
+      } else if (areaYRange.yMin < -1000) {
+        defaultY = areaYRange.yMax;
+      } else {
+        defaultY = (areaYRange.yMax - areaYRange.yMin) / 2 + areaYRange.yMin;
+      }
+    }
+
     const points = getSelectedSubPolygonIdx() !== undefined ? area.holes[getSelectedSubPolygonIdx()] : area.polygon;
 
+    // Handles
     for (let i = 0; i < points.length; i++) {
       const pos = points[i];
       const geo = new THREE.SphereGeometry(1);
       const mat = new THREE.MeshBasicMaterial({ color: 0xFF7F00 });
       const mesh = new THREE.Mesh(geo, mat);
-      mesh.position.set(pos.x, -area.y + 10, pos.z);
+
+      const y = getFirstYForPoint({ x: pos.x, z: pos.z }, zoneMesh, origin, direction) ?? -defaultY;
+      mesh.position.set(pos.x, -y, pos.z);
 
       mesh.layers.enableAll();
 
@@ -945,7 +1055,7 @@ export default function ZoneModel(props: ZoneDataProps) {
       elements.push(div);
 
       const label = new CSS2DObject(div);
-      label.position.set(0, 5, 0);
+      label.position.set(0, -5, 0);
       mesh.add(label);
       label.layers.set(0);
       labels.push(label);

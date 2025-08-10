@@ -41,7 +41,7 @@ input:focus {
     @apply bg-green-800;
   }
 
-  input {
+  input, select {
     @apply block m-1 py-1 px-2 rounded-md
         bg-slate-700 border border-slate-400 
         placeholder:text-slate-400
