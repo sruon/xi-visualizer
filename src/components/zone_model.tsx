@@ -965,7 +965,7 @@ export default function ZoneModel(props: ZoneDataProps) {
         origin.y = -areaYRange.yMin;
         const y = getFirstYForPoint({ x: label.position.x, z: label.position.z }, zoneMesh, origin, direction);
         if (y !== undefined) {
-          label.position.y = y - 20;
+          label.position.y = -y - 10;
         }
 
         areaMesh.add(label);
