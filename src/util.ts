@@ -51,7 +51,7 @@ export function binarySearchLower<T, U>(arr: T[], value: U, valueExtract: (t: T)
   let hi = arr.length - 1;
   let mid = 0;
   let extracted;
-  while (lo <= hi) {
+  while (lo < hi) {
     mid = Math.floor((hi - lo) / 2) + lo;
     extracted = valueExtract(arr[mid]);
     if (extracted < value) {

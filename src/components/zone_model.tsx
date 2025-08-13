@@ -79,6 +79,7 @@ export default function ZoneModel(props: ZoneDataProps) {
 
   const [getShowWidescan, setShowWidescan] = createSignal<boolean>(true);
   const [getShowRendered, setShowRendered] = createSignal<boolean>(true);
+  const [getShowOnlyLatest, setShowOnlyLatest] = createSignal<boolean>(false);
 
   const [getShowDiscrete, setShowDiscrete] = createSignal<boolean>(true);
   const [getDiscreteLowerTime, setDiscreteLowerTime] = createSignal<number>(0);
@@ -486,6 +487,7 @@ export default function ZoneModel(props: ZoneDataProps) {
     let obj = new THREE.Object3D();
     const hideWidescan = !getShowWidescan();
     const hideRendered = !getShowRendered();
+    const onlyLatest = getShowOnlyLatest();
     for (const entityKey in adjustedEntityUpdates()[zoneId]) {
       if (entitySettings[entityKey]?.hidden) {
         continue;
@@ -494,42 +496,83 @@ export default function ZoneModel(props: ZoneDataProps) {
       const mesh = meshes[entityKey];
       const updates = adjustedEntityUpdates()[zoneId][entityKey];
 
-      // Skip until first visible update
-      let idx = binarySearchLower(updates, getDiscreteLowerTime(), x => x.time);
-
       let showCount = 0;
-      // Add until last visible update
-      while (idx < updates.length && updates[idx].time <= getDiscreteUpperTime()) {
-        const update = updates[idx];
-        if (update.kind !== EntityUpdateKind.Position && update.kind !== EntityUpdateKind.Widescan) {
-          // Only add positional updates
-          idx++;
-          continue;
+      if (onlyLatest) {
+        // Skip until last visible update
+        const endTime = hideWidescan ? getPlayTime() : getDiscreteUpperTime();
+
+        let idx = binarySearchLower(updates, endTime, x => x.time);
+
+        while (idx >= 0 && updates[idx].time >= getDiscreteLowerTime()) {
+          const update = updates[idx];
+          if (update.kind !== EntityUpdateKind.Position && update.kind !== EntityUpdateKind.Widescan) {
+            // Only add positional updates
+            idx--;
+            continue;
+          }
+
+          if (hideWidescan && update.kind == EntityUpdateKind.Widescan) {
+            // Widescan is hidden
+            idx--;
+            continue;
+          }
+
+          if (hideRendered && update.kind == EntityUpdateKind.Position) {
+            // Entity updates is hidden
+            idx--;
+            continue;
+          }
+
+          obj.position.set(update.pos.x, update.pos.y * -1, update.pos.z);
+          obj.updateMatrix();
+          mesh.setMatrixAt(showCount, obj.matrix);
+          if (update.kind == EntityUpdateKind.Position) {
+            mesh.setColorAt(showCount, mobColor);
+          } else {
+            mesh.setColorAt(showCount, widescanColor);
+          }
+          showCount = 1;
+          break;
         }
 
-        if (hideWidescan && update.kind == EntityUpdateKind.Widescan) {
-          // Widescan is hidden
-          idx++;
-          continue;
-        }
+      } else {
+        // Skip until first visible update
+        let idx = binarySearchLower(updates, getDiscreteLowerTime(), x => x.time);
 
-        if (hideRendered && update.kind == EntityUpdateKind.Position) {
-          // Entity updates is hidden
-          idx++;
-          continue;
-        }
+        // Add until last visible update
+        while (idx < updates.length && updates[idx].time <= getDiscreteUpperTime()) {
+          const update = updates[idx];
+          if (update.kind !== EntityUpdateKind.Position && update.kind !== EntityUpdateKind.Widescan) {
+            // Only add positional updates
+            idx++;
+            continue;
+          }
 
-        obj.position.set(update.pos.x, update.pos.y * -1, update.pos.z);
-        obj.updateMatrix();
-        mesh.setMatrixAt(showCount, obj.matrix);
-        if (update.kind == EntityUpdateKind.Position) {
-          mesh.setColorAt(showCount, mobColor);
-        } else {
-          mesh.setColorAt(showCount, widescanColor);
+          if (hideWidescan && update.kind == EntityUpdateKind.Widescan) {
+            // Widescan is hidden
+            idx++;
+            continue;
+          }
+
+          if (hideRendered && update.kind == EntityUpdateKind.Position) {
+            // Entity updates is hidden
+            idx++;
+            continue;
+          }
+
+          obj.position.set(update.pos.x, update.pos.y * -1, update.pos.z);
+          obj.updateMatrix();
+          mesh.setMatrixAt(showCount, obj.matrix);
+          if (update.kind == EntityUpdateKind.Position) {
+            mesh.setColorAt(showCount, mobColor);
+          } else {
+            mesh.setColorAt(showCount, widescanColor);
+          }
+          idx++;
+          showCount++;
         }
-        idx++;
-        showCount++;
       }
+
       mesh.count = showCount;
       mesh.instanceMatrix.needsUpdate = true;
       if (mesh.instanceColor) {
@@ -1521,6 +1564,13 @@ export default function ZoneModel(props: ZoneDataProps) {
                   onClick={() => setShowRendered(!getShowRendered())}
                 >
                   {getShowRendered() ? "Hide rendered" : "Show rendered"}
+                </button>
+              ),
+              _rows => (
+                <button
+                  onClick={() => setShowOnlyLatest(!getShowOnlyLatest())}
+                >
+                  {getShowOnlyLatest() ? "Show all" : "Show only latest"}
                 </button>
               ),
               zoneSelector,
