@@ -207,7 +207,7 @@ export default function ZoneModel(props: ZoneDataProps) {
   const adjustedEntityUpdates = createMemo(() => {
     const scanPoint = new THREE.Vector3();
     const rayStartPoint = new THREE.Vector3();
-    const down = new THREE.Vector3(0, -1, 0);
+    const down = new THREE.Vector3(0, 1, 0);
     const rayResults: THREE.Intersection<THREE.Object3D<THREE.Object3DEventMap>>[] = [];
     let bestResult: THREE.Intersection<THREE.Object3D<THREE.Object3DEventMap>> | undefined = undefined;
     let bestDistance = Number.MAX_SAFE_INTEGER;
@@ -234,8 +234,8 @@ export default function ZoneModel(props: ZoneDataProps) {
             continue;
           }
 
-          scanPoint.set(update.pos.x, -update.pos.y, update.pos.z);
-          rayStartPoint.set(update.pos.x, -update.pos.y + 100, update.pos.z);
+          scanPoint.set(update.pos.x, update.pos.y, update.pos.z);
+          rayStartPoint.set(update.pos.x, update.pos.y - 100, update.pos.z);
 
           raycaster.set(rayStartPoint, down);
           raycaster.intersectObject(zoneMesh, false, rayResults);
@@ -255,7 +255,7 @@ export default function ZoneModel(props: ZoneDataProps) {
               ...update,
               pos: {
                 ...update.pos,
-                y: -bestResult.point.y - 1,
+                y: -bestResult.point.y + 1,
               },
             };
           } else {
