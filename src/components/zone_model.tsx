@@ -1,7 +1,7 @@
 import CameraControls from "camera-controls";
 import { IoHelpCircle } from "solid-icons/io";
 import { batch, createEffect, createMemo, createSignal, mapArray, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
-import { createStore, produce, SetStoreFunction } from "solid-js/store";
+import { createStore, produce, SetStoreFunction, StoreSetter } from "solid-js/store";
 import * as THREE from "three";
 import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from "three-mesh-bvh";
 import { FlyControls, MapControls } from "three/examples/jsm/Addons.js";
@@ -1334,6 +1334,18 @@ export default function ZoneModel(props: ZoneDataProps) {
     </>
   };
 
+  const toggleButton = (text: string, setter: (b: boolean) => boolean, getter: () => boolean) => {
+    return <label class="inline-flex items-center cursor-pointer select-none"
+      onClick={(e) => {
+        setter(!getter())
+        e.preventDefault();
+      }}>
+      <input type="checkbox" class="sr-only peer" checked={getter()} onClick={() => { }} />
+      <div class="relative w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-blue-600 dark:peer-checked:bg-blue-600"></div>
+      <span class="ms-1 text-sm font-medium">{text}</span>
+    </label>
+  }
+
   return (
     <div class="w-full h-full">
       <div class="m-auto relative" style={{ height: "60vh" }}>
@@ -1552,27 +1564,9 @@ export default function ZoneModel(props: ZoneDataProps) {
                   Hide filtered
                 </button>
               ),
-              _rows => (
-                <button
-                  onClick={() => setShowWidescan(!getShowWidescan())}
-                >
-                  {getShowWidescan() ? "Hide widescan" : "Show widescan"}
-                </button>
-              ),
-              _rows => (
-                <button
-                  onClick={() => setShowRendered(!getShowRendered())}
-                >
-                  {getShowRendered() ? "Hide rendered" : "Show rendered"}
-                </button>
-              ),
-              _rows => (
-                <button
-                  onClick={() => setShowOnlyLatest(!getShowOnlyLatest())}
-                >
-                  {getShowOnlyLatest() ? "Show all" : "Show only latest"}
-                </button>
-              ),
+              _rows => toggleButton("Widescan", setShowWidescan, getShowWidescan),
+              _rows => toggleButton("Rendered", setShowRendered, getShowRendered),
+              _rows => toggleButton("Only latest", setShowOnlyLatest, getShowOnlyLatest),
               zoneSelector,
             ]}
           >
