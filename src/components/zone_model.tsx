@@ -82,6 +82,7 @@ export default function ZoneModel(props: ZoneDataProps) {
   const [getShowOnlyLatest, setShowOnlyLatest] = createSignal<boolean>(false);
 
   const [getShowDiscrete, setShowDiscrete] = createSignal<boolean>(true);
+  const [getNewDiscrete, setNewDiscrete] = createSignal<[number, number] | undefined>();
   const [getDiscreteLowerTime, setDiscreteLowerTime] = createSignal<number>(0);
   const [getDiscreteUpperTime, setDiscreteUpperTime] = createSignal<number>(1);
 
@@ -865,6 +866,13 @@ export default function ZoneModel(props: ZoneDataProps) {
       setNeedsResize(false);
     }
 
+    const newDiscrete = getNewDiscrete();
+    if (newDiscrete) {
+      setDiscreteLowerTime(newDiscrete[0]);
+      setDiscreteUpperTime(newDiscrete[1])
+      setNewDiscrete(undefined);
+    }
+
     if (hasMouseMovedSinceLast) {
       hasMouseMovedSinceLast = false;
       updatePosLabel();
@@ -1476,11 +1484,12 @@ export default function ZoneModel(props: ZoneDataProps) {
               <RangeInput
                 min={currentEntityUpdates().firstTime}
                 max={currentEntityUpdates().lastTime}
-                lower={getDiscreteLowerTime()}
-                upper={getDiscreteUpperTime()}
+                lower={getNewDiscrete()?.[0] ?? getDiscreteLowerTime()}
+                upper={getNewDiscrete()?.[1] ?? getDiscreteUpperTime()}
                 inputKind="timestamp"
-                onChangeLower={setDiscreteLowerTime}
-                onChangeUpper={setDiscreteUpperTime}
+                onChange={(lower, upper) => {
+                  setNewDiscrete([lower, upper]);
+                }}
                 disabled={!getShowDiscrete()}
               >
               </RangeInput>
