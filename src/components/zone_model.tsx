@@ -256,7 +256,7 @@ export default function ZoneModel(props: ZoneDataProps) {
               ...update,
               pos: {
                 ...update.pos,
-                y: -bestResult.point.y + 1,
+                y: bestResult.point.y - 1,
               },
             };
           } else {
@@ -352,7 +352,7 @@ export default function ZoneModel(props: ZoneDataProps) {
         const showNum = show ? 1 : 0;
         opacity[i] = showNum;
         scale.set([showNum, showNum, showNum], i * 3);
-        positions.set([pos.x, -pos.y, pos.z], i * 3);
+        positions.set([pos.x, pos.y - 1, pos.z], i * 3);
         i++;
       };
 
@@ -415,7 +415,7 @@ export default function ZoneModel(props: ZoneDataProps) {
       for (let i = startIdx, j = 0; i < endIdx; i++, j++) {
         times[j] = (updates[i].time - startTime) / 1000;
         const pos = updates[i].pos;
-        positions.set([pos.x, -pos.y, pos.z], j * 3);
+        positions.set([pos.x, pos.y - 1, pos.z], j * 3);
       }
 
       const positionKF = new THREE.VectorKeyframeTrack(".position", times, positions);
@@ -529,7 +529,7 @@ export default function ZoneModel(props: ZoneDataProps) {
             continue;
           }
 
-          obj.position.set(update.pos.x, update.pos.y * -1, update.pos.z);
+          obj.position.set(update.pos.x, update.pos.y, update.pos.z);
           obj.updateMatrix();
           mesh.setMatrixAt(showCount, obj.matrix);
           if (update.kind == EntityUpdateKind.Position) {
@@ -566,7 +566,7 @@ export default function ZoneModel(props: ZoneDataProps) {
             continue;
           }
 
-          obj.position.set(update.pos.x, update.pos.y * -1, update.pos.z);
+          obj.position.set(update.pos.x, update.pos.y, update.pos.z);
           obj.updateMatrix();
           mesh.setMatrixAt(showCount, obj.matrix);
           if (update.kind == EntityUpdateKind.Position) {
