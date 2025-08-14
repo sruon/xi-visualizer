@@ -498,12 +498,18 @@ export default function ZoneModel(props: ZoneDataProps) {
 
       let showCount = 0;
       if (onlyLatest) {
+        const summarized = summarizedEntityUpdates()[zoneId];
+        const firstZoneTime = summarized.firstTime;
+
         // Skip until last visible update
-        const endTime = hideWidescan ? getPlayTime() : getDiscreteUpperTime();
+        const endTime = isPlaying() ? firstZoneTime + getPlayTime() * 1000 : getDiscreteUpperTime();
 
         let idx = binarySearchLower(updates, endTime, x => x.time);
 
-        while (idx >= 0 && updates[idx].time >= getDiscreteLowerTime()) {
+        const endTimeCutoff = endTime - 90000;
+        const cutoffTime = endTimeCutoff > getDiscreteLowerTime() ? endTimeCutoff : getDiscreteLowerTime();
+
+        while (idx >= 0 && updates[idx].time >= cutoffTime) {
           const update = updates[idx];
           if (update.kind !== EntityUpdateKind.Position && update.kind !== EntityUpdateKind.Widescan) {
             // Only add positional updates
@@ -578,6 +584,8 @@ export default function ZoneModel(props: ZoneDataProps) {
       if (mesh.instanceColor) {
         mesh.instanceColor.needsUpdate = true;
       }
+      mesh.computeBoundingBox();
+      mesh.computeBoundingSphere();
     }
   });
 
