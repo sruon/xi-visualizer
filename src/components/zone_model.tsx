@@ -697,7 +697,7 @@ export default function ZoneModel(props: ZoneDataProps) {
 
     // Area details clicking
     canvasElement.addEventListener("click", event => {
-      if (!getShowAreaDetails() || !event.ctrlKey) {
+      if (!settings.showAreaManager || !getShowAreaDetails() || !event.ctrlKey) {
         return;
       }
 
@@ -746,7 +746,7 @@ export default function ZoneModel(props: ZoneDataProps) {
 
     // Ray clicking
     canvasElement.addEventListener("click", event => {
-      if (getShowAreaDetails() || !event.ctrlKey && !event.shiftKey) {
+      if (!settings.showRayTesting || getShowAreaDetails() || !event.ctrlKey && !event.shiftKey) {
         return;
       }
 
