@@ -51,6 +51,12 @@ export default function ZoneComponent(props: ZoneProps) {
         </Match>
         <Match when={!model.loading && !model.error}>
           <ZoneModel
+            sourceKey={"zone"}
+            defaultSettings={{
+              showAreaManager: false,
+              showInfoBox: true,
+              showRayTesting: true,
+            }}
             zoneData={{
               [props.zone.id]: {
                 id: props.zone.id,
@@ -58,11 +64,10 @@ export default function ZoneComponent(props: ZoneProps) {
                 mesh: model(),
               },
             }}
-            showZoneTools={true}
           >
           </ZoneModel>
         </Match>
       </Switch>
-    </section>
+    </section >
   );
 }

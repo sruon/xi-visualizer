@@ -118,6 +118,11 @@ export default function PacketPage({ }: PacketPageProps) {
         <Match when={getParsedPackets() !== undefined && getZoneModels() !== undefined}>
           <button onClick={_ => setParsedPackets(undefined)}>Clear packets</button>
           <ZoneModel
+            sourceKey="packet"
+            defaultSettings={{
+              showAreaManager: true,
+              showInfoBox: false,
+            }}
             entityUpdates={getParsedPackets().zoneEntityUpdates}
             clientUpdates={getParsedPackets().clientUpdates}
             zoneData={getZoneModels()}>

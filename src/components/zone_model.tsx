@@ -1,7 +1,7 @@
 import CameraControls from "camera-controls";
-import { IoHelpCircle } from "solid-icons/io";
-import { batch, createEffect, createMemo, createSignal, mapArray, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
-import { createStore, produce, SetStoreFunction, StoreSetter } from "solid-js/store";
+import { IoHelpCircle, IoSettings } from "solid-icons/io";
+import { batch, createEffect, createMemo, createSignal, For, mapArray, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
+import { createMutable, createStore, produce, SetStoreFunction, unwrap } from "solid-js/store";
 import * as THREE from "three";
 import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from "three-mesh-bvh";
 import { FlyControls, MapControls } from "three/examples/jsm/Addons.js";
@@ -18,6 +18,7 @@ import RangeInput from "./range_input";
 import Table from "./table";
 import { ColorKind, colorMesh, createZoneMesh, getHitData, getMapId, markLineCollisions, prepareMeshData, RayHit } from "../graphics/ximesh";
 import { ZoneInfoBox, TargetInfo } from "./zone_info_box";
+import { ZoneRayTestingBox } from "./zone_ray_testing_box";
 
 // @ts-ignore
 import Stats from "three/addons/libs/stats.module.js";
@@ -29,10 +30,20 @@ THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
 interface ZoneDataProps {
   zoneData: ByZone<ZoneData>;
-  showZoneTools?: boolean;
+  sourceKey?: string,
+  defaultSettings?: ZoneModelSettingsDefault;
   entityUpdates?: ZoneEntityUpdates;
   clientUpdates?: PositionUpdate[];
 }
+
+interface ZoneModelSettings {
+  showInfoBox: boolean,
+  showAreaManager: boolean,
+  showRayTesting: boolean,
+  colorKind: ColorKind,
+}
+
+type ZoneModelSettingsDefault = Partial<ZoneModelSettings>;
 
 export interface ZoneData {
   id: number;
@@ -68,8 +79,40 @@ interface NormalizedEntityUpdates {
   lastTime: number;
 }
 
+const enum MenuPopup {
+  None = 0,
+  Settings = 1,
+  Help = 2,
+}
+
 export default function ZoneModel(props: ZoneDataProps) {
-  const [getShowHelp, setShowHelp] = createSignal<boolean>(false);
+  const [getMenuPopup, setMenuPopup] = createSignal<MenuPopup>(MenuPopup.None);
+
+  const localStorageSettingsKey = props.sourceKey ? `xi-visualizer.settings.${props.sourceKey}` : "xi-visualizer.settings._any";
+  const localStorageSettings: ZoneModelSettings = JSON.parse(localStorage.getItem(localStorageSettingsKey), (k, v) => {
+    if (k == "colorKind") {
+      return parseInt(v);
+    } else {
+      return v;
+    }
+  }) || {};
+
+  const defaultSettings: ZoneModelSettings = {
+    showInfoBox: false,
+    showAreaManager: false,
+    showRayTesting: false,
+    colorKind: ColorKind.Materials,
+    ...props.defaultSettings,
+  }
+
+  const settings = createMutable<ZoneModelSettings>({
+    ...defaultSettings,
+    ...localStorageSettings,
+  });
+
+  createEffect(() => {
+    localStorage.setItem(localStorageSettingsKey, JSON.stringify(settings));
+  });
 
   const zoneIds = Object.keys(props.zoneData);
   const startingZoneId = zoneIds[0] != "0" ? parseInt(zoneIds[0]) : (parseInt(zoneIds[1]) || 0);
@@ -186,7 +229,7 @@ export default function ZoneModel(props: ZoneDataProps) {
     for (const zoneId in props.zoneData) {
       const zoneData = props.zoneData[zoneId];
       const prep = prepMeshData()[zoneId];
-      const mesh = createZoneMesh(zoneData.id, zoneData.mesh, prep, ColorKind.None);
+      const mesh = createZoneMesh(zoneData.id, zoneData.mesh, prep, unwrap(settings).colorKind);
       mesh.visible = false;
 
       zoneMeshes[zoneData.id] = mesh;
@@ -1152,12 +1195,10 @@ export default function ZoneModel(props: ZoneDataProps) {
     </Show>
   );
 
-  const [getColorKind, setColorKind] = createSignal<ColorKind>(ColorKind.Materials);
   const [getStartPos, setStartPos] = createSignal<THREE.Vector3 | undefined>();
   const [getEndPos, setEndPos] = createSignal<THREE.Vector3 | undefined>();
 
   const [getTargetInfo, setTargetInfo] = createSignal<TargetInfo | undefined>();
-
 
   // Start marker mesh
   createEffect(on(getStartPos, (pos?: THREE.Vector3, _prevPos?: THREE.Vector3, prevMesh?: THREE.Mesh) => {
@@ -1263,7 +1304,7 @@ export default function ZoneModel(props: ZoneDataProps) {
     return line;
   }));
 
-  createEffect(on(getColorKind, (colorKind) => {
+  createEffect(on(() => settings.colorKind, (colorKind) => {
     const meshes = zoneMeshes();
     const prep = prepMeshData();
     for (const zoneId of Object.keys(meshes)) {
@@ -1272,85 +1313,7 @@ export default function ZoneModel(props: ZoneDataProps) {
     }
   }));
 
-  const colorKindButton = (colorKind: ColorKind, name: string) => (
-    <button
-      classList={{ "active": getColorKind() == colorKind }}
-      onClick={() => {
-        setColorKind(colorKind);
-      }}>
-      {name}
-    </button>
-  );
-
-  const positionField = (getter: () => THREE.Vector3 | undefined, setter: (val: THREE.Vector3) => THREE.Vector3) => {
-    let copyTimer: number | undefined;
-
-    return <>
-      <input class="w-24 text-center hide-spin-buttons" type="number" lang="en-US"
-        value={getter()?.x}
-        placeholder="x"
-        onInput={(e) => {
-          let pos = getter()?.clone() ?? new THREE.Vector3();
-          pos.x = parseFloat(e.target.value);
-          setter(pos);
-        }}></input>
-
-      <input class="w-24 text-center hide-spin-buttons" type="number" lang="en-US"
-        value={getter()?.y}
-        placeholder="y"
-        onInput={(e) => {
-          let pos = getter()?.clone() ?? new THREE.Vector3();
-          pos.y = parseFloat(e.target.value);
-          setter(pos);
-        }}></input>
-
-      <input class="w-24 text-center hide-spin-buttons" type="number" lang="en-US"
-        value={getter()?.z}
-        placeholder="z"
-        onInput={(e) => {
-          let pos = getter()?.clone() ?? new THREE.Vector3();
-          pos.z = parseFloat(e.target.value);
-          setter(pos);
-        }}></input>
-
-      <button class="w-20" onClick={(e) => {
-        const pos = getter();
-        if (!pos) {
-          return;
-        }
-        let value;
-        if (e.shiftKey) {
-          value = `${pos.x} ${pos.y} ${pos.z}`;
-        } else {
-          value = `${pos.x},${pos.y},${pos.z}`;
-        }
-        navigator.clipboard.writeText(value);
-
-        e.target.textContent = "Copied"
-        if (copyTimer) {
-          clearTimeout(copyTimer);
-        }
-        copyTimer = setTimeout(() => {
-          e.target.textContent = "Copy"
-          copyTimer = undefined;
-        }, 2000);
-      }}>
-        Copy
-      </button>
-
-
-      <button class="w-20" onClick={async () => {
-        let coords = parseCoordinatesToVector3(await navigator.clipboard.readText());
-        if (coords) {
-          setter(coords);
-        }
-      }}>
-        Paste
-      </button>
-    </>
-  };
-
-  const toggleButton = (text: string, setter: (b: boolean) => boolean, getter: () => boolean) => {
+  const toggleButton = (text: string, setter: (b: boolean) => any, getter: () => boolean) => {
     return <label class="inline-flex items-center cursor-pointer select-none"
       onClick={(e) => {
         setter(!getter())
@@ -1362,25 +1325,85 @@ export default function ZoneModel(props: ZoneDataProps) {
     </label>
   }
 
+  const settingsMenu =
+    <div class="pointer-events-auto cursor-pointer bg-black bg-opacity-80 p-2 rounded-tr text-sm flex flex-col gap-2">
+      <div class="flex flex-row items-baseline">
+        <label for="color-select">Coloring:</label>
+        <select
+          id="color-select"
+          value={settings.colorKind}
+          onChange={(ev) => {
+            settings.colorKind = parseInt(ev.target.value);
+          }}
+        >
+          <option value={ColorKind.None}>None</option>
+          <option value={ColorKind.Barriers}>Barriers</option>
+          <option value={ColorKind.Materials}>Materials</option>
+          <option value={ColorKind.Maps}>Map</option>
+          <option value={ColorKind.IsRoofed}>Roofed</option>
+        </select>
+      </div>
+
+      {toggleButton("Area Manager", (v) => {
+        settings.showAreaManager = v;
+      }, () => settings.showAreaManager)}
+
+      {toggleButton("Info Box", (v) => {
+        settings.showInfoBox = v;
+      }, () => settings.showInfoBox)}
+
+      {toggleButton("Ray Testing", (v) => {
+        settings.showRayTesting = v;
+      }, () => settings.showRayTesting)}
+
+      <button onClick={() => {
+        for (const key in defaultSettings) {
+          settings[key] = defaultSettings[key];
+        }
+        localStorage.removeItem(localStorageSettingsKey);
+      }}>Reset settings</button>
+
+      <button onClick={() => setMenuPopup(MenuPopup.None)}>Close settings</button>
+    </div>;
+
+  const helpMenu =
+    <div class="pointer-events-auto cursor-pointer bg-black bg-opacity-80 p-2 rounded-tr text-sm" onClick={() => setMenuPopup(MenuPopup.None)}>
+      Click this to hide it again.
+      <ul class="list-disc list-inside">
+        <li>
+          <b>Move/rotate camera:</b> Left/right-click and drag
+        </li>
+        <li>
+          <b>Area editing:</b> Most of the contents of the Area Manager can be clicked/edited.
+        </li>
+        <li>
+          <b>Add a new area node:</b>{" "}
+          With the Area Manager expanded: CTRL + left-click. If an existing node is selected, the new one will be inserted after it. While having a node selected, you can also press
+          SHIFT + N to create a copy.
+        </li>
+        <li>
+          <b>Select a node:</b> Select a node by either clicking it in the world, or on it in the Area Manager.
+        </li>
+        <li>
+          <b>Move a node:</b>{" "}
+          Select the node, then hold SHIFT + arrow keys to move it along the X- and/or Z-axis. Hold CTRL to move it faster. The coordinates can also be
+          edited directly in the Area Manager.
+        </li>
+        <li>
+          <b>Area to Lua:</b> Click the copy button next to an area in the Area Manager to get Lua code defining it into your clipboard.
+        </li>
+        <li>
+          <b>Lua to areas:</b> Paste text containing Lua code that defines the areas (i.e. a zone Setup.lua file)
+        </li>
+      </ul>
+    </div>;
+
   return (
     <div class="w-full h-full">
       <div class="m-auto relative" style={{ height: "60vh" }}>
         <canvas class="block w-full h-full" ref={canvasElement}>
         </canvas>
-        <AreaMenu
-          showDetails={getShowAreaDetails()}
-          setShowDetails={setShowAreaDetails}
-          areas={areas}
-          setAreas={setAreas}
-          selectedAreaIdx={getSelectedAreaIdx()}
-          setSelectedAreaIdx={setSelectedAreaIdx}
-          selectedSubPolygonIdx={getSelectedSubPolygonIdx()}
-          setSelectedSubPolygonIdx={setSelectedSubPolygonIdx}
-          selectedVertexIdx={getSelectedVertexIdx()}
-          setSelectedVertexIdx={setSelectedVertexIdx}
-        >
-        </AreaMenu>
-        <ZoneInfoBox targetInfo={getTargetInfo()}></ZoneInfoBox>
+
         <div
           class="absolute hidden p-1 text-white bg-black pointer-events-none rounded font-mono opacity-70 text-sm noselect"
           ref={coordLabelRef}
@@ -1392,80 +1415,63 @@ export default function ZoneModel(props: ZoneDataProps) {
         >
         </div>
 
-        {/* Helper menu */}
-        <div class="absolute top-0 left-0 pointer-events-none h-full flex flex-col-reverse" style={{ width: "40%" }}>
-          <Show
-            when={getShowHelp()}
-            fallback={
-              <div class="pointer-events-auto cursor-pointer p-1" onClick={() => setShowHelp(true)}>
+        {/* Area Manager */}
+        <Show when={settings.showAreaManager}>
+          <AreaMenu
+            showDetails={getShowAreaDetails()}
+            setShowDetails={setShowAreaDetails}
+            areas={areas}
+            setAreas={setAreas}
+            selectedAreaIdx={getSelectedAreaIdx()}
+            setSelectedAreaIdx={setSelectedAreaIdx}
+            selectedSubPolygonIdx={getSelectedSubPolygonIdx()}
+            setSelectedSubPolygonIdx={setSelectedSubPolygonIdx}
+            selectedVertexIdx={getSelectedVertexIdx()}
+            setSelectedVertexIdx={setSelectedVertexIdx}
+          >
+          </AreaMenu>
+        </Show>
+
+        {/* Info box */}
+        <Show when={settings.showInfoBox}>
+          <ZoneInfoBox targetInfo={getTargetInfo()}></ZoneInfoBox>
+        </Show>
+
+        {/* Ray testing */}
+        <Show when={settings.showRayTesting}>
+          <ZoneRayTestingBox
+            getStartPos={getStartPos}
+            setStartPos={setStartPos}
+            getEndPos={getEndPos}
+            setEndPos={setEndPos}
+          ></ZoneRayTestingBox>
+        </Show>
+
+        {/* Performance stats */}
+        <Show when={getMenuPopup() == MenuPopup.Settings}>
+          <div class="absolute top-0 left-0 flex flex-row w-full">
+            {import.meta.env.DEV ? stats.dom : undefined}
+          </div>
+        </Show>
+
+        {/* Settings and help menu */}
+        <div class="absolute bottom-0 left-0 pointer-events-none flex flex-row" style={{ width: "40%" }}>
+          <Switch>
+            <Match when={getMenuPopup() == MenuPopup.None}>
+              <div class="pointer-events-auto cursor-pointer p-1" onClick={() => setMenuPopup(MenuPopup.Settings)}>
+                <IoSettings size={20} title="Settings"></IoSettings>
+              </div>
+              <div class="pointer-events-auto cursor-pointer p-1" onClick={() => setMenuPopup(MenuPopup.Help)}>
                 <IoHelpCircle size={20} title="Mouse and keyboard help"></IoHelpCircle>
               </div>
-            }
-          >
-            {import.meta.env.DEV ? stats.dom : undefined}
-            <div class="pointer-events-auto cursor-pointer bg-black bg-opacity-80 p-2 rounded-tr text-sm" onClick={() => setShowHelp(false)}>
-              Click this to hide it again.
-              <ul class="list-disc list-inside">
-                <li>
-                  <b>Move/rotate camera:</b> Left/right-click and drag
-                </li>
-                <li>
-                  <b>Area editing:</b> Most of the contents of the Area Manager can be clicked/edited.
-                </li>
-                <li>
-                  <b>Add a new area node:</b>{" "}
-                  With the Area Manager expanded: CTRL + left-click. If an existing node is selected, the new one will be inserted after it. While having a node selected, you can also press
-                  SHIFT + N to create a copy.
-                </li>
-                <li>
-                  <b>Select a node:</b> Select a node by either clicking it in the world, or on it in the Area Manager.
-                </li>
-                <li>
-                  <b>Move a node:</b>{" "}
-                  Select the node, then hold SHIFT + arrow keys to move it along the X- and/or Z-axis. Hold CTRL to move it faster. The coordinates can also be
-                  edited directly in the Area Manager.
-                </li>
-                <li>
-                  <b>Area to Lua:</b> Click the copy button next to an area in the Area Manager to get Lua code defining it into your clipboard.
-                </li>
-                <li>
-                  <b>Lua to areas:</b> Paste text containing Lua code that defines the areas (i.e. a zone Setup.lua file)
-                </li>
-              </ul>
-            </div>
-          </Show>
+            </Match>
+            <Match when={getMenuPopup() == MenuPopup.Settings}>{settingsMenu}</Match>
+            <Match when={getMenuPopup() == MenuPopup.Help}>{helpMenu}</Match>
+          </Switch>
         </div>
       </div>
 
-      <Show when={props.showZoneTools}>
-        <div class="flex items-start justify-around pt-3 flex-wrap">
-          <div class="flex flex-col items-center pb-5">
-            <span class="font-semibold">Colors</span>
-            <div class="flex items-center justify-center gap-2 flex-wrap">
-              {colorKindButton(ColorKind.None, "Clear")}
-              {colorKindButton(ColorKind.Barriers, "Barriers")}
-              {colorKindButton(ColorKind.Materials, "Materials")}
-              {colorKindButton(ColorKind.Maps, "Map")}
-              {colorKindButton(ColorKind.IsRoofed, "Roofed")}
-            </div>
-          </div>
-
-          <div class="flex flex-col items-center">
-            <span class="font-semibold">Ray testing</span>
-            <div class="text-sm">CTRL- and SHIFT-clicking works with Area Manager minimized</div>
-            <div class="flex items-center gap-1 flex-wrap">
-              <span class="w-32">Start (CTRL+click):</span>
-              {positionField(getStartPos, setStartPos)}
-            </div>
-
-            <div class="flex items-center gap-1 flex-wrap">
-              <span class="w-32">End (SHIFT+click):</span>
-              {positionField(getEndPos, setEndPos)}
-            </div>
-          </div>
-        </div>
-      </Show>
-
+      {/* Entity controls below the viewing area */}
       <Show when={props.entityUpdates}>
         <Show
           fallback={zoneSelector}
