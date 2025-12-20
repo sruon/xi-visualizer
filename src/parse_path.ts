@@ -2,13 +2,13 @@ import { EntityUpdate, EntityUpdateKind, Position, PositionUpdate } from "./pars
 
 export const enum PathPartKind {
   Start,
-  End,
   NewDirection,
+  End,
+  Interrupted,
 }
 
 export interface PathStart {
   kind: PathPartKind.Start;
-  time: number;
   pauseTime: number;
   rot: number;
   rotDiff: number;
@@ -16,7 +16,6 @@ export interface PathStart {
 
 export interface PathEnd {
   kind: PathPartKind.End;
-  time: number;
   moveTime: number;
   pathDist: number;
   legDist: number;
@@ -26,20 +25,31 @@ export interface PathEnd {
 
 export interface PathDirection {
   kind: PathPartKind.NewDirection;
-  time: number;
   walkTime: number;
   walkDist: number;
   rot: number;
   rotDiff: number;
 }
 
-export type PathPart = PathStart | PathEnd | PathDirection;
+export interface PathInterrupted {
+  kind: PathPartKind.Interrupted;
+}
+export interface PathBase {
+  pos: Position;
+  time: number;
+}
+
+export type PathPart = PathBase & (PathStart | PathDirection | PathEnd | PathInterrupted);
+
+interface PrevUpdates {
+  one?: PositionUpdate,
+  move?: PositionUpdate,
+  stop?: PositionUpdate,
+  rot?: PositionUpdate,
+}
 
 export function parsePath(updates: EntityUpdate[]): PathPart[] {
-  let prevUpdate: PositionUpdate;
-  let prevMoveUpdate: PositionUpdate;
-  let prevStopUpdate: PositionUpdate;
-  let prevRotUpdate: PositionUpdate;
+  let prev: PrevUpdates = {}
 
   let distMoved = 0;
   let timeSinceLastMove = 0;
@@ -49,71 +59,78 @@ export function parsePath(updates: EntityUpdate[]): PathPart[] {
   let path: PathPart[] = [];
   for (const update of updates) {
     if (update.kind === EntityUpdateKind.OutOfRange || update.kind === EntityUpdateKind.Despawn) {
-      prevUpdate = undefined;
-      prevMoveUpdate = undefined;
-      prevStopUpdate = undefined;
-      prevRotUpdate = undefined;
+      if (prev.rot) {
+        path.push({
+          kind: PathPartKind.Interrupted,
+          pos: prev.one.pos,
+          time: update.time,
+        });
+      }
+      prev = {}
       continue;
     }
     if (update.kind !== EntityUpdateKind.Position) {
       continue;
     }
 
-    if (!prevUpdate) {
-      prevUpdate = update;
+    if (!prev.one) {
+      prev.one = update;
       continue;
     }
 
-    distMoved = calcDistance(update.pos, prevUpdate.pos);
+    distMoved = calcDistance(update.pos, prev.one.pos);
 
     if (distMoved > 0.1) {
-      if (prevMoveUpdate) {
-        timeSinceLastMove = update.time - prevMoveUpdate.time;
+      if (prev.move) {
+        timeSinceLastMove = update.time - prev.move.time;
 
         if (timeSinceLastMove > 3000) {
-          if (prevStopUpdate) {
-            moveTime = prevMoveUpdate.time - prevStopUpdate.time;
-            stopDist = calcDistance(prevMoveUpdate.pos, prevStopUpdate.pos);
+          if (prev.stop) {
+            moveTime = prev.move.time - prev.stop.time;
+            stopDist = calcDistance(prev.move.pos, prev.stop.pos);
             path.push({
               kind: PathPartKind.End,
-              time: prevMoveUpdate.time,
+              pos: prev.move.pos,
+              time: prev.move.time,
               moveTime: moveTime,
               pathDist: stopDist,
-              legDist: calcDistance(prevRotUpdate.pos, prevMoveUpdate.pos),
-              startPos: prevStopUpdate.pos,
-              endPos: prevMoveUpdate.pos,
+              legDist: calcDistance(prev.rot.pos, prev.move.pos),
+              startPos: prev.stop.pos,
+              endPos: prev.move.pos,
             });
 
             path.push({
               kind: PathPartKind.Start,
+              pos: update.pos,
               time: update.time,
               pauseTime: timeSinceLastMove,
               rot: update.pos.rotation!,
-              rotDiff: calcRotDiff(prevMoveUpdate.pos.rotation!, update.pos.rotation!),
+              rotDiff: calcRotDiff(prev.move.pos.rotation!, update.pos.rotation!),
             });
           }
 
-          prevStopUpdate = update;
-          prevRotUpdate = update;
+          prev.stop = update;
+          prev.rot = update;
         }
       }
 
-      prevMoveUpdate = update;
+      prev.move = update;
     }
 
-    if (prevRotUpdate && update.pos.rotation != prevRotUpdate.pos.rotation) {
+    if (prev.rot && update.pos.rotation != prev.rot.pos.rotation) {
       path.push({
         kind: PathPartKind.NewDirection,
         time: update.time,
+        pos: update.pos,
         rot: update.pos.rotation!,
-        rotDiff: calcRotDiff(prevRotUpdate.pos.rotation!, update.pos.rotation!),
-        walkDist: calcDistance(prevRotUpdate.pos, update.pos),
-        walkTime: update.time - prevRotUpdate.time,
+        rotDiff: calcRotDiff(prev.rot.pos.rotation!, update.pos.rotation!),
+        walkDist: calcDistance(prev.rot.pos, update.pos),
+        walkTime: update.time - prev.rot.time,
       });
-      prevRotUpdate = update;
+      prev.rot = update;
     }
 
-    prevUpdate = update;
+    prev.one = update;
   }
 
   return path;

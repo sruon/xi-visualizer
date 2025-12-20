@@ -136,7 +136,7 @@ export class PacketParser {
     let list = entityUpdates[entityKey] = entityUpdates[entityKey] || [];
 
     const updateMask = this.extractByte(lines, 0x0A);
-    if ((updateMask & 0x20) > 0) {
+    if ((updateMask & 0x20) > 0 && this.currentShownEntities[entityKey]) {
       // Despawn packet
       delete this.currentShownEntities[entityKey];
       const update = {
@@ -169,18 +169,10 @@ export class PacketParser {
     };
     list.push(update);
 
-    if (this.isOutOfRangeFromClient(pos)) {
-      list.push({
-        kind: EntityUpdateKind.OutOfRange,
-        time: timestamp,
-      });
-      delete this.currentShownEntities[entityKey];
-    } else {
-      this.currentShownEntities[entityKey] = {
-        time: update.time,
-        pos,
-      };
-    }
+    this.currentShownEntities[entityKey] = {
+      time: update.time,
+      pos,
+    };
   }
 
   private parseEntityWidescan(lines: string[]) {
@@ -235,24 +227,6 @@ export class PacketParser {
       kind: EntityUpdateKind.Position,
       time: timestamp,
       pos,
-    });
-
-    Object.keys(this.currentShownEntities).forEach(entityKey => {
-      if (!this.currentShownEntities[entityKey]) {
-        return;
-      }
-      const entityInfo = this.currentShownEntities[entityKey];
-      if (
-        this.isOutOfRangeFromClient(entityInfo.pos)
-      ) {
-        let entityPositions = this.zoneEntityUpdates[this.currentZoneId] = this.zoneEntityUpdates[this.currentZoneId] || {};
-        let list = entityPositions[entityKey] = entityPositions[entityKey] || [];
-        list.push({
-          kind: EntityUpdateKind.OutOfRange,
-          time: entityInfo.time + 1000,
-        });
-        delete this.currentShownEntities[entityKey];
-      }
     });
   }
 

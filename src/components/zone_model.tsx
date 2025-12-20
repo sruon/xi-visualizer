@@ -19,6 +19,7 @@ import Table from "./table";
 import { ColorKind, colorMesh, createZoneMesh, getHitData, getMapId, markLineCollisions, prepareMeshData, RayHit } from "../graphics/ximesh";
 import { ZoneInfoBox, TargetInfo } from "./zone_info_box";
 import { ZoneRayTestingBox } from "./zone_ray_testing_box";
+import { parsePath, PathPartKind } from "../parse_path";
 
 // @ts-ignore
 import Stats from "three/addons/libs/stats.module.js";
@@ -122,6 +123,7 @@ export default function ZoneModel(props: ZoneDataProps) {
 
   const [getShowWidescan, setShowWidescan] = createSignal<boolean>(true);
   const [getShowRendered, setShowRendered] = createSignal<boolean>(true);
+  const [getShowRenderedPaths, setShowRenderedPaths] = createSignal<boolean>(false);
   const [getShowOnlyLatest, setShowOnlyLatest] = createSignal<boolean>(false);
 
   const [getShowDiscrete, setShowDiscrete] = createSignal<boolean>(true);
@@ -330,6 +332,10 @@ export default function ZoneModel(props: ZoneDataProps) {
 
   // Common entity setup
   const mobColor = new THREE.Color(0xFF0000);
+  const pathStartColor = new THREE.Color(0x55AA55);
+  const pathDirectionColor = new THREE.Color(0xAAAA00);
+  const pathEndColor = new THREE.Color(0x5555AA);
+  const pathInterruptColor = new THREE.Color(0xFF5555);
   const clientColor = new THREE.Color(0x0000FF);
   const npcColor = new THREE.Color(0x00FF00);
   const widescanColor = new THREE.Color(0xE000DC);
@@ -520,6 +526,111 @@ export default function ZoneModel(props: ZoneDataProps) {
     return discreteEntityMeshes;
   });
 
+  interface EntityPath {
+    line: THREE.Line,
+    pointMesh: THREE.InstancedMesh,
+    startTime: number,
+  }
+
+  const entityPathLines = createMemo(() => {
+    let pathLines: ByZone<{ [entityKey: string]: EntityPath[]; }> = {};
+
+    const lineMat = new THREE.LineBasicMaterial({
+      color: 0xFF0000,
+      linewidth: 1.5,
+      depthTest: true,
+    });
+    const pointMat = new THREE.MeshBasicMaterial();
+    const pointGeo = new THREE.BoxGeometry();
+
+    const obj = new THREE.Object3D();
+
+    const copyAdjustedPos = (p: Position) => {
+      return { x: p.x, y: p.y - 1, z: p.z };
+    }
+
+    for (const zoneId in adjustedEntityUpdates()) {
+      const entityLines = (pathLines[zoneId] = pathLines[zoneId] || {});
+
+      for (const entityKey in adjustedEntityUpdates()[zoneId]) {
+        entityLines[entityKey] = [];
+
+        const updates = adjustedEntityUpdates()[zoneId][entityKey];
+        const parts = parsePath(updates);
+
+        let currentParts: PathPart[] = [];
+
+        const endPath = () => {
+          if (currentParts.length <= 1) {
+            currentParts = []
+            return;
+          }
+
+          const lineGeo = new THREE.BufferGeometry().setFromPoints(currentParts.map(p => copyAdjustedPos(p.pos)));
+          const line = new THREE.Line(lineGeo, lineMat);
+          line.visible = true;
+
+          const pointMesh = new THREE.InstancedMesh(pointGeo, pointMat, currentParts.length);
+          pointMesh.visible = true;
+
+          for (const idx in currentParts) {
+            const part = currentParts[idx]
+            const pos = copyAdjustedPos(part.pos);
+            obj.position.set(pos.x, pos.y, pos.z);
+            obj.updateMatrix();
+            pointMesh.setMatrixAt(idx, obj.matrix);
+
+            if (part.kind == PathPartKind.Start) {
+              pointMesh.setColorAt(idx, pathStartColor);
+            } else if (part.kind == PathPartKind.NewDirection) {
+              pointMesh.setColorAt(idx, pathDirectionColor);
+            } else if (part.kind == PathPartKind.End) {
+              pointMesh.setColorAt(idx, pathEndColor);
+            } else if (part.kind == PathPartKind.Interrupted) {
+              pointMesh.setColorAt(idx, pathInterruptColor);
+            }
+          }
+          pointMesh.instanceColor.needsUpdate = true;
+          pointMesh.instanceMatrix.needsUpdate = true;
+
+          entityLines[entityKey].push({
+            line,
+            startTime: currentParts[0]?.time,
+            pointMesh,
+          });
+
+          currentParts = []
+        }
+
+        for (const part of parts) {
+          if (part.kind == PathPartKind.Start) {
+            endPath();
+            currentParts = [part];
+          } else if (part.kind == PathPartKind.NewDirection) {
+            currentParts.push(part);
+          } else if (part.kind == PathPartKind.End || part.kind == PathPartKind.Interrupted) {
+            currentParts.push(part);
+            endPath();
+          }
+        }
+      }
+    }
+
+    onCleanup(() => {
+      for (const zoneId in pathLines) {
+        for (const entityKey in pathLines[zoneId]) {
+          for (const path of pathLines[zoneId][entityKey]) {
+            scene().remove(path.line);
+            scene().remove(path.pointMesh);
+          }
+          pathLines[zoneId][entityKey] = [];
+        }
+      }
+    });
+
+    return pathLines;
+  });
+
   // Show entities at different points in time
   createEffect(() => {
     if (!props.entityUpdates || !getShowDiscrete()) {
@@ -531,17 +642,36 @@ export default function ZoneModel(props: ZoneDataProps) {
     let obj = new THREE.Object3D();
     const hideWidescan = !getShowWidescan();
     const hideRendered = !getShowRendered();
+    const showPaths = getShowRenderedPaths();
     const onlyLatest = getShowOnlyLatest();
     for (const entityKey in adjustedEntityUpdates()[zoneId]) {
       if (entitySettings[entityKey]?.hidden) {
         continue;
       }
 
-      const mesh = meshes[entityKey];
       const updates = adjustedEntityUpdates()[zoneId][entityKey];
-
+      const mesh = meshes[entityKey];
       let showCount = 0;
+
+      // Show paths from rendered positions
+      if (showPaths) {
+        // Skip until first visible update
+        let pathInfo = entityPathLines()[zoneId][entityKey];
+
+        for (const path of pathInfo) {
+          if (path.startTime < getDiscreteLowerTime() || path.startTime >= getDiscreteUpperTime()) {
+            scene().remove(path.line);
+            scene().remove(path.pointMesh);
+          } else {
+            scene().add(path.line);
+            scene().add(path.pointMesh);
+          }
+        }
+      }
+
       if (onlyLatest) {
+        // Only show latest position
+
         const summarized = summarizedEntityUpdates()[zoneId];
         const firstZoneTime = summarized.firstTime;
 
@@ -586,39 +716,49 @@ export default function ZoneModel(props: ZoneDataProps) {
         }
 
       } else {
-        // Skip until first visible update
-        let idx = binarySearchLower(updates, getDiscreteLowerTime(), x => x.time);
+        // Show all positions
 
-        // Add until last visible update
-        while (idx < updates.length && updates[idx].time <= getDiscreteUpperTime()) {
+        // Add from first visible update until last visible update
+        for (
+          let idx = binarySearchLower(updates, getDiscreteLowerTime(), x => x.time);
+          idx < updates.length && updates[idx].time <= getDiscreteUpperTime();
+          idx++
+        ) {
           const update = updates[idx];
-          if (update.kind !== EntityUpdateKind.Position && update.kind !== EntityUpdateKind.Widescan) {
-            // Only add positional updates
-            idx++;
-            continue;
-          }
-
           if (hideWidescan && update.kind == EntityUpdateKind.Widescan) {
             // Widescan is hidden
-            idx++;
             continue;
           }
 
           if (hideRendered && update.kind == EntityUpdateKind.Position) {
             // Entity updates is hidden
-            idx++;
             continue;
           }
 
-          obj.position.set(update.pos.x, update.pos.y, update.pos.z);
+          let pos: Position | undefined = update.pos;
+          if (!pos) {
+            if (!hideRendered || showPaths) {
+              continue;
+            }
+
+            pos = updates[idx - 1]?.pos;
+            if (!pos) {
+              continue;
+            }
+          }
+
+          obj.position.set(pos.x, pos.y, pos.z);
           obj.updateMatrix();
           mesh.setMatrixAt(showCount, obj.matrix);
           if (update.kind == EntityUpdateKind.Position) {
             mesh.setColorAt(showCount, mobColor);
-          } else {
+          } else if (update.kind == EntityUpdateKind.Widescan) {
             mesh.setColorAt(showCount, widescanColor);
+          } else if (update.kind == EntityUpdateKind.OutOfRange) {
+            mesh.setColorAt(showCount, pathDirectionColor);
+          } else if (update.kind == EntityUpdateKind.Despawn) {
+            mesh.setColorAt(showCount, pathStartColor);
           }
-          idx++;
           showCount++;
         }
       }
@@ -661,6 +801,12 @@ export default function ZoneModel(props: ZoneDataProps) {
       const entityId = parseInt(entityKey.split("-")[1]);
       const zoneId = (entityId >> 12) & 0x01ff;
       discreteEntityMeshes()[zoneId][entityKey].visible = getShowDiscrete() && !entitySettings[entityKey].hidden;
+      if (getShowRenderedPaths()) {
+        for (const path of entityPathLines()[zoneId][entityKey]) {
+          path.line.visible = !entitySettings[entityKey].hidden;
+          path.pointMesh.visible = !entitySettings[entityKey].hidden;
+        }
+      }
     }
   });
 
@@ -762,7 +908,7 @@ export default function ZoneModel(props: ZoneDataProps) {
 
       for (let i = 0; i < hitsData.length; i++) {
         const hitData = hitsData[i];
-        console.log(`======================= Hit ${i} =======================`)
+        console.log(`======================= Hit ${i} ======================= `)
         console.log("Hit", hitData.hit);
         console.log("Block", hitData.block);
         console.log("Placement", hitData.placement);
@@ -821,9 +967,9 @@ export default function ZoneModel(props: ZoneDataProps) {
         placement: hitData.placement,
       });
 
-      coordLabelRef.textContent = `${hitData.hit.x.toFixed(1)}, ${(hitData.hit.y * -1).toFixed(1)}, ${(hitData.hit.z * -1).toFixed(1)}`;
-      coordLabelRef.style.left = `${screenMouse.x + 20}px`;
-      coordLabelRef.style.top = `${screenMouse.y - 20}px`;
+      coordLabelRef.textContent = `${hitData.hit.x.toFixed(1)}, ${(hitData.hit.y * -1).toFixed(1)}, ${(hitData.hit.z * -1).toFixed(1)} `;
+      coordLabelRef.style.left = `${screenMouse.x + 20} px`;
+      coordLabelRef.style.top = `${screenMouse.y - 20} px`;
       coordLabelRef.style.display = "block";
     } else {
       coordLabelRef.style.display = "none";
@@ -1047,7 +1193,7 @@ export default function ZoneModel(props: ZoneDataProps) {
       if (getSelectedAreaIdx() !== i) {
         // Add area labels for non-selected areas
         const div = document.createElement("div");
-        div.textContent = `Area ${i + 1}`;
+        div.textContent = `Area ${i + 1} `;
         div.className = "vertex-label noselect pointer-events-auto cursor-pointer text-sm font-mono";
         div.onclick = () => {
           setSelectedAreaIdx(i);
@@ -1319,7 +1465,7 @@ export default function ZoneModel(props: ZoneDataProps) {
         setter(!getter())
         e.preventDefault();
       }}>
-      <input type="checkbox" class="sr-only peer" checked={getter()} onClick={() => { }} />
+      <input type="checkbox" class="sr-only peer" checked={getter()} />
       <div class="relative w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-blue-600 dark:peer-checked:bg-blue-600"></div>
       <span class="ms-1 text-sm font-medium">{text}</span>
     </label>
@@ -1589,6 +1735,7 @@ export default function ZoneModel(props: ZoneDataProps) {
               ),
               _rows => toggleButton("Widescan", setShowWidescan, getShowWidescan),
               _rows => toggleButton("Rendered", setShowRendered, getShowRendered),
+              _rows => toggleButton("Rendered paths", setShowRenderedPaths, getShowRenderedPaths),
               _rows => toggleButton("Only latest", setShowOnlyLatest, getShowOnlyLatest),
               zoneSelector,
             ]}
