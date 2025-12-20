@@ -340,6 +340,7 @@ export default function ZoneModel(props: ZoneDataProps) {
   const npcColor = new THREE.Color(0x00FF00);
   const widescanColor = new THREE.Color(0xE000DC);
   const geo = new THREE.CapsuleGeometry();
+  const ROT_TO_RADIANS = Math.PI * 2 / 256;
 
   // Setup animations for entities
   const mixers = createMemo(() => {
@@ -541,12 +542,15 @@ export default function ZoneModel(props: ZoneDataProps) {
       depthTest: true,
     });
     const pointMat = new THREE.MeshBasicMaterial();
-    const pointGeo = new THREE.BoxGeometry();
+    const pointSize = 2
+    const pointGeo = new THREE.ConeGeometry(pointSize / 4, pointSize);
+    pointGeo.rotateZ(-Math.PI / 2);
+    pointGeo.translate(pointSize / 2, 0, 0);
 
     const obj = new THREE.Object3D();
 
     const copyAdjustedPos = (p: Position) => {
-      return { x: p.x, y: p.y - 1, z: p.z };
+      return { x: p.x, y: p.y - 2.25, z: p.z };
     }
 
     for (const zoneId in adjustedEntityUpdates()) {
@@ -573,10 +577,17 @@ export default function ZoneModel(props: ZoneDataProps) {
           const pointMesh = new THREE.InstancedMesh(pointGeo, pointMat, currentParts.length);
           pointMesh.visible = true;
 
+          let lastRot = 0;
+
           for (const idx in currentParts) {
             const part = currentParts[idx]
+
             const pos = copyAdjustedPos(part.pos);
             obj.position.set(pos.x, pos.y, pos.z);
+
+            lastRot = part?.rot ?? lastRot;
+            obj.rotation.y = ROT_TO_RADIANS * lastRot;
+
             obj.updateMatrix();
             pointMesh.setMatrixAt(idx, obj.matrix);
 
