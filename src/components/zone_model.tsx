@@ -1659,7 +1659,7 @@ export default function ZoneModel(props: ZoneDataProps) {
     </div>;
 
   return (
-    <div class="zone_model_layout">
+    <div classList={{ "zone_model_layout": props.entityUpdates }}>
 
       <div class="relative" style={{ height: "70vh" }}>
         <canvas class="block w-full h-full" ref={canvasElement}>
@@ -1732,48 +1732,49 @@ export default function ZoneModel(props: ZoneDataProps) {
         </div>
       </div>
 
-      <div style={{ "max-height": "70vh", "min-width": "70ch" }}>
-        <Table
-          inputRows={currentEntityUpdates().entityRows ?? []}
-          columns={[
-            { name: "Name", key: "name" },
-            { name: "ID", key: "id" },
-            { name: "Index", key: "index" },
-            { name: "Count", key: "updateCount", defaultSortAsc: false },
-          ]}
-          defaultSortColumn="index"
-          defaultSortAsc={true}
-          additionalColumns={[
-            {
-              name: "Visible",
-              content: v => (
-                <input
-                  type="checkbox"
-                  checked={!entitySettings[v.entityKey]?.hidden}
-                />
-              ),
-              onClick: (filteredRows) => {
-                const anyChecked = filteredRows.find(r => !entitySettings[r.entityKey]?.hidden);
-                const newValue = !!anyChecked;
-                batch(() => filteredRows.forEach(v => setEntitySettings(v.entityKey, { hidden: newValue })))
-              }
-            },
-          ]}
-          onRowClick={v => {
-            setEntitySettings(v.entityKey, {
-              hidden: !entitySettings[v.entityKey]?.hidden,
-            });
-          }}
-          headerElements={[
-            <button onClick={focusVisible}>Focus visible</button>,
-            zoneSelector,
-          ]}
-        >
-        </Table>
-      </div>
-
-      {/* Entity controls below the viewing area */}
       <Show when={props.entityUpdates}>
+        {/* Table of entities in packets */}
+        <div style={{ "max-height": "70vh", "min-width": "70ch" }}>
+          <Table
+            inputRows={currentEntityUpdates().entityRows ?? []}
+            columns={[
+              { name: "Name", key: "name" },
+              { name: "ID", key: "id" },
+              { name: "Index", key: "index" },
+              { name: "Count", key: "updateCount", defaultSortAsc: false },
+            ]}
+            defaultSortColumn="index"
+            defaultSortAsc={true}
+            additionalColumns={[
+              {
+                name: "Visible",
+                content: v => (
+                  <input
+                    type="checkbox"
+                    checked={!entitySettings[v.entityKey]?.hidden}
+                  />
+                ),
+                onClick: (filteredRows) => {
+                  const anyChecked = filteredRows.find(r => !entitySettings[r.entityKey]?.hidden);
+                  const newValue = !!anyChecked;
+                  batch(() => filteredRows.forEach(v => setEntitySettings(v.entityKey, { hidden: newValue })))
+                }
+              },
+            ]}
+            onRowClick={v => {
+              setEntitySettings(v.entityKey, {
+                hidden: !entitySettings[v.entityKey]?.hidden,
+              });
+            }}
+            headerElements={[
+              <button onClick={focusVisible}>Focus visible</button>,
+              zoneSelector,
+            ]}
+          >
+          </Table>
+        </div>
+
+        {/* Entity controls below the viewing area */}
         <Show
           fallback={zoneSelector}
           when={getSelectedZone() in summarizedEntityUpdates()}
