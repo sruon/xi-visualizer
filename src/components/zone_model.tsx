@@ -624,10 +624,8 @@ export default function ZoneModel(props: ZoneDataProps) {
 
           const lineGeo = new THREE.BufferGeometry().setFromPoints(currentParts.map(p => copyAdjustedPos(p.pos)));
           const line = new THREE.Line(lineGeo, lineMat);
-          line.visible = true;
 
           const pointMesh = new THREE.InstancedMesh(pointGeo, pointMat, currentParts.length);
-          pointMesh.visible = true;
 
           let lastRot = 0;
           let pointColor: THREE.Color | undefined = undefined;
@@ -864,7 +862,7 @@ export default function ZoneModel(props: ZoneDataProps) {
 
       for (const path of pathInfo) {
         const hidden = entityHidden || path.startTime < getDiscreteLowerTime() || path.startTime >= getDiscreteUpperTime();
-        path.line.visible = !hidden;
+        path.line.visible = updatesSettings.show.pathKinds.lines && !hidden;
         path.pointMesh.visible = !hidden;
       }
     }
