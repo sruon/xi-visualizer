@@ -121,7 +121,7 @@ export default function ZoneModel(props: ZoneDataProps) {
   const startingZoneId = zoneIds[0] != "0" ? parseInt(zoneIds[0]) : (parseInt(zoneIds[1]) || 0);
   const [getSelectedZone, setSelectedZone] = createSignal<number>(startingZoneId);
 
-  const [entitySettings, setEntitySettings] = createStore<EntitiesSettings>();
+  const [entitySettings, setEntitySettings] = createStore<EntitiesSettings>({});
 
   const [getShowWidescan, setShowWidescan] = createSignal<boolean>(true);
   const [getShowRendered, setShowRendered] = createSignal<boolean>(true);
@@ -143,7 +143,7 @@ export default function ZoneModel(props: ZoneDataProps) {
 
   const summarizedEntityUpdates = createMemo(() => {
     if (!props.entityUpdates) {
-      return undefined;
+      return {};
     }
 
     let result: {
@@ -245,12 +245,14 @@ export default function ZoneModel(props: ZoneDataProps) {
       mesh.visible = false;
 
       zoneMeshes[zoneData.id] = mesh;
+      console.log("Adding zone", zoneId)
       scene().add(mesh);
     }
 
     onCleanup(() => {
+      setEntitySettings({});
       for (const zoneId in zoneMeshes) {
-        console.log("Disposing zone " + zoneId);
+        console.log("Disposing zone", zoneId);
         const mesh = zoneMeshes[zoneId];
         scene().remove(mesh);
         cleanupNode(mesh);
@@ -849,7 +851,10 @@ export default function ZoneModel(props: ZoneDataProps) {
     for (const entityKey in entitySettings) {
       const entityId = parseInt(entityKey.split("-")[1]);
       const zoneId = (entityId >> 12) & 0x01ff;
-      discreteEntityMeshes()[zoneId][entityKey].visible = getShowDiscrete() && !entitySettings[entityKey].hidden;
+      const mesh = discreteEntityMeshes()?.[zoneId]?.[entityKey];
+      if (mesh) {
+        mesh.visible = getShowDiscrete() && !entitySettings[entityKey].hidden;
+      }
     }
   });
 
@@ -1138,6 +1143,8 @@ export default function ZoneModel(props: ZoneDataProps) {
         return updates;
       }
     }
+
+    return {};
   });
 
   const [areas, setAreas] = createStore<Area[]>([]);
@@ -1686,7 +1693,7 @@ export default function ZoneModel(props: ZoneDataProps) {
 
       <div style={{ "max-height": "70vh", "min-width": "70ch" }}>
         <Table
-          inputRows={currentEntityUpdates().entityRows}
+          inputRows={currentEntityUpdates().entityRows ?? []}
           columns={[
             { name: "Name", key: "name" },
             { name: "ID", key: "id" },
@@ -1705,7 +1712,7 @@ export default function ZoneModel(props: ZoneDataProps) {
                 />
               ),
               onClick: (filteredRows) => {
-                const anyChecked = filteredRows.find(r => !entitySettings[r.entityKey].hidden);
+                const anyChecked = filteredRows.find(r => !entitySettings[r.entityKey]?.hidden);
                 const newValue = !!anyChecked;
                 batch(() => filteredRows.forEach(v => setEntitySettings(v.entityKey, { hidden: newValue })))
               }
@@ -1821,6 +1828,6 @@ export default function ZoneModel(props: ZoneDataProps) {
           </div>
         </Show>
       </Show>
-    </div>
+    </div >
   );
 }

@@ -1,4 +1,4 @@
-import { createEffect, createSignal, For, Match, Switch } from "solid-js";
+import { createEffect, createSignal, For, Match, Switch, batch } from "solid-js";
 
 import { createDropzone } from "@soorria/solid-dropzone";
 import { createStore } from "solid-js/store";
@@ -19,6 +19,16 @@ export default function PacketPage({ }: PacketPageProps) {
   const [getZoneIds, setZoneIds] = createSignal<number[]>([]);
   const [zoneProgress, setZoneProgress] = createStore<ByZone<string>>({});
 
+  function reset() {
+    batch(() => {
+      setZoneModels(undefined);
+      setParsedPackets(undefined);
+      setStatus(undefined);
+      setZoneIds([]);
+      setZoneProgress({});
+    })
+  }
+
   function parseFile(file: File) {
     setStatus("Parsing packets");
     const reader = new FileReader();
@@ -31,7 +41,7 @@ export default function PacketPage({ }: PacketPageProps) {
   }
 
   const onDrop = (acceptedFiles: File[]) => {
-    setParsedPackets(undefined);
+    reset();
     if (acceptedFiles.length == 0) {
       return;
     }
@@ -116,7 +126,7 @@ export default function PacketPage({ }: PacketPageProps) {
         }
       >
         <Match when={getParsedPackets() !== undefined && getZoneModels() !== undefined}>
-          <button onClick={_ => setParsedPackets(undefined)}>Clear packets</button>
+          <button onClick={_ => reset()}>Clear packets</button>
           <ZoneModel
             sourceKey="packet"
             defaultSettings={{
