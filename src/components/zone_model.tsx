@@ -46,6 +46,25 @@ interface ZoneModelSettings {
   colorKind: ColorKind,
 }
 
+interface EntityUpdatesSettings {
+  show: {
+    discrete: boolean,
+    animated: boolean,
+    lastOnly: boolean,
+    rendered: boolean,
+    widescan: boolean,
+    paths: boolean,
+    pathKinds: {
+      start: boolean,
+      preturn: boolean,
+      turn: boolean,
+      end: boolean,
+      interrupt: boolean,
+      lines: boolean,
+    }
+  }
+}
+
 type ZoneModelSettingsDefault = Partial<ZoneModelSettings>;
 
 export interface ZoneData {
@@ -91,8 +110,9 @@ const enum MenuPopup {
 export default function ZoneModel(props: ZoneDataProps) {
   const [getMenuPopup, setMenuPopup] = createSignal<MenuPopup>(MenuPopup.None);
 
-  const localStorageSettingsKey = props.sourceKey ? `xi-visualizer.settings.${props.sourceKey}` : "xi-visualizer.settings._any";
-  const localStorageSettings: ZoneModelSettings = JSON.parse(localStorage.getItem(localStorageSettingsKey), (k, v) => {
+  // General zone model settings
+  const generalSettingsKey = props.sourceKey ? `xi-visualizer.settings.${props.sourceKey}` : "xi-visualizer.settings._any";
+  const localStorageGeneralSettings: ZoneModelSettings = JSON.parse(localStorage.getItem(generalSettingsKey), (k, v) => {
     if (k == "colorKind") {
       return parseInt(v);
     } else {
@@ -100,7 +120,7 @@ export default function ZoneModel(props: ZoneDataProps) {
     }
   }) || {};
 
-  const defaultSettings: ZoneModelSettings = {
+  const defaultGeneralSettings: ZoneModelSettings = {
     showInfoBox: false,
     showAreaManager: false,
     showRayTesting: false,
@@ -108,35 +128,56 @@ export default function ZoneModel(props: ZoneDataProps) {
     ...props.defaultSettings,
   }
 
-  const settings = createMutable<ZoneModelSettings>({
-    ...defaultSettings,
-    ...localStorageSettings,
+  // Update local storage on change
+  const generalSettings = createMutable<ZoneModelSettings>({
+    ...defaultGeneralSettings,
+    ...localStorageGeneralSettings,
   });
 
   createEffect(() => {
-    localStorage.setItem(localStorageSettingsKey, JSON.stringify(settings));
+    localStorage.setItem(generalSettingsKey, JSON.stringify(generalSettings));
   });
 
+  // Entity updates settings
+  const updatesSettingsKey = "xi-visualizer.settings.packet.entity-updates";
+  const localStorageUpdatesSettings: EntityUpdatesSettings = JSON.parse(localStorage.getItem(updatesSettingsKey)) || {};
+
+  const defaultUpdatesSettings: EntityUpdatesSettings = {
+    show: {
+      discrete: true,
+      animated: false,
+      lastOnly: false,
+      rendered: true,
+      widescan: true,
+      paths: false,
+      pathKinds: {
+        start: true,
+        preturn: false,
+        turn: true,
+        end: true,
+        interrupt: true,
+        lines: true,
+      }
+    }
+  }
+
+  const updatesSettings = createMutable<EntityUpdatesSettings>({
+    ...defaultUpdatesSettings,
+    ...localStorageUpdatesSettings,
+  });
+
+  // Update local storage on change
+  createEffect(() => {
+    localStorage.setItem(updatesSettingsKey, JSON.stringify(updatesSettings));
+  });
+
+  // Zone and entity signals and stores
   const zoneIds = Object.keys(props.zoneData);
   const startingZoneId = zoneIds[0] != "0" ? parseInt(zoneIds[0]) : (parseInt(zoneIds[1]) || 0);
   const [getSelectedZone, setSelectedZone] = createSignal<number>(startingZoneId);
 
   const [entitySettings, setEntitySettings] = createStore<EntitiesSettings>({});
 
-  const [getShowWidescan, setShowWidescan] = createSignal<boolean>(true);
-  const [getShowRendered, setShowRendered] = createSignal<boolean>(true);
-  const [getShowRenderedPaths, setShowRenderedPaths] = createSignal<boolean>(false);
-  const showPathKind = createMutable({
-    start: true,
-    preturn: false,
-    turn: true,
-    end: true,
-    interrupt: true,
-    lines: true,
-  });
-  const [getShowOnlyLatest, setShowOnlyLatest] = createSignal<boolean>(false);
-
-  const [getShowDiscrete, setShowDiscrete] = createSignal<boolean>(true);
   const [getNewDiscrete, setNewDiscrete] = createSignal<[number, number] | undefined>();
   const [getDiscreteLowerTime, setDiscreteLowerTime] = createSignal<number>(0);
   const [getDiscreteUpperTime, setDiscreteUpperTime] = createSignal<number>(1);
@@ -241,7 +282,7 @@ export default function ZoneModel(props: ZoneDataProps) {
     for (const zoneId in props.zoneData) {
       const zoneData = props.zoneData[zoneId];
       const prep = prepMeshData()[zoneId];
-      const mesh = createZoneMesh(zoneData.id, zoneData.mesh, prep, unwrap(settings).colorKind);
+      const mesh = createZoneMesh(zoneData.id, zoneData.mesh, prep, unwrap(generalSettings).colorKind);
       mesh.visible = false;
 
       zoneMeshes[zoneData.id] = mesh;
@@ -332,7 +373,6 @@ export default function ZoneModel(props: ZoneDataProps) {
     return adjusted;
   });
 
-  const [getShowAnimated, setShowAnimated] = createSignal<boolean>(false);
   const [isPlaying, setIsPlaying] = createSignal<boolean>(false);
   const [isSeeking, setIsSeeking] = createSignal<boolean>(false);
   const [getPlayTime, setPlayTime] = createSignal<number>(0);
@@ -356,7 +396,7 @@ export default function ZoneModel(props: ZoneDataProps) {
 
   // Setup animations for entities
   const mixers = createMemo(() => {
-    if (!getShowAnimated()) {
+    if (!updatesSettings.show.animated) {
       return [];
     }
 
@@ -598,13 +638,13 @@ export default function ZoneModel(props: ZoneDataProps) {
 
             let rot = part?.rot ?? lastRot;
 
-            if (part.kind == PathPartKind.Start && showPathKind.start) {
+            if (part.kind == PathPartKind.Start && updatesSettings.show.pathKinds.start) {
               pointColor = pathStartColor;
-            } else if (part.kind == PathPartKind.NewDirection && (showPathKind.turn || showPathKind.preturn)) {
+            } else if (part.kind == PathPartKind.NewDirection && (updatesSettings.show.pathKinds.turn || updatesSettings.show.pathKinds.preturn)) {
               pointColor = pathDirectionColor;
-            } else if (part.kind == PathPartKind.End && showPathKind.end) {
+            } else if (part.kind == PathPartKind.End && updatesSettings.show.pathKinds.end) {
               pointColor = pathEndColor;
-            } else if (part.kind == PathPartKind.Interrupted && showPathKind.interrupt) {
+            } else if (part.kind == PathPartKind.Interrupted && updatesSettings.show.pathKinds.interrupt) {
               pointColor = pathInterruptColor;
             }
 
@@ -613,7 +653,7 @@ export default function ZoneModel(props: ZoneDataProps) {
               obj.position.set(pos.x, pos.y, pos.z);
 
               // Draw non-direction points, and direction points when turns are enabled
-              if (part.kind != PathPartKind.NewDirection || showPathKind.turn) {
+              if (part.kind != PathPartKind.NewDirection || updatesSettings.show.pathKinds.turn) {
                 obj.rotation.y = ROT_TO_RADIANS * rot;
                 obj.updateMatrix();
 
@@ -623,7 +663,7 @@ export default function ZoneModel(props: ZoneDataProps) {
               }
 
               // Draw an extra point for pre-turn points if enabled
-              if (part.kind == PathPartKind.NewDirection && showPathKind.preturn) {
+              if (part.kind == PathPartKind.NewDirection && updatesSettings.show.pathKinds.preturn) {
                 obj.rotation.y = ROT_TO_RADIANS * lastRot;
                 obj.updateMatrix();
 
@@ -684,16 +724,16 @@ export default function ZoneModel(props: ZoneDataProps) {
 
   // Show entities at different points in time
   createEffect(() => {
-    if (!props.entityUpdates || !getShowDiscrete()) {
+    if (!props.entityUpdates || !updatesSettings.show.discrete) {
       return;
     }
 
     const zoneId = getSelectedZone();
     const meshes = discreteEntityMeshes()[zoneId];
     let obj = new THREE.Object3D();
-    const hideWidescan = !getShowWidescan();
-    const hideRendered = !getShowRendered();
-    const onlyLatest = getShowOnlyLatest();
+    const hideWidescan = !updatesSettings.show.widescan;
+    const hideRendered = !updatesSettings.show.rendered;
+    const onlyLatest = updatesSettings.show.lastOnly;
     for (const entityKey in adjustedEntityUpdates()[zoneId]) {
       if (entitySettings[entityKey]?.hidden) {
         continue;
@@ -809,12 +849,12 @@ export default function ZoneModel(props: ZoneDataProps) {
 
   // Show/hide paths for rendered entities
   createEffect(() => {
-    if (!props.entityUpdates || !getShowDiscrete()) {
+    if (!props.entityUpdates || !updatesSettings.show.discrete) {
       return;
     }
 
     const zoneId = getSelectedZone();
-    const allHidden = !getShowRenderedPaths();
+    const allHidden = !updatesSettings.show.paths;
 
     for (const entityKey in adjustedEntityUpdates()[zoneId]) {
       const entityHidden = allHidden || entitySettings[entityKey]?.hidden
@@ -853,7 +893,7 @@ export default function ZoneModel(props: ZoneDataProps) {
       const zoneId = (entityId >> 12) & 0x01ff;
       const mesh = discreteEntityMeshes()?.[zoneId]?.[entityKey];
       if (mesh) {
-        mesh.visible = getShowDiscrete() && !entitySettings[entityKey].hidden;
+        mesh.visible = updatesSettings.show.discrete && !entitySettings[entityKey].hidden;
       }
     }
   });
@@ -891,7 +931,7 @@ export default function ZoneModel(props: ZoneDataProps) {
 
     // Area details clicking
     canvasElement.addEventListener("click", event => {
-      if (!settings.showAreaManager || !getShowAreaDetails() || !event.ctrlKey) {
+      if (!generalSettings.showAreaManager || !getShowAreaDetails() || !event.ctrlKey) {
         return;
       }
 
@@ -940,7 +980,7 @@ export default function ZoneModel(props: ZoneDataProps) {
 
     // Ray clicking
     canvasElement.addEventListener("click", event => {
-      if (!settings.showRayTesting || getShowAreaDetails() || !event.ctrlKey && !event.shiftKey) {
+      if (!generalSettings.showRayTesting || getShowAreaDetails() || !event.ctrlKey && !event.shiftKey) {
         return;
       }
 
@@ -1523,7 +1563,7 @@ export default function ZoneModel(props: ZoneDataProps) {
     });
   };
 
-  createEffect(on(() => settings.colorKind, (colorKind) => {
+  createEffect(on(() => generalSettings.colorKind, (colorKind) => {
     const meshes = zoneMeshes();
     const prep = prepMeshData();
     for (const zoneId of Object.keys(meshes)) {
@@ -1550,9 +1590,9 @@ export default function ZoneModel(props: ZoneDataProps) {
         <label for="color-select">Coloring:</label>
         <select
           id="color-select"
-          value={settings.colorKind}
+          value={generalSettings.colorKind}
           onChange={(ev) => {
-            settings.colorKind = parseInt(ev.target.value);
+            generalSettings.colorKind = parseInt(ev.target.value);
           }}
         >
           <option value={ColorKind.None}>None</option>
@@ -1564,22 +1604,22 @@ export default function ZoneModel(props: ZoneDataProps) {
       </div>
 
       {toggleButton("Area Manager", (v) => {
-        settings.showAreaManager = v;
-      }, () => settings.showAreaManager)}
+        generalSettings.showAreaManager = v;
+      }, () => generalSettings.showAreaManager)}
 
       {toggleButton("Info Box", (v) => {
-        settings.showInfoBox = v;
-      }, () => settings.showInfoBox)}
+        generalSettings.showInfoBox = v;
+      }, () => generalSettings.showInfoBox)}
 
       {toggleButton("Ray Testing", (v) => {
-        settings.showRayTesting = v;
-      }, () => settings.showRayTesting)}
+        generalSettings.showRayTesting = v;
+      }, () => generalSettings.showRayTesting)}
 
       <button onClick={() => {
-        for (const key in defaultSettings) {
-          settings[key] = defaultSettings[key];
+        for (const key in defaultGeneralSettings) {
+          generalSettings[key] = defaultGeneralSettings[key];
         }
-        localStorage.removeItem(localStorageSettingsKey);
+        localStorage.removeItem(generalSettingsKey);
       }}>Reset settings</button>
 
       <button onClick={() => setMenuPopup(MenuPopup.None)}>Close settings</button>
@@ -1636,7 +1676,7 @@ export default function ZoneModel(props: ZoneDataProps) {
         </div>
 
         {/* Area Manager */}
-        <Show when={settings.showAreaManager}>
+        <Show when={generalSettings.showAreaManager}>
           <AreaMenu
             showDetails={getShowAreaDetails()}
             setShowDetails={setShowAreaDetails}
@@ -1653,12 +1693,12 @@ export default function ZoneModel(props: ZoneDataProps) {
         </Show>
 
         {/* Info box */}
-        <Show when={settings.showInfoBox}>
+        <Show when={generalSettings.showInfoBox}>
           <ZoneInfoBox targetInfo={getTargetInfo()}></ZoneInfoBox>
         </Show>
 
         {/* Ray testing */}
-        <Show when={settings.showRayTesting}>
+        <Show when={generalSettings.showRayTesting}>
           <ZoneRayTestingBox
             getStartPos={getStartPos}
             setStartPos={setStartPos}
@@ -1743,8 +1783,8 @@ export default function ZoneModel(props: ZoneDataProps) {
                 Discrete:
               </div>
               <div class="px-1 m-auto h-full">
-                <button style={{ "min-width": "5rem" }} onClick={() => setShowDiscrete(!getShowDiscrete())}>
-                  {getShowDiscrete() ? "Hide" : "Show"}
+                <button style={{ "min-width": "5rem" }} onClick={() => updatesSettings.show.discrete = !updatesSettings.show.discrete}>
+                  {updatesSettings.show.discrete ? "Hide" : "Show"}
                 </button>
               </div>
               <div class="flex-grow">
@@ -1757,7 +1797,7 @@ export default function ZoneModel(props: ZoneDataProps) {
                   onChange={(lower, upper) => {
                     setNewDiscrete([lower, upper]);
                   }}
-                  disabled={!getShowDiscrete()}
+                  disabled={!updatesSettings.show.discrete}
                 >
                 </RangeInput>
               </div>
@@ -1768,8 +1808,8 @@ export default function ZoneModel(props: ZoneDataProps) {
                 Animated:
               </div>
               <div class="m-auto h-full px-1">
-                <button style={{ "min-width": "5rem" }} onClick={() => setShowAnimated(!getShowAnimated())}>
-                  {getShowAnimated() ? "Hide" : "Show"}
+                <button style={{ "min-width": "5rem" }} onClick={() => updatesSettings.show.animated = !updatesSettings.show.animated}>
+                  {updatesSettings.show.animated ? "Hide" : "Show"}
                 </button>
               </div>
               <div class="m-auto h-full px-1">
@@ -1808,21 +1848,21 @@ export default function ZoneModel(props: ZoneDataProps) {
             </div>
 
             <div class="flex gap-5">
-              {toggleButton("Widescan", setShowWidescan, getShowWidescan)}
-              {toggleButton("Rendered", setShowRendered, getShowRendered)}
-              {toggleButton("Rendered paths", setShowRenderedPaths, getShowRenderedPaths)}
-              {toggleButton("Only latest", setShowOnlyLatest, getShowOnlyLatest)}
+              {toggleButton("Widescan", (v) => { updatesSettings.show.widescan = v; }, () => updatesSettings.show.widescan)}
+              {toggleButton("Rendered", (v) => { updatesSettings.show.rendered = v; }, () => updatesSettings.show.rendered)}
+              {toggleButton("Rendered paths", (v) => { updatesSettings.show.paths = v; }, () => updatesSettings.show.paths)}
+              {toggleButton("Only latest", (v) => { updatesSettings.show.lastOnly = v; }, () => updatesSettings.show.lastOnly)}
             </div>
 
-            <Show when={getShowRenderedPaths()}>
+            <Show when={updatesSettings.show.paths}>
               <div class="flex gap-5">
                 <div>Path parts:</div>
-                {toggleButton("Start", (value) => { showPathKind.start = value; }, () => showPathKind.start)}
-                {toggleButton("Pre-turn", (value) => { showPathKind.preturn = value; }, () => showPathKind.preturn)}
-                {toggleButton("Turn", (value) => { showPathKind.turn = value; }, () => showPathKind.turn)}
-                {toggleButton("End", (value) => { showPathKind.end = value; }, () => showPathKind.end)}
-                {toggleButton("Interrupt", (value) => { showPathKind.interrupt = value; }, () => showPathKind.interrupt)}
-                {toggleButton("Lines", (value) => { showPathKind.lines = value; }, () => showPathKind.lines)}
+                {toggleButton("Start", (v) => { updatesSettings.show.pathKinds.start = v; }, () => updatesSettings.show.pathKinds.start)}
+                {toggleButton("Pre-turn", (v) => { updatesSettings.show.pathKinds.preturn = v; }, () => updatesSettings.show.pathKinds.preturn)}
+                {toggleButton("Turn", (v) => { updatesSettings.show.pathKinds.turn = v; }, () => updatesSettings.show.pathKinds.turn)}
+                {toggleButton("End", (v) => { updatesSettings.show.pathKinds.end = v; }, () => updatesSettings.show.pathKinds.end)}
+                {toggleButton("Interrupt", (v) => { updatesSettings.show.pathKinds.interrupt = v; }, () => updatesSettings.show.pathKinds.interrupt)}
+                {toggleButton("Lines", (v) => { updatesSettings.show.pathKinds.lines = v; }, () => updatesSettings.show.pathKinds.lines)}
               </div>
             </Show>
           </div>
