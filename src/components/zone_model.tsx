@@ -1704,11 +1704,10 @@ export default function ZoneModel(props: ZoneDataProps) {
                   checked={!entitySettings[v.entityKey]?.hidden}
                 />
               ),
-              onClick: () => {
-                const rows = currentEntityUpdates().entityRows;
-                const anyChecked = rows.find(r => !entitySettings[r.entityKey].hidden);
+              onClick: (filteredRows) => {
+                const anyChecked = filteredRows.find(r => !entitySettings[r.entityKey].hidden);
                 const newValue = !!anyChecked;
-                batch(() => rows.forEach(v => setEntitySettings(v.entityKey, { hidden: newValue })))
+                batch(() => filteredRows.forEach(v => setEntitySettings(v.entityKey, { hidden: newValue })))
               }
             },
           ]}

@@ -1,13 +1,13 @@
 import fusejs from "fuse.js";
-import { createEffect, createMemo, createResource, createSignal, For, JSX, onMount, Show } from "solid-js";
+import { createMemo, createSignal, For, JSX, onMount } from "solid-js";
 
 interface AdditionalColumn<T> {
   name: string;
   content: (row: T) => JSX.Element;
-  onClick?: () => void;
+  onClick?: (filteredRows: T[]) => void;
 }
 
-interface ColumnDef {
+interface ColumnDef<T extends { [key in Column]: any; }, Column extends keyof T> {
   name: string;
   key: Column;
   defaultSortAsc?: boolean;
@@ -19,7 +19,7 @@ interface TableProps<T extends { [key in Column]: any; }, Column extends keyof T
   inputRows: T[];
   headerElements?: HeaderElement<T>[];
   additionalColumns?: AdditionalColumn<T>[];
-  columns: ColumnDef[];
+  columns: ColumnDef<T, Column>[];
   defaultSortColumn: Column;
   defaultSortAsc?: boolean;
   onRowClick?: (v: T) => any;
@@ -34,7 +34,7 @@ export default function Table<
   const [filterBy, setFilterBy] = createSignal<string>("");
 
   const colsByKey = createMemo(() => {
-    let byKey: { [key: string]: ColumnDef } = {}
+    let byKey: { [key: string]: ColumnDef<T, Column> } = {}
     ps.columns.forEach((c) => {
       byKey[c.key] = c;
     })
@@ -58,7 +58,8 @@ export default function Table<
   const fuseIndex = createMemo(() => {
     return new fusejs(ps.inputRows, {
       keys: ps.columns.map(col => col.key),
-      threshold: 0.0,
+      threshold: 0.1,
+      isCaseSensitive: false,
     });
   });
 
@@ -119,7 +120,11 @@ export default function Table<
               ))}
 
               {ps.additionalColumns
-                ? ps.additionalColumns.map(col => <th onClick={col.onClick} classList={{ "hover:cursor-pointer": col.onClick }}>{col.name}</th>)
+                ? ps.additionalColumns.map(col => <th onClick={() => {
+                  if (col.onClick) {
+                    col.onClick(rows())
+                  }
+                }} classList={{ "hover:cursor-pointer": !!col.onClick }}>{col.name}</th>)
                 : undefined}
             </tr>
           </thead>
