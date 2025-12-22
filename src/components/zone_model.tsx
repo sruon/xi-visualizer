@@ -1183,7 +1183,7 @@ export default function ZoneModel(props: ZoneDataProps) {
       }
     }
 
-    return {};
+    return {} as NormalizedEntityUpdates;
   });
 
   const [areas, setAreas] = createStore<Area[]>([]);
