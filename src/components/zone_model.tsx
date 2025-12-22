@@ -762,7 +762,7 @@ export default function ZoneModel(props: ZoneDataProps) {
             continue;
           }
 
-          if (hideRendered && update.kind == EntityUpdateKind.Position) {
+          if (hideRendered && (update.kind == EntityUpdateKind.Position || update.kind == EntityUpdateKind.OutOfRange || update.kind == EntityUpdateKind.Despawn)) {
             // Entity updates is hidden
             continue;
           }
