@@ -4,6 +4,13 @@ import { createEffect, createMemo, createResource, createSignal, For, JSX, onMou
 interface AdditionalColumn<T> {
   name: string;
   content: (row: T) => JSX.Element;
+  onClick?: () => void;
+}
+
+interface ColumnDef {
+  name: string;
+  key: Column;
+  defaultSortAsc?: boolean;
 }
 
 type HeaderElement<T> = JSX.Element | ((rows: T[]) => JSX.Element);
@@ -12,7 +19,7 @@ interface TableProps<T extends { [key in Column]: any; }, Column extends keyof T
   inputRows: T[];
   headerElements?: HeaderElement<T>[];
   additionalColumns?: AdditionalColumn<T>[];
-  columns: { name: string; key: Column; }[];
+  columns: ColumnDef[];
   defaultSortColumn: Column;
   defaultSortAsc?: boolean;
   onRowClick?: (v: T) => any;
@@ -26,12 +33,25 @@ export default function Table<
   const [sortAsc, setSortAsc] = createSignal<boolean>(ps.defaultSortAsc ?? true);
   const [filterBy, setFilterBy] = createSignal<string>("");
 
+  const colsByKey = createMemo(() => {
+    let byKey: { [key: string]: ColumnDef } = {}
+    ps.columns.forEach((c) => {
+      byKey[c.key] = c;
+    })
+    return byKey
+  });
+
   const updateSort = (column: Column) => {
     if (column == sortBy()) {
       setSortAsc(!sortAsc());
     } else {
       setSortBy(column as any);
-      setSortAsc(true);
+      const colData = colsByKey()[column]
+      if (colData) {
+        setSortAsc(colData?.defaultSortAsc ?? true);
+      } else {
+        setSortAsc(true);
+      }
     }
   };
 
@@ -73,7 +93,7 @@ export default function Table<
   });
 
   return (
-    <div>
+    <div class="flex flex-col h-full w-full">
       <div class="flex flex-row space-x-5 mt-2">
         <input
           class="m-1"
@@ -85,7 +105,7 @@ export default function Table<
         {ps.headerElements.map(element => element instanceof Function ? element(rows()) : element)}
       </div>
 
-      <div class="m-1 overflow-y-auto" style={{ "max-height": "20rem" }}>
+      <div class="flex-grow m-1 overflow-y-auto">
         <table class="w-full">
           <thead class="sticky top-0">
             <tr>
@@ -99,7 +119,7 @@ export default function Table<
               ))}
 
               {ps.additionalColumns
-                ? ps.additionalColumns.map(col => <th>{col.name}</th>)
+                ? ps.additionalColumns.map(col => <th onClick={col.onClick} classList={{ "hover:cursor-pointer": col.onClick }}>{col.name}</th>)
                 : undefined}
             </tr>
           </thead>

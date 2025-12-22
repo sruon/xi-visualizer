@@ -1,3 +1,5 @@
+import "./zone_model.css";
+
 import CameraControls from "camera-controls";
 import { IoHelpCircle, IoSettings } from "solid-icons/io";
 import { batch, createEffect, createMemo, createSignal, For, mapArray, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
@@ -19,7 +21,7 @@ import Table from "./table";
 import { ColorKind, colorMesh, createZoneMesh, getHitData, getMapId, markLineCollisions, prepareMeshData, RayHit } from "../graphics/ximesh";
 import { ZoneInfoBox, TargetInfo } from "./zone_info_box";
 import { ZoneRayTestingBox } from "./zone_ray_testing_box";
-import { parsePath, PathPartKind } from "../parse_path";
+import { parsePath, PathPart, PathPartKind } from "../parse_path";
 
 // @ts-ignore
 import Stats from "three/addons/libs/stats.module.js";
@@ -124,6 +126,14 @@ export default function ZoneModel(props: ZoneDataProps) {
   const [getShowWidescan, setShowWidescan] = createSignal<boolean>(true);
   const [getShowRendered, setShowRendered] = createSignal<boolean>(true);
   const [getShowRenderedPaths, setShowRenderedPaths] = createSignal<boolean>(false);
+  const showPathKind = createMutable({
+    start: true,
+    preturn: false,
+    turn: true,
+    end: true,
+    interrupt: true,
+    lines: true,
+  });
   const [getShowOnlyLatest, setShowOnlyLatest] = createSignal<boolean>(false);
 
   const [getShowDiscrete, setShowDiscrete] = createSignal<boolean>(true);
@@ -537,8 +547,8 @@ export default function ZoneModel(props: ZoneDataProps) {
     let pathLines: ByZone<{ [entityKey: string]: EntityPath[]; }> = {};
 
     const lineMat = new THREE.LineBasicMaterial({
-      color: 0xFF0000,
-      linewidth: 1.5,
+      color: 0xCC0000,
+      linewidth: 1,
       depthTest: true,
     });
     const pointMat = new THREE.MeshBasicMaterial();
@@ -578,37 +588,65 @@ export default function ZoneModel(props: ZoneDataProps) {
           pointMesh.visible = true;
 
           let lastRot = 0;
+          let pointColor: THREE.Color | undefined = undefined;
 
-          for (const idx in currentParts) {
-            const part = currentParts[idx]
+          let pointCount = 0;
+          for (const part of currentParts) {
+            pointColor = undefined;
 
-            const pos = copyAdjustedPos(part.pos);
-            obj.position.set(pos.x, pos.y, pos.z);
+            let rot = part?.rot ?? lastRot;
 
-            lastRot = part?.rot ?? lastRot;
-            obj.rotation.y = ROT_TO_RADIANS * lastRot;
-
-            obj.updateMatrix();
-            pointMesh.setMatrixAt(idx, obj.matrix);
-
-            if (part.kind == PathPartKind.Start) {
-              pointMesh.setColorAt(idx, pathStartColor);
-            } else if (part.kind == PathPartKind.NewDirection) {
-              pointMesh.setColorAt(idx, pathDirectionColor);
-            } else if (part.kind == PathPartKind.End) {
-              pointMesh.setColorAt(idx, pathEndColor);
-            } else if (part.kind == PathPartKind.Interrupted) {
-              pointMesh.setColorAt(idx, pathInterruptColor);
+            if (part.kind == PathPartKind.Start && showPathKind.start) {
+              pointColor = pathStartColor;
+            } else if (part.kind == PathPartKind.NewDirection && (showPathKind.turn || showPathKind.preturn)) {
+              pointColor = pathDirectionColor;
+            } else if (part.kind == PathPartKind.End && showPathKind.end) {
+              pointColor = pathEndColor;
+            } else if (part.kind == PathPartKind.Interrupted && showPathKind.interrupt) {
+              pointColor = pathInterruptColor;
             }
+
+            if (pointColor) {
+              const pos = copyAdjustedPos(part.pos);
+              obj.position.set(pos.x, pos.y, pos.z);
+
+              // Draw non-direction points, and direction points when turns are enabled
+              if (part.kind != PathPartKind.NewDirection || showPathKind.turn) {
+                obj.rotation.y = ROT_TO_RADIANS * rot;
+                obj.updateMatrix();
+
+                pointMesh.setMatrixAt(pointCount, obj.matrix);
+                pointMesh.setColorAt(pointCount, pointColor);
+                pointCount++;
+              }
+
+              // Draw an extra point for pre-turn points if enabled
+              if (part.kind == PathPartKind.NewDirection && showPathKind.preturn) {
+                obj.rotation.y = ROT_TO_RADIANS * lastRot;
+                obj.updateMatrix();
+
+                pointMesh.setMatrixAt(pointCount, obj.matrix);
+                pointMesh.setColorAt(pointCount, pointColor);
+                pointCount++;
+              }
+            }
+
+            lastRot = rot;
           }
-          pointMesh.instanceColor.needsUpdate = true;
-          pointMesh.instanceMatrix.needsUpdate = true;
+
+          if (pointMesh.instanceColor) {
+            pointMesh.instanceColor.needsUpdate = true;
+            pointMesh.instanceMatrix.needsUpdate = true;
+          }
 
           entityLines[entityKey].push({
             line,
             startTime: currentParts[0]?.time,
             pointMesh,
           });
+
+          scene().add(line);
+          scene().add(pointMesh);
 
           currentParts = []
         }
@@ -653,7 +691,6 @@ export default function ZoneModel(props: ZoneDataProps) {
     let obj = new THREE.Object3D();
     const hideWidescan = !getShowWidescan();
     const hideRendered = !getShowRendered();
-    const showPaths = getShowRenderedPaths();
     const onlyLatest = getShowOnlyLatest();
     for (const entityKey in adjustedEntityUpdates()[zoneId]) {
       if (entitySettings[entityKey]?.hidden) {
@@ -663,22 +700,6 @@ export default function ZoneModel(props: ZoneDataProps) {
       const updates = adjustedEntityUpdates()[zoneId][entityKey];
       const mesh = meshes[entityKey];
       let showCount = 0;
-
-      // Show paths from rendered positions
-      if (showPaths) {
-        // Skip until first visible update
-        let pathInfo = entityPathLines()[zoneId][entityKey];
-
-        for (const path of pathInfo) {
-          if (path.startTime < getDiscreteLowerTime() || path.startTime >= getDiscreteUpperTime()) {
-            scene().remove(path.line);
-            scene().remove(path.pointMesh);
-          } else {
-            scene().add(path.line);
-            scene().add(path.pointMesh);
-          }
-        }
-      }
 
       if (onlyLatest) {
         // Only show latest position
@@ -746,9 +767,9 @@ export default function ZoneModel(props: ZoneDataProps) {
             continue;
           }
 
-          let pos: Position | undefined = update.pos;
+          let pos: Position | undefined = "pos" in update ? update.pos : undefined;
           if (!pos) {
-            if (!hideRendered || showPaths) {
+            if (!hideRendered) {
               continue;
             }
 
@@ -784,6 +805,28 @@ export default function ZoneModel(props: ZoneDataProps) {
     }
   });
 
+  // Show/hide paths for rendered entities
+  createEffect(() => {
+    if (!props.entityUpdates || !getShowDiscrete()) {
+      return;
+    }
+
+    const zoneId = getSelectedZone();
+    const allHidden = !getShowRenderedPaths();
+
+    for (const entityKey in adjustedEntityUpdates()[zoneId]) {
+      const entityHidden = allHidden || entitySettings[entityKey]?.hidden
+
+      let pathInfo = entityPathLines()[zoneId][entityKey];
+
+      for (const path of pathInfo) {
+        const hidden = entityHidden || path.startTime < getDiscreteLowerTime() || path.startTime >= getDiscreteUpperTime();
+        path.line.visible = !hidden;
+        path.pointMesh.visible = !hidden;
+      }
+    }
+  });
+
   // Show/hide zone meshes and associated entities
   createEffect(() => {
     const parsedUpdates = summarizedEntityUpdates();
@@ -798,11 +841,6 @@ export default function ZoneModel(props: ZoneDataProps) {
       for (const entityKey in props.entityUpdates[zoneId]) {
         setEntitySettings(entityKey, { hidden: !zoneIsVisible || (entityKey != parsedUpdates[zoneId].maxUpdatesKey) });
       }
-      // if (zoneIsVisible) {
-      //   fitCameraToContents(camera, fn => {
-      //     Object.keys(currentZoneEntities[zoneId]).forEach(entityKey => fn(currentZoneEntities[zoneId][entityKey]));
-      //   });
-      // }
     }
   });
 
@@ -812,16 +850,10 @@ export default function ZoneModel(props: ZoneDataProps) {
       const entityId = parseInt(entityKey.split("-")[1]);
       const zoneId = (entityId >> 12) & 0x01ff;
       discreteEntityMeshes()[zoneId][entityKey].visible = getShowDiscrete() && !entitySettings[entityKey].hidden;
-      if (getShowRenderedPaths()) {
-        for (const path of entityPathLines()[zoneId][entityKey]) {
-          path.line.visible = !entitySettings[entityKey].hidden;
-          path.pointMesh.visible = !entitySettings[entityKey].hidden;
-        }
-      }
     }
   });
 
-  let controls: CameraControls | FlyControls | MapControls;
+  let controls: MapControls;
   let canvasElement: HTMLCanvasElement;
   let labelRendererElement: HTMLDivElement;
   let coordLabelRef: HTMLDivElement;
@@ -979,8 +1011,8 @@ export default function ZoneModel(props: ZoneDataProps) {
       });
 
       coordLabelRef.textContent = `${hitData.hit.x.toFixed(1)}, ${(hitData.hit.y * -1).toFixed(1)}, ${(hitData.hit.z * -1).toFixed(1)} `;
-      coordLabelRef.style.left = `${screenMouse.x + 20} px`;
-      coordLabelRef.style.top = `${screenMouse.y - 20} px`;
+      coordLabelRef.style.left = `${screenMouse.x + 20}px`;
+      coordLabelRef.style.top = `${screenMouse.y - 20}px`;
       coordLabelRef.style.display = "block";
     } else {
       coordLabelRef.style.display = "none";
@@ -1461,6 +1493,29 @@ export default function ZoneModel(props: ZoneDataProps) {
     return line;
   }));
 
+  const focusVisible = () => {
+    const zoneId = getSelectedZone();
+    const meshes = discreteEntityMeshes()[zoneId];
+    const paths = entityPathLines()[zoneId];
+
+    fitCameraToContents(camera(), controls, fn => {
+      for (const entityKey in meshes) {
+        if (!entitySettings[entityKey].hidden) {
+          fn(meshes[entityKey])
+        }
+      }
+
+      for (const entityKey in paths) {
+        if (!entitySettings[entityKey].hidden) {
+          for (const path of paths[entityKey]) {
+            fn(path.line)
+            fn(path.pointMesh)
+          }
+        }
+      }
+    });
+  };
+
   createEffect(on(() => settings.colorKind, (colorKind) => {
     const meshes = zoneMeshes();
     const prep = prepMeshData();
@@ -1556,8 +1611,9 @@ export default function ZoneModel(props: ZoneDataProps) {
     </div>;
 
   return (
-    <div class="w-full h-full">
-      <div class="m-auto relative" style={{ height: "60vh" }}>
+    <div class="zone_model_layout">
+
+      <div class="relative" style={{ height: "70vh" }}>
         <canvas class="block w-full h-full" ref={canvasElement}>
         </canvas>
 
@@ -1628,130 +1684,142 @@ export default function ZoneModel(props: ZoneDataProps) {
         </div>
       </div>
 
+      <div style={{ "max-height": "70vh", "min-width": "70ch" }}>
+        <Table
+          inputRows={currentEntityUpdates().entityRows}
+          columns={[
+            { name: "Name", key: "name" },
+            { name: "ID", key: "id" },
+            { name: "Index", key: "index" },
+            { name: "Count", key: "updateCount", defaultSortAsc: false },
+          ]}
+          defaultSortColumn="index"
+          defaultSortAsc={true}
+          additionalColumns={[
+            {
+              name: "Visible",
+              content: v => (
+                <input
+                  type="checkbox"
+                  checked={!entitySettings[v.entityKey]?.hidden}
+                />
+              ),
+              onClick: () => {
+                const rows = currentEntityUpdates().entityRows;
+                const anyChecked = rows.find(r => !entitySettings[r.entityKey].hidden);
+                const newValue = !!anyChecked;
+                batch(() => rows.forEach(v => setEntitySettings(v.entityKey, { hidden: newValue })))
+              }
+            },
+          ]}
+          onRowClick={v => {
+            setEntitySettings(v.entityKey, {
+              hidden: !entitySettings[v.entityKey]?.hidden,
+            });
+          }}
+          headerElements={[
+            <button onClick={focusVisible}>Focus visible</button>,
+            zoneSelector,
+          ]}
+        >
+        </Table>
+      </div>
+
       {/* Entity controls below the viewing area */}
       <Show when={props.entityUpdates}>
         <Show
           fallback={zoneSelector}
           when={getSelectedZone() in summarizedEntityUpdates()}
         >
-          <div class="flex flex-row my-2">
-            <div class="m-auto h-full px-1 font-bold" style={{ "min-width": "6rem" }}>
-              Discrete:
-            </div>
-            <div class="px-1 m-auto h-full">
-              <button style={{ "min-width": "5rem" }} onClick={() => setShowDiscrete(!getShowDiscrete())}>
-                {getShowDiscrete() ? "Hide" : "Show"}
-              </button>
-            </div>
-            <div class="flex-grow">
-              <RangeInput
-                min={currentEntityUpdates().firstTime}
-                max={currentEntityUpdates().lastTime}
-                lower={getNewDiscrete()?.[0] ?? getDiscreteLowerTime()}
-                upper={getNewDiscrete()?.[1] ?? getDiscreteUpperTime()}
-                inputKind="timestamp"
-                onChange={(lower, upper) => {
-                  setNewDiscrete([lower, upper]);
-                }}
-                disabled={!getShowDiscrete()}
-              >
-              </RangeInput>
-            </div>
-          </div>
-
-          <div class="flex flex-row my-2">
-            <div class="m-auto h-full px-1 font-bold" style={{ "min-width": "6rem" }}>
-              Animated:
-            </div>
-            <div class="m-auto h-full px-1">
-              <button style={{ "min-width": "5rem" }} onClick={() => setShowAnimated(!getShowAnimated())}>
-                {getShowAnimated() ? "Hide" : "Show"}
-              </button>
-            </div>
-            <div class="m-auto h-full px-1">
-              <button style={{ "min-width": "5rem" }} onClick={() => setIsPlaying(!isPlaying())}>
-                {isPlaying() ? "Pause" : "Play"}
-              </button>
-            </div>
-            <div class="m-auto relative">
-              <input
-                type="number"
-                class="text-right pr-3"
-                min={1}
-                max={1000}
-                style={{ width: "4.5rem" }}
-                value={getTimeScale()}
-                onInput={e => setTimeScale(parseInt(e.target.value) || 1)}
-              >
-              </input>
-              <span style={{ position: "absolute", right: "0.8rem", top: "0.5rem", margin: "auto" }}>
-                ×
-              </span>
-            </div>
-            <div class="m-auto flex-grow">
-              <input
-                type="range"
-                class="w-full"
-                min={currentEntityUpdates().firstTime}
-                max={currentEntityUpdates().lastTime}
-                value={getPlayTime() * 1000 + currentEntityUpdates().firstTime}
-                onMouseDown={() => setIsSeeking(true)}
-                onMouseUp={() => setIsSeeking(false)}
-                onInput={e => setPlayTime((parseInt(e.target.value) - currentEntityUpdates().firstTime) / 1000)}
-              >
-              </input>
-            </div>
-          </div>
-
-          <Table
-            inputRows={currentEntityUpdates().entityRows}
-            columns={[
-              { name: "Name", key: "name" },
-              { name: "ID", key: "id" },
-              { name: "Index", key: "index" },
-              { name: "Count", key: "updateCount" },
-            ]}
-            defaultSortColumn="index"
-            defaultSortAsc={true}
-            additionalColumns={[
-              {
-                name: "Visible",
-                content: v => (
-                  <input
-                    type="checkbox"
-                    checked={!entitySettings[v.entityKey]?.hidden}
-                  />
-                ),
-              },
-            ]}
-            onRowClick={v => {
-              setEntitySettings(v.entityKey, {
-                hidden: !entitySettings[v.entityKey]?.hidden,
-              });
-            }}
-            headerElements={[
-              rows => (
-                <button
-                  onClick={() => batch(() => rows.forEach(v => setEntitySettings(v.entityKey, { hidden: false })))}
-                >
-                  Show filtered
+          <div class="flex flex-col gap-3 my-2 col-span-2">
+            <div class="flex flex-row">
+              <div class="m-auto h-full px-1 font-bold" style={{ "min-width": "6rem" }}>
+                Discrete:
+              </div>
+              <div class="px-1 m-auto h-full">
+                <button style={{ "min-width": "5rem" }} onClick={() => setShowDiscrete(!getShowDiscrete())}>
+                  {getShowDiscrete() ? "Hide" : "Show"}
                 </button>
-              ),
-              rows => (
-                <button
-                  onClick={() => batch(() => rows.forEach(v => setEntitySettings(v.entityKey, { hidden: true })))}
+              </div>
+              <div class="flex-grow">
+                <RangeInput
+                  min={currentEntityUpdates().firstTime}
+                  max={currentEntityUpdates().lastTime}
+                  lower={getNewDiscrete()?.[0] ?? getDiscreteLowerTime()}
+                  upper={getNewDiscrete()?.[1] ?? getDiscreteUpperTime()}
+                  inputKind="timestamp"
+                  onChange={(lower, upper) => {
+                    setNewDiscrete([lower, upper]);
+                  }}
+                  disabled={!getShowDiscrete()}
                 >
-                  Hide filtered
+                </RangeInput>
+              </div>
+            </div>
+
+            <div class="flex flex-row">
+              <div class="m-auto h-full px-1 font-bold" style={{ "min-width": "6rem" }}>
+                Animated:
+              </div>
+              <div class="m-auto h-full px-1">
+                <button style={{ "min-width": "5rem" }} onClick={() => setShowAnimated(!getShowAnimated())}>
+                  {getShowAnimated() ? "Hide" : "Show"}
                 </button>
-              ),
-              _rows => toggleButton("Widescan", setShowWidescan, getShowWidescan),
-              _rows => toggleButton("Rendered", setShowRendered, getShowRendered),
-              _rows => toggleButton("Rendered paths", setShowRenderedPaths, getShowRenderedPaths),
-              _rows => toggleButton("Only latest", setShowOnlyLatest, getShowOnlyLatest),
-              zoneSelector,
-            ]}
-          >
-          </Table>
+              </div>
+              <div class="m-auto h-full px-1">
+                <button style={{ "min-width": "5rem" }} onClick={() => setIsPlaying(!isPlaying())}>
+                  {isPlaying() ? "Pause" : "Play"}
+                </button>
+              </div>
+              <div class="m-auto relative">
+                <input
+                  type="number"
+                  class="text-right pr-3"
+                  min={1}
+                  max={1000}
+                  style={{ width: "4.5rem" }}
+                  value={getTimeScale()}
+                  onInput={e => setTimeScale(parseInt(e.target.value) || 1)}
+                >
+                </input>
+                <span style={{ position: "absolute", right: "0.8rem", top: "0.5rem", margin: "auto" }}>
+                  ×
+                </span>
+              </div>
+              <div class="m-auto flex-grow">
+                <input
+                  type="range"
+                  class="w-full"
+                  min={currentEntityUpdates().firstTime}
+                  max={currentEntityUpdates().lastTime}
+                  value={getPlayTime() * 1000 + currentEntityUpdates().firstTime}
+                  onMouseDown={() => setIsSeeking(true)}
+                  onMouseUp={() => setIsSeeking(false)}
+                  onInput={e => setPlayTime((parseInt(e.target.value) - currentEntityUpdates().firstTime) / 1000)}
+                >
+                </input>
+              </div>
+            </div>
+
+            <div class="flex gap-5">
+              {toggleButton("Widescan", setShowWidescan, getShowWidescan)}
+              {toggleButton("Rendered", setShowRendered, getShowRendered)}
+              {toggleButton("Rendered paths", setShowRenderedPaths, getShowRenderedPaths)}
+              {toggleButton("Only latest", setShowOnlyLatest, getShowOnlyLatest)}
+            </div>
+
+            <Show when={getShowRenderedPaths()}>
+              <div class="flex gap-5">
+                <div>Path parts:</div>
+                {toggleButton("Start", (value) => { showPathKind.start = value; }, () => showPathKind.start)}
+                {toggleButton("Pre-turn", (value) => { showPathKind.preturn = value; }, () => showPathKind.preturn)}
+                {toggleButton("Turn", (value) => { showPathKind.turn = value; }, () => showPathKind.turn)}
+                {toggleButton("End", (value) => { showPathKind.end = value; }, () => showPathKind.end)}
+                {toggleButton("Interrupt", (value) => { showPathKind.interrupt = value; }, () => showPathKind.interrupt)}
+                {toggleButton("Lines", (value) => { showPathKind.lines = value; }, () => showPathKind.lines)}
+              </div>
+            </Show>
+          </div>
         </Show>
       </Show>
     </div>

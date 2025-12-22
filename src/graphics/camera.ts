@@ -8,45 +8,54 @@ export function adjustCameraAspect(camera: THREE.PerspectiveCamera, canvas: HTML
   camera.updateProjectionMatrix();
 }
 
-export function fitCameraToContents(camera: THREE.PerspectiveCamera, objectIter: (fn: (obj: THREE.Object3D) => any) => any) {
+export function fitCameraToContents(camera: THREE.PerspectiveCamera, controls: MapControls, objectIter: (fn: (obj: THREE.Object3D) => any) => any) {
   const box = new THREE.Box3();
   let matrix = new THREE.Matrix4();
   let vec = new THREE.Vector3();
 
   // Loop through all children in the scene
   objectIter(object => {
-    if (object) {
-      if (object instanceof THREE.InstancedMesh) {
-        // Compute mesh bounding box
-        for (let i = 0; i < object.count; i++) {
-          matrix.fromArray(object.instanceMatrix.array, i * 16);
-          // console.log("Matrix", matrix);
-          vec.setFromMatrixPosition(matrix);
-          // console.log("Vec", vec);
-          box.expandByPoint(vec);
-        }
-      } else {
-        box.expandByObject(object);
+    if (object instanceof THREE.InstancedMesh) {
+      // Compute mesh bounding box
+      for (let i = 0; i < object.count; i++) {
+        matrix.fromArray(object.instanceMatrix.array, i * 16);
+        vec.setFromMatrixPosition(matrix);
+
+        // Correct for flipped Z-axis and Y-axis of FFXI
+        vec.z = -vec.z;
+        vec.y = -vec.y;
+        box.expandByPoint(vec);
       }
+    } else if (object instanceof THREE.Object3D) {
+      box.expandByObject(object);
     }
   });
 
-  console.log("Final", box);
-
-  const size = new THREE.Vector3();
   const center = new THREE.Vector3();
-  box.getSize(size);
+  const size = new THREE.Vector3();
+
   box.getCenter(center);
+  box.getSize(size);
 
-  // Set camera position to center of bounding box
-  camera.position.copy(center);
+  if (size.length() == 0) {
+    return;
+  }
 
-  // Adjust distance based on size and desired field of view (FOV)
-  const distance = size.length() / (2 * Math.tan((Math.PI * camera.fov) / 360));
-  camera.position.y = distance;
+  const maxDim = Math.max(size.x, size.y, size.z);
+  const fov = camera.fov * (Math.PI / 180);
 
-  // Update camera lookAt target (optional)
-  camera.lookAt(center);
+  let cameraZ = Math.abs(maxDim / 2 / Math.tan(fov / 2));
+  cameraZ *= 1.1
+
+  const direction = new THREE.Vector3();
+  camera.getWorldDirection(direction);
+
+  const newPosition = new THREE.Vector3().copy(center).addScaledVector(direction, -cameraZ);
+
+  camera.position.copy(newPosition);
+
+  controls.target.copy(center);
+  controls.update();
 }
 
 export function addMapControls(camera: THREE.Camera, element?: HTMLElement) {

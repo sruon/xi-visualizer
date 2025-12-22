@@ -1,0 +1,9 @@
+
+.zone_model_layout {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    grid-template-rows: 1fr auto;
+
+    height: 100%;
+    width: 100%;
+}
