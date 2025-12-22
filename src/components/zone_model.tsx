@@ -625,7 +625,7 @@ export default function ZoneModel(props: ZoneDataProps) {
           const lineGeo = new THREE.BufferGeometry().setFromPoints(currentParts.map(p => copyAdjustedPos(p.pos)));
           const line = new THREE.Line(lineGeo, lineMat);
 
-          const pointMesh = new THREE.InstancedMesh(pointGeo, pointMat, currentParts.length);
+          const pointMesh = new THREE.InstancedMesh(pointGeo, pointMat, currentParts.length * 2);
 
           let lastRot = 0;
           let pointColor: THREE.Color | undefined = undefined;
