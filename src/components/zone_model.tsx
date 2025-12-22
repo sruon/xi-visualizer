@@ -676,6 +676,7 @@ export default function ZoneModel(props: ZoneDataProps) {
             lastRot = rot;
           }
 
+          pointMesh.count = pointCount;
           if (pointMesh.instanceColor) {
             pointMesh.instanceColor.needsUpdate = true;
             pointMesh.instanceMatrix.needsUpdate = true;
