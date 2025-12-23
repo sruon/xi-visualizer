@@ -1,5 +1,6 @@
-import { createSignal, Show } from "solid-js";
-import { BlockInfo, PreparedPlacementData } from "../graphics/ximesh";
+import { createSignal, Show, type Accessor, type Setter } from "solid-js";
+import { parseCoordinatesToVector3 } from "../graphics/util";
+import * as THREE from "three";
 
 
 export interface ZoneRayTestingBoxProps {

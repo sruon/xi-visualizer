@@ -1,7 +1,7 @@
 /* @refresh reload */
 import "./index.css";
 
-import { render, Suspense } from "solid-js/web";
+import { render } from "solid-js/web";
 
 import { HashRouter } from "@solidjs/router";
 import App from "./app";

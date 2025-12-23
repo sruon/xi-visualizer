@@ -26,7 +26,7 @@ export async function fetchProgress(url: string, setProgress: (progress: number)
   const total = parseInt(contentLength, 10);
 
   const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
+  const chunks: Uint8Array<ArrayBuffer>[] = [];
   let bytesRead = 0;
 
   setProgress(0);

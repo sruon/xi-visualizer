@@ -1,9 +1,7 @@
-import { A, useLocation } from "@solidjs/router";
-import { type Component, Suspense } from "solid-js";
+import { A } from "@solidjs/router";
+import { type JSX, Suspense } from "solid-js";
 
-const App: Component = (props: { children: Element; }) => {
-  const location = useLocation();
-
+const App = (props: { children?: JSX.Element; }) => {
   return (
     <div class="content">
       <nav class="bg-slate-800 rounded-lg">
