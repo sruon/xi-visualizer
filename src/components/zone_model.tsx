@@ -1,16 +1,19 @@
 import "./zone_model.css";
 
-import CameraControls from "camera-controls";
+
+// @ts-ignore
+import Stats from "three/addons/libs/stats.module.js";
+import * as THREE from "three";
+
 import { IoHelpCircle, IoSettings } from "solid-icons/io";
 import { batch, createEffect, createMemo, createSignal, For, mapArray, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
 import { createMutable, createStore, produce, SetStoreFunction, unwrap } from "solid-js/store";
-import * as THREE from "three";
 import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from "three-mesh-bvh";
-import { FlyControls, MapControls } from "three/examples/jsm/Addons.js";
+import { MapControls } from "three/examples/jsm/Addons.js";
 import { CSS2DObject, CSS2DRenderer } from "three/examples/jsm/renderers/CSS2DRenderer.js";
-import { addCustomCameraControls, addMapControls, adjustCameraAspect, fitCameraToContents } from "../graphics/camera";
+import { addMapControls, adjustCameraAspect, fitCameraToContents } from "../graphics/camera";
 import { setupBaseScene } from "../graphics/scene";
-import { cleanupNode, parseCoordinatesToVector3, roundDecimals } from "../graphics/util";
+import { cleanupNode, roundDecimals } from "../graphics/util";
 import { EntityUpdate, EntityUpdateKind, Position, PositionUpdate, ZoneEntityUpdates } from "../parse_packets";
 import { ByZone } from "../types";
 import { binarySearchLower } from "../util";
@@ -22,9 +25,9 @@ import { ColorKind, colorMesh, createZoneMesh, getHitData, getMapId, markLineCol
 import { ZoneInfoBox, TargetInfo } from "./zone_info_box";
 import { ZoneRayTestingBox } from "./zone_ray_testing_box";
 import { parsePath, PathPart, PathPartKind } from "../parse_path";
+import PathNodes from "./path_nodes";
+import SelectionBox, { type SelectionBoxResult } from "./selection_box";
 
-// @ts-ignore
-import Stats from "three/addons/libs/stats.module.js";
 
 // Add the extension functions
 THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
@@ -41,6 +44,7 @@ interface ZoneDataProps {
 
 interface ZoneModelSettings {
   showInfoBox: boolean,
+  showNodeManager: boolean,
   showAreaManager: boolean,
   showRayTesting: boolean,
   colorKind: ColorKind,
@@ -110,6 +114,8 @@ const enum MenuPopup {
 export default function ZoneModel(props: ZoneDataProps) {
   const [getMenuPopup, setMenuPopup] = createSignal<MenuPopup>(MenuPopup.None);
 
+  const [getSelectionBox, setSelectionBox] = createSignal<SelectionBoxResult | undefined>();
+
   // General zone model settings
   const generalSettingsKey = props.sourceKey ? `xi-visualizer.settings.${props.sourceKey}` : "xi-visualizer.settings._any";
   const localStorageGeneralSettings: ZoneModelSettings = JSON.parse(localStorage.getItem(generalSettingsKey), (k, v) => {
@@ -122,6 +128,7 @@ export default function ZoneModel(props: ZoneDataProps) {
 
   const defaultGeneralSettings: ZoneModelSettings = {
     showInfoBox: false,
+    showNodeManager: false,
     showAreaManager: false,
     showRayTesting: false,
     colorKind: ColorKind.Materials,
@@ -413,7 +420,7 @@ export default function ZoneModel(props: ZoneDataProps) {
     const length = endTime - startTime;
 
     for (const entityKey in props.entityUpdates[zoneId]) {
-      if (entitySettings[entityKey].hidden) {
+      if (entitySettings[entityKey]?.hidden) {
         continue;
       }
 
@@ -602,7 +609,7 @@ export default function ZoneModel(props: ZoneDataProps) {
     const obj = new THREE.Object3D();
 
     const copyAdjustedPos = (p: Position) => {
-      return { x: p.x, y: p.y - 2.25, z: p.z };
+      return new THREE.Vector3(p.x, p.y - 0.5, p.z);
     }
 
     for (const zoneId in adjustedEntityUpdates()) {
@@ -634,7 +641,7 @@ export default function ZoneModel(props: ZoneDataProps) {
           for (const part of currentParts) {
             pointColor = undefined;
 
-            let rot = part?.rot ?? lastRot;
+            let rot = "rot" in part ? part.rot : lastRot;
 
             if (part.kind == PathPartKind.Start && updatesSettings.show.pathKinds.start) {
               pointColor = pathStartColor;
@@ -808,13 +815,14 @@ export default function ZoneModel(props: ZoneDataProps) {
             continue;
           }
 
-          let pos: Position | undefined = "pos" in update ? update.pos : undefined;
+          let pos = "pos" in update ? update.pos : undefined;
           if (!pos) {
             if (!hideRendered) {
               continue;
             }
 
-            pos = updates[idx - 1]?.pos;
+            const prevUpdate = updates[idx - 1];
+            pos = "pos" in prevUpdate ? prevUpdate.pos : undefined;
             if (!pos) {
               continue;
             }
@@ -848,7 +856,7 @@ export default function ZoneModel(props: ZoneDataProps) {
 
   // Show/hide paths for rendered entities
   createEffect(() => {
-    if (!props.entityUpdates || !updatesSettings.show.discrete) {
+    if (!props.entityUpdates) {
       return;
     }
 
@@ -892,12 +900,11 @@ export default function ZoneModel(props: ZoneDataProps) {
       const zoneId = (entityId >> 12) & 0x01ff;
       const mesh = discreteEntityMeshes()?.[zoneId]?.[entityKey];
       if (mesh) {
-        mesh.visible = updatesSettings.show.discrete && !entitySettings[entityKey].hidden;
+        mesh.visible = updatesSettings.show.discrete && !entitySettings[entityKey]?.hidden;
       }
     }
   });
 
-  let controls: MapControls;
   let canvasElement: HTMLCanvasElement;
   let labelRendererElement: HTMLDivElement;
   let coordLabelRef: HTMLDivElement;
@@ -911,6 +918,8 @@ export default function ZoneModel(props: ZoneDataProps) {
     canvasElement.height = parentRect.height;
     setNeedsResize(true);
   }
+
+  const [controls, setControls] = createSignal<MapControls>();
 
   onMount(() => {
     window.addEventListener("resize", resizeCanvas);
@@ -995,11 +1004,11 @@ export default function ZoneModel(props: ZoneDataProps) {
 
       for (let i = 0; i < hitsData.length; i++) {
         const hitData = hitsData[i];
-        console.log(`======================= Hit ${i} ======================= `)
-        console.log("Hit", hitData.hit);
-        console.log("Block", hitData.block);
-        console.log("Placement", hitData.placement);
-        console.log("Material", hitData.material);
+        // console.log(`======================= Hit ${i} ======================= `)
+        // console.log("Hit", hitData.hit);
+        // console.log("Block", hitData.block);
+        // console.log("Placement", hitData.placement);
+        // console.log("Material", hitData.material);
       }
 
       const firstHit = hits[0];
@@ -1012,7 +1021,7 @@ export default function ZoneModel(props: ZoneDataProps) {
       }
     });
 
-    controls = addMapControls(camera(), canvasElement);
+    setControls(addMapControls(camera(), canvasElement));
 
     const renderer = new THREE.WebGLRenderer({ canvas: canvasElement, antialias: true, alpha: true });
     const labelRenderer = new CSS2DRenderer({ element: labelRendererElement });
@@ -1023,8 +1032,9 @@ export default function ZoneModel(props: ZoneDataProps) {
   onCleanup(() => {
     window.removeEventListener("resize", resizeCanvas);
     cleanupNode(scene());
-    if (controls) {
-      controls.dispose();
+    if (controls()) {
+      controls().dispose();
+      setControls(undefined);
     }
     scene().clear();
     camera().clear();
@@ -1071,7 +1081,7 @@ export default function ZoneModel(props: ZoneDataProps) {
       return;
     }
 
-    let result = [];
+    let result: RayHit[] = [];
     for (const int of intersections) {
       const p = int.point;
       const face = int.face ? { a: int.face.a, b: int.face.b, c: int.face.c } : undefined;
@@ -1130,7 +1140,7 @@ export default function ZoneModel(props: ZoneDataProps) {
     stats.update();
 
     const delta = clock.getDelta();
-    controls?.update(delta);
+    controls()?.update(delta);
 
     if (getNeedsResize()) {
       const canvas = canvasElement;
@@ -1544,15 +1554,15 @@ export default function ZoneModel(props: ZoneDataProps) {
     const meshes = discreteEntityMeshes()[zoneId];
     const paths = entityPathLines()[zoneId];
 
-    fitCameraToContents(camera(), controls, fn => {
+    fitCameraToContents(camera(), controls(), fn => {
       for (const entityKey in meshes) {
-        if (!entitySettings[entityKey].hidden) {
+        if (!entitySettings[entityKey]?.hidden) {
           fn(meshes[entityKey])
         }
       }
 
       for (const entityKey in paths) {
-        if (!entitySettings[entityKey].hidden) {
+        if (!entitySettings[entityKey]?.hidden) {
           for (const path of paths[entityKey]) {
             fn(path.line)
             fn(path.pointMesh)
@@ -1601,6 +1611,10 @@ export default function ZoneModel(props: ZoneDataProps) {
           <option value={ColorKind.IsRoofed}>Roofed</option>
         </select>
       </div>
+
+      {toggleButton("Node Manager", (v) => {
+        generalSettings.showNodeManager = v;
+      }, () => generalSettings.showNodeManager)}
 
       {toggleButton("Area Manager", (v) => {
         generalSettings.showAreaManager = v;
@@ -1657,10 +1671,10 @@ export default function ZoneModel(props: ZoneDataProps) {
     </div>;
 
   return (
-    <div classList={{ "zone_model_layout": props.entityUpdates }}>
+    <div classList={{ "zone_model_layout": !!props.entityUpdates }}>
 
       <div class="relative" style={{ height: "70vh" }}>
-        <canvas class="block w-full h-full" ref={canvasElement}>
+        <canvas tabIndex={0} class="block w-full h-full outline-none" ref={canvasElement}>
         </canvas>
 
         <div
@@ -1673,6 +1687,28 @@ export default function ZoneModel(props: ZoneDataProps) {
           ref={labelRendererElement}
         >
         </div>
+
+        <SelectionBox
+          controls={controls()}
+          canvasElement={canvasElement}
+          outputSelectionRect={res => {
+            setSelectionBox(res);
+          }}
+        >
+        </SelectionBox>
+
+        {/* Node Manager */}
+        <Show when={generalSettings.showNodeManager}>
+          <PathNodes
+            scene={scene()}
+            camera={camera()}
+            canvasElement={canvasElement}
+            selectionBox={getSelectionBox()}
+            zoneMesh={zoneMeshes()[getSelectedZone()]}
+            zoneId={getSelectedZone()}
+          >
+          </PathNodes>
+        </Show>
 
         {/* Area Manager */}
         <Show when={generalSettings.showAreaManager}>

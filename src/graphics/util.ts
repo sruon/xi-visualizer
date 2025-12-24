@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import type { RayHit } from "./ximesh";
 
 export function cleanupNode(node: THREE.Object3D) {
   if (node instanceof THREE.Mesh) {
@@ -69,4 +70,32 @@ export function parseCoordinatesToVector3(coordString: string): THREE.Vector3 | 
 
   // If no format matches, return null indicating failure to parse.
   return null;
+}
+
+const raycaster = new THREE.Raycaster();
+
+export function castRay(normalizedMouseCoords: THREE.Vector2, camera: THREE.Camera, object: THREE.Object3D): RayHit[] | undefined {
+  raycaster.setFromCamera(normalizedMouseCoords, camera);
+
+  const intersections = raycaster.intersectObject(object, false);
+  if (intersections.length == 0) {
+    return;
+  }
+
+  let result: RayHit[] = [];
+  for (const int of intersections) {
+    const p = int.point;
+    const face = int.face ? { a: int.face.a, b: int.face.b, c: int.face.c } : undefined;
+    result.push({
+      x: p.x,
+      y: p.y,
+      z: p.z,
+      object: int.object,
+      index: int.index!,
+      faceIndex: int.faceIndex!,
+      instanceId: int.instanceId,
+      face,
+    });
+  }
+  return result;
 }

@@ -7,6 +7,7 @@ export interface RayHit {
     z: number;
     index?: number;
     faceIndex?: number;
+    instanceId?: number;
     object: THREE.Object3D,
     face?: {
         a: number;
