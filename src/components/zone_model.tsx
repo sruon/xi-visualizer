@@ -254,7 +254,7 @@ export default function ZoneModel(props: ZoneDataProps) {
   })
 
   const camera = createMemo(() => {
-    const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 5000);
+    const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 5000);
     camera.position.set(0, 1000, 0);
     camera.lookAt(0, 0, 0);
     return camera;
