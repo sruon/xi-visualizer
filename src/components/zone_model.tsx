@@ -16,7 +16,7 @@ import { setupBaseScene } from "../graphics/scene";
 import { cleanupNode, roundDecimals } from "../graphics/util";
 import { EntityUpdate, EntityUpdateKind, Position, PositionUpdate, ZoneEntityUpdates, type EntityUpdates } from "../parse_packets";
 import { ByZone } from "../types";
-import { binarySearchLower } from "../util";
+import { binarySearchLower, deepMerge } from "../util";
 import AreaMenu, { Area, deriveAreaYs as deriveAreaYRange, Point } from "./area_menu";
 import LookupInput from "./lookup_input";
 import RangeInput from "./range_input";
@@ -168,10 +168,7 @@ export default function ZoneModel(props: ZoneDataProps) {
     }
   }
 
-  const updatesSettings = createMutable<EntityUpdatesSettings>({
-    ...defaultUpdatesSettings,
-    ...localStorageUpdatesSettings,
-  });
+  const updatesSettings = createMutable<EntityUpdatesSettings>(deepMerge(defaultUpdatesSettings, localStorageUpdatesSettings));
 
   // Update local storage on change
   createEffect(() => {

@@ -63,3 +63,27 @@ export function binarySearchLower<T, U>(arr: T[], value: U, valueExtract: (t: T)
 
   return lo;
 }
+
+export function deepMerge(...objs: any[]): any {
+  if (objs.length == 1) {
+    return objs[0];
+  }
+
+  const res = {};
+  for (const obj of objs) {
+    if (typeof obj != "object") {
+      continue;
+    }
+
+    for (const key in obj) {
+      const val = obj[key]
+      if (typeof val == "object") {
+        res[key] = deepMerge(res[key], val)
+      } else {
+        res[key] = val
+      }
+    }
+  }
+
+  return res;
+}
