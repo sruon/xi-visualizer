@@ -38,12 +38,19 @@ export interface DespawnUpdate extends BaseEntityUpdate {
 
 export type EntityUpdate = PositionUpdate | OutOfRangeUpdate | DespawnUpdate;
 
-type EntityUpdates = {
-  [entityKey: string]: EntityUpdate[];
+export type EntityUpdatesByEntity = {
+  [entityKey: string]: EntityUpdates;
 };
 
+
+export interface EntityUpdates {
+  id: number;
+  firstName?: string;
+  updates: EntityUpdate[];
+}
+
 export type ZoneEntityUpdates = {
-  [zoneId: number]: EntityUpdates;
+  [zoneId: number]: EntityUpdatesByEntity;
 };
 
 const enc = new TextDecoder("utf-8");
@@ -132,8 +139,11 @@ export class PacketParser {
 
     const timestamp = this.parseTimestamp(lines[0]);
 
-    let entityUpdates = this.zoneEntityUpdates[zoneId] = this.zoneEntityUpdates[zoneId] || {};
-    let list = entityUpdates[entityKey] = entityUpdates[entityKey] || [];
+    let updatesByEntity: EntityUpdatesByEntity = this.zoneEntityUpdates[zoneId] = this.zoneEntityUpdates[zoneId] || {};
+    let entity: EntityUpdates = updatesByEntity[entityKey] = updatesByEntity[entityKey] || {
+      id: entityId,
+      updates: [],
+    };
 
     const updateMask = this.extractByte(lines, 0x0A);
     if ((updateMask & 0x20) > 0 && this.currentShownEntities[entityKey]) {
@@ -143,7 +153,7 @@ export class PacketParser {
         kind: EntityUpdateKind.Despawn as EntityUpdateKind.Despawn,
         time: timestamp,
       };
-      list.push(update);
+      entity.updates.push(update);
       return;
     }
 
@@ -157,6 +167,9 @@ export class PacketParser {
     }
 
     const name = (updateMask & 0x08) > 0 ? this.extractString(lines, 0x34) : undefined;
+    if (name && (!entity.firstName || entity.firstName.length == 0)) {
+      entity.firstName = name;
+    }
 
     const pos = this.extractPosition(lines, 0x0C);
     pos.rotation = this.extractByte(lines, 0x0B);
@@ -167,7 +180,7 @@ export class PacketParser {
       pos,
       name,
     };
-    list.push(update);
+    entity.updates.push(update);
 
     this.currentShownEntities[entityKey] = {
       time: update.time,
@@ -202,9 +215,18 @@ export class PacketParser {
       z: this.lastClientPosition.z + zOffset,
     };
 
-    let entityPositions = this.zoneEntityUpdates[this.currentZoneId] = this.zoneEntityUpdates[this.currentZoneId] || {};
-    let list = entityPositions[entityKey] = entityPositions[entityKey] || [];
-    list.push({
+    const updatesByEntity: EntityUpdatesByEntity = this.zoneEntityUpdates[this.currentZoneId] = this.zoneEntityUpdates[this.currentZoneId] || {};
+    const entity = updatesByEntity[entityKey] = updatesByEntity[entityKey] || {
+      id: entityId,
+      firstName: name,
+      updates: [],
+    };
+
+    if (name && !entity.firstName) {
+      entity.firstName = name;
+    }
+
+    entity.updates.push({
       kind: EntityUpdateKind.Widescan,
       time: timestamp,
       pos,

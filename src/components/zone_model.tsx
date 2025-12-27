@@ -14,7 +14,7 @@ import { CSS2DObject, CSS2DRenderer } from "three/examples/jsm/renderers/CSS2DRe
 import { addMapControls, adjustCameraAspect, fitCameraToContents } from "../graphics/camera";
 import { setupBaseScene } from "../graphics/scene";
 import { cleanupNode, roundDecimals } from "../graphics/util";
-import { EntityUpdate, EntityUpdateKind, Position, PositionUpdate, ZoneEntityUpdates } from "../parse_packets";
+import { EntityUpdate, EntityUpdateKind, Position, PositionUpdate, ZoneEntityUpdates, type EntityUpdates } from "../parse_packets";
 import { ByZone } from "../types";
 import { binarySearchLower } from "../util";
 import AreaMenu, { Area, deriveAreaYs as deriveAreaYRange, Point } from "./area_menu";
@@ -207,7 +207,8 @@ export default function ZoneModel(props: ZoneDataProps) {
 
       let rows = Object.keys(props.entityUpdates[zoneId]).map(
         entityKey => {
-          const updates: EntityUpdate[] = props.entityUpdates[zoneId][entityKey];
+          const entity: EntityUpdates = props.entityUpdates[zoneId][entityKey];
+          const updates: EntityUpdate[] = entity.updates;
           const updateCount = updates.length;
           if (updateCount == 0) {
             return undefined;
@@ -226,20 +227,13 @@ export default function ZoneModel(props: ZoneDataProps) {
             setEntitySettings(entityKey, { hidden: true });
           }
 
-          let name = "";
-          for (const update of updates) {
-            if ("name" in update && update.name?.length > 0) {
-              name = update.name;
-              break;
-            }
-          }
 
           const split = entityKey.split("-");
           return {
-            id: split[1],
+            id: entity.id,
             index: split[0],
             entityKey,
-            name,
+            name: entity.firstName,
             updateCount,
           };
         },
@@ -332,10 +326,16 @@ export default function ZoneModel(props: ZoneDataProps) {
       adjusted[zoneId] = {};
 
       for (const entityKey in props.entityUpdates[zoneId]) {
-        const updates = props.entityUpdates[zoneId][entityKey];
-        const adjustedUpdates = adjusted[zoneId][entityKey] = new Array(updates.length);
-        for (let i = 0; i < updates.length; i++) {
-          const update = updates[i];
+        const entity = props.entityUpdates[zoneId][entityKey];
+        const adjustedEntity = adjusted[zoneId][entityKey] = {
+          id: entity.id,
+          firstName: entity.firstName,
+          updates: new Array(entity.updates.length)
+        };
+        const adjustedUpdates = adjustedEntity.updates;
+
+        for (let i = 0; i < entity.updates.length; i++) {
+          const update = entity.updates[i];
           if (update.kind !== EntityUpdateKind.Widescan) {
             adjustedUpdates[i] = update;
             continue;
@@ -424,7 +424,7 @@ export default function ZoneModel(props: ZoneDataProps) {
         continue;
       }
 
-      const updates = props.entityUpdates[zoneId][entityKey];
+      const updates = props.entityUpdates[zoneId][entityKey].updates;
 
       // Count how long the arrays needs to be.
       let count = 0;
@@ -565,7 +565,7 @@ export default function ZoneModel(props: ZoneDataProps) {
       const entities = (discreteEntityMeshes[zoneId] = discreteEntityMeshes[zoneId] || {});
 
       for (const entityKey in adjustedEntityUpdates()[zoneId]) {
-        const updates = adjustedEntityUpdates()[zoneId][entityKey];
+        const updates = adjustedEntityUpdates()[zoneId][entityKey].updates;
         const mesh = new THREE.InstancedMesh(geo, mat, updates.length);
 
         scene().add(mesh);
@@ -612,13 +612,15 @@ export default function ZoneModel(props: ZoneDataProps) {
       return new THREE.Vector3(p.x, p.y - 0.5, p.z);
     }
 
-    for (const zoneId in adjustedEntityUpdates()) {
+    const adjusted = adjustedEntityUpdates();
+
+    for (const zoneId in adjusted) {
       const entityLines = (pathLines[zoneId] = pathLines[zoneId] || {});
 
-      for (const entityKey in adjustedEntityUpdates()[zoneId]) {
+      for (const entityKey in adjusted[zoneId]) {
         entityLines[entityKey] = [];
 
-        const updates = adjustedEntityUpdates()[zoneId][entityKey];
+        const updates = adjusted[zoneId][entityKey].updates;
         const parts = parsePath(updates);
 
         let currentParts: PathPart[] = [];
@@ -745,7 +747,7 @@ export default function ZoneModel(props: ZoneDataProps) {
         continue;
       }
 
-      const updates = adjustedEntityUpdates()[zoneId][entityKey];
+      const updates = adjustedEntityUpdates()[zoneId][entityKey].updates;
       const mesh = meshes[entityKey];
       let showCount = 0;
 

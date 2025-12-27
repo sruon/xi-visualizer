@@ -17,7 +17,7 @@ interface EntityInfo {
   updates: EntityUpdate[];
 }
 
-export default function PacketPage({}: PathPageProps) {
+export default function PacketPage({ }: PathPageProps) {
   const [getStatus, setStatus] = createSignal<string | undefined>();
   const [getParsedPackets, setParsedPackets] = createSignal<PacketParser | undefined>(undefined);
 
@@ -58,27 +58,21 @@ export default function PacketPage({}: PathPageProps) {
     for (const zoneId in getParsedPackets().zoneEntityUpdates) {
       const zoneUpdates = getParsedPackets().zoneEntityUpdates[zoneId];
       for (const entityKey in zoneUpdates) {
-        const updates = zoneUpdates[entityKey];
-
-        const entityId = parseInt(entityKey.split("-")[1]);
+        const entity = zoneUpdates[entityKey];
 
         let posCount = 0;
-        let name = "";
-        for (const update of updates) {
-          if (name.length == 0 && "name" in update && update.name?.length > 0) {
-            name = update.name;
-          }
+        for (const update of entity.updates) {
           if (update.kind == EntityUpdateKind.Position) {
             posCount++;
           }
         }
 
         entities.push({
-          entityId,
+          entityId: entity.id,
           entityKey,
-          name,
+          name: entity.firstName,
           posCount,
-          updates,
+          updates: entity.updates,
         });
       }
     }
