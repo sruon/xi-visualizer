@@ -94,7 +94,7 @@ export default function PathVisualsComponent(ps: PathVisualsProps) {
 
     let turnCount = 0;
     for (const part of pathData) {
-      if (part.kind == PathPartKind.Start) {
+      if (part.kind == PathPartKind.Start || part.kind == PathPartKind.Interrupted) {
         turnCount = 0;
       } else if (part.kind == PathPartKind.End) {
         turnCounts.push(turnCount);
@@ -271,13 +271,11 @@ export default function PathVisualsComponent(ps: PathVisualsProps) {
       case PathPartKind.Start:
         return `${formatTime(part.time)} - Waited ${part.pauseTime / 1000}s and now moving towards ${part.rot} (diff: ${part.rotDiff})`;
       case PathPartKind.End:
-        return `${formatTime(part.time)} - Moved for ${part.moveTime / 1000}s before stopping. Travelled ${part.legDist.toFixed(1)} yalms since last. [${
-          formatPos(part.startPos)
-        } -> ${formatPos(part.endPos)}]`;
+        return `${formatTime(part.time)} - Moved for ${part.moveTime / 1000}s before stopping. Travelled ${part.legDist.toFixed(1)} yalms since last. [${formatPos(part.startPos)
+          } -> ${formatPos(part.endPos)}]`;
       case PathPartKind.NewDirection:
-        return `${formatTime(part.time)} - Changed direction after ${part.walkTime / 1000}s and ${
-          part.walkDist.toFixed(1)
-        } yalms towards ${part.rot} (diff: ${part.rotDiff})`;
+        return `${formatTime(part.time)} - Changed direction after ${part.walkTime / 1000}s and ${part.walkDist.toFixed(1)
+          } yalms towards ${part.rot} (diff: ${part.rotDiff})`;
     }
 
     return "**unhandled**";

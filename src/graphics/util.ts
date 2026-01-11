@@ -74,7 +74,7 @@ export function parseCoordinatesToVector3(coordString: string): THREE.Vector3 | 
 
 const raycaster = new THREE.Raycaster();
 
-export function castRay(normalizedMouseCoords: THREE.Vector2, camera: THREE.Camera, object: THREE.Object3D): RayHit[] | undefined {
+export function castRayFromCamera(normalizedMouseCoords: THREE.Vector2, camera: THREE.Camera, object: THREE.Object3D): RayHit[] | undefined {
   raycaster.setFromCamera(normalizedMouseCoords, camera);
 
   const intersections = raycaster.intersectObject(object, false);
@@ -84,6 +84,46 @@ export function castRay(normalizedMouseCoords: THREE.Vector2, camera: THREE.Came
 
   let result: RayHit[] = [];
   for (const int of intersections) {
+    const p = int.point;
+    const face = int.face ? { a: int.face.a, b: int.face.b, c: int.face.c } : undefined;
+    result.push({
+      x: p.x,
+      y: p.y,
+      z: p.z,
+      object: int.object,
+      index: int.index!,
+      faceIndex: int.faceIndex!,
+      instanceId: int.instanceId,
+      face,
+    });
+  }
+  return result;
+}
+
+
+export function castRay(start: THREE.Vector3Like, end: THREE.Vector3Like, object: THREE.Object3D): RayHit[] {
+  const s = new THREE.Vector3(start.x, start.y, -start.z)
+  let diff = new THREE.Vector3(
+    end.x - start.x,
+    end.y - start.y,
+    -(end.z - start.z),
+  );
+  const maxDist = Math.sqrt(Math.pow(diff.x, 2) + Math.pow(diff.y, 2) + Math.pow(diff.z, 2));
+
+  const direction = diff.normalize()
+  raycaster.set(s, direction);
+
+  const intersections = raycaster.intersectObject(object, false);
+  if (intersections.length == 0) {
+    return [];
+  }
+
+  let result: RayHit[] = [];
+  for (const int of intersections) {
+    if (int.distance > maxDist) {
+      continue;
+    }
+
     const p = int.point;
     const face = int.face ? { a: int.face.a, b: int.face.b, c: int.face.c } : undefined;
     result.push({

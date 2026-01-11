@@ -2,11 +2,12 @@ import * as THREE from "three"
 import { batch, createEffect, createMemo, createSignal, on, onCleanup, onMount, Show } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 
-import { castRay, roundDecimals } from "../graphics/util";
+import { castRay, castRayFromCamera, roundDecimals } from "../graphics/util";
 import { InstancedMesh2 } from "@three.ez/instanced-mesh";
 import { TargetedSelectionBox } from '../graphics/selection';
 import { db } from '../localdb/db';
 import type { SelectionBoxResult } from './selection_box';
+import { DynamicLineSegments } from "../graphics/dynamic_lines";
 
 export interface PathNodesProps {
   scene: THREE.Scene,
@@ -22,6 +23,7 @@ export interface PathNode {
   y: number,
   z: number,
   dbId: number,
+  lineIds?: number[],
 }
 
 interface Position {
@@ -38,6 +40,12 @@ interface PathNodeStore {
 
 const defaultColor = new THREE.Color(0x00AA00);
 const selectedColor = new THREE.Color(0x00EE00);
+
+type GridNodes = {
+  [gridIdx: number]: {
+    [dbId: number]: boolean,
+  }
+}
 
 export default function PathNodes(ps: PathNodesProps) {
 
@@ -70,6 +78,47 @@ export default function PathNodes(ps: PathNodesProps) {
     const newSet = new Set([...selectedInstanceIds()]);
     newSet.delete(instanceId);
     setSelectedInstanceId(newSet);
+  };
+
+  // Tracking nodes in a grid
+  const [gridNodes, setGridNodes] = createStore<GridNodes>({});
+
+  const gridCellSize = 10;
+  const coordRange = 2000;
+  const rowFactor = (coordRange * 2) / gridCellSize;
+
+  const gridCoordsToCellId = (x: number, y: number, z: number) => {
+    return x + z * rowFactor + y * rowFactor * rowFactor;
+  };
+
+  const cellIdToGridCoords = (cellId: number): Position => {
+    const gx = cellId % rowFactor;
+    const remx = (cellId - gx) / rowFactor;
+    const gz = remx % rowFactor;
+    const gy = (remx - gz) / rowFactor
+    return { x: gx, y: gy, z: gz }
+  }
+
+  const calcGridId = (p: Position) => {
+    const gx = Math.floor((p.x + coordRange) / gridCellSize);
+    const gy = Math.floor((p.y + coordRange) / gridCellSize);
+    const gz = Math.floor((p.z + coordRange) / gridCellSize);
+    return gridCoordsToCellId(gx, gy, gz);
+  }
+
+  const addGridNode = (p: PathNode) => {
+    const cellId = calcGridId(p);
+    const newNodes = gridNodes[cellId] ? { ...gridNodes[cellId] } : {};
+    newNodes[p.dbId] = true;
+    setGridNodes(cellId, newNodes)
+  };
+
+  const removeGridNode = (p: PathNode) => {
+    const cellId = calcGridId(p);
+    setGridNodes(cellId, produce((nodes) => {
+      delete nodes[p.dbId];
+      return nodes;
+    }));
   };
 
   const addNode = async (p: Position) => {
@@ -105,12 +154,14 @@ export default function PathNodes(ps: PathNodesProps) {
     });
 
 
-    setNodes("nodes", dbId, {
+    const node = {
       x: p.x,
       y: p.y,
       z: p.z,
       dbId,
-    })
+    };
+    setNodes("nodes", dbId, node)
+    addGridNode(node);
 
     // Need to recompute bounding sphere for raycasting to work on the mesh
     mesh.computeBoundingSphere();
@@ -129,6 +180,14 @@ export default function PathNodes(ps: PathNodesProps) {
 
     // Remove from mesh
     mesh.removeInstances(...instanceIds);
+
+    // Remove from grid
+    batch(() => {
+      for (const dbId of dbIds) {
+        const node = nodes.nodes[dbId];
+        removeGridNode(node);
+      }
+    })
 
     // Remove from store
     setNodes("nodes", produce((nodes) => {
@@ -243,12 +302,12 @@ export default function PathNodes(ps: PathNodesProps) {
     cameraMouse.y = (-2 * e.offsetY) / ps.canvasElement.offsetHeight + 1;
 
     const mesh = nodeMesh();
-    const nodeHits = castRay(cameraMouse, ps.camera, mesh);
+    const nodeHits = castRayFromCamera(cameraMouse, ps.camera, mesh);
     const nodeHit = nodeHits?.[0]
 
     if (e.ctrlKey) {
       // Add new node on clicked part of zone mesh
-      const hits = castRay(cameraMouse, ps.camera, ps.zoneMesh);
+      const hits = castRayFromCamera(cameraMouse, ps.camera, ps.zoneMesh);
       if (!hits) {
         return;
       }
@@ -296,7 +355,16 @@ export default function PathNodes(ps: PathNodesProps) {
         setNodes("collectionName", collection.name);
 
         if (nodes.length > 0) {
-          setNodes("nodes", nodes.map(n => ({ x: n.x, y: n.y, z: n.z, dbId: n.id })));
+          const newNodes = {}
+          nodes.forEach(n => {
+            newNodes[n.id] = { x: n.x, y: n.y, z: n.z, dbId: n.id };
+          });
+          setNodes("nodes", newNodes);
+          batch(() => {
+            for (const dbId in newNodes) {
+              addGridNode(newNodes[dbId]);
+            }
+          })
 
           const mesh = nodeMesh();
           let idx = 0;
@@ -321,6 +389,18 @@ export default function PathNodes(ps: PathNodesProps) {
 
   const [getShowDetails, setShowDetails] = createSignal<boolean>(true);
 
+  const calcDistance = (n1: Position, n2: Position): number => {
+    return roundDecimals(Math.sqrt(Math.pow(n1.x - n2.x, 2) + Math.pow(n1.y - n2.y, 2) + Math.pow(n1.z - n2.z, 2)), 1);
+  }
+
+  const calcDistanceSquared = (n1: Position, n2: Position): number => {
+    return Math.pow(n1.x - n2.x, 2) + Math.pow(n1.y - n2.y, 2) + Math.pow(n1.z - n2.z, 2);
+  }
+
+  const calcAngleRadians = (n1: Position, n2: Position): number => {
+    return Math.atan2(n2.x - n1.x, n2.z - n1.z) + Math.PI;
+  }
+
   const selectedDistance = createMemo(() => {
     if (selectedInstanceIds().size != 2) {
       return undefined;
@@ -328,8 +408,207 @@ export default function PathNodes(ps: PathNodesProps) {
 
     const mesh = nodeMesh();
     const ns = selectedInstanceIds().keys().map(id => nodes.nodes[mesh.userData[id]]).toArray();
-    return roundDecimals(Math.sqrt(Math.pow(ns[0].x - ns[1].x, 2) + Math.pow(ns[0].y - ns[1].y, 2) + Math.pow(ns[0].z - ns[1].z, 2)), 1)
+    return calcDistance(ns[0], ns[1]);
   })
+
+  const findClosestNeighbour = (n: PathNode): PathNode => {
+    let startGridId = calcGridId(n)
+    let bestDistSqr = Number.MAX_VALUE;
+    let bestDbId: number | undefined = undefined;
+
+    let searchRadius = 0;
+    let nodesChecked = 0;
+    while (Math.pow((searchRadius - 1) * gridCellSize, 2) < bestDistSqr) {
+      for (let dx = -searchRadius; dx <= searchRadius; dx++) {
+        for (let dz = -searchRadius; dz <= searchRadius; dz++) {
+          for (let dy = -searchRadius; dy <= searchRadius; dy++) {
+            if (Math.max(Math.abs(dx), Math.abs(dz), Math.abs(dy)) != searchRadius) {
+              continue;
+            }
+
+            let cellId = startGridId + gridCoordsToCellId(dx, dy, dz);
+            for (const checkDbIdStr in gridNodes[cellId]) {
+              const checkDbId = parseInt(checkDbIdStr);
+              if (checkDbId == n.dbId) {
+                continue;
+              }
+              nodesChecked++;
+
+              const checkNode = nodes.nodes[checkDbId];
+              if (!checkNode) {
+                continue;
+              }
+
+              const distSqr = calcDistanceSquared(n, checkNode);
+              if (distSqr < bestDistSqr) {
+                bestDbId = checkDbId;
+                bestDistSqr = distSqr;
+              }
+            }
+          }
+        }
+      }
+
+      searchRadius += 1;
+    }
+
+    console.log("Nodes checked", nodesChecked);
+    return nodes.nodes[bestDbId];
+  };
+
+  const closestNeighbourToSelection = createMemo(() => {
+    if (selectedInstanceIds().size != 1) {
+      return undefined;
+    }
+
+    const mesh = nodeMesh();
+    const ns = selectedInstanceIds().keys().map(id => nodes.nodes[mesh.userData[id]]).toArray();
+    const node = ns[0];
+
+    const closest = findClosestNeighbour(node);
+
+    return calcDistance(node, closest);
+  })
+
+  const linkLines = createMemo(() => {
+    const material = new THREE.LineBasicMaterial({
+      color: 0x00FF00,
+    })
+    const segments = new DynamicLineSegments(material);
+
+    ps.scene.add(segments);
+
+    onCleanup(() => {
+      ps.scene.remove(segments);
+    })
+
+    return segments;
+  });
+
+  const buildGraph = () => {
+    const checkedCells = new Set<number>();
+
+    for (const cellKey in gridNodes) {
+      const cellId = parseInt(cellKey)
+      checkedCells.add(cellId)
+      const g = cellIdToGridCoords(cellId)
+
+    }
+  };
+
+  const copyAdjustedPosition = (p: Position) => {
+    return {
+      x: p.x,
+      y: p.y - 1,
+      z: p.z,
+    }
+  }
+
+  interface PossibleLink {
+    distSqr: number,
+    angle: number,
+    end: Position,
+  }
+
+  const maxLinkLength = 30
+  const maxLinkLengthSqr = maxLinkLength * maxLinkLength
+  const maxLinks = 10
+  const minHalfBlockingAngle = Math.PI / (maxLinks / 2)
+  const maxHalfBlockingAngle = Math.PI * 2 - minHalfBlockingAngle
+
+  const buildNodeConnections = () => {
+    const mesh = nodeMesh();
+    const lines = linkLines();
+    const ns = selectedInstanceIds().keys().map(id => nodes.nodes[mesh.userData[id]]).toArray()
+
+    for (const node of ns) {
+      const startGridId = calcGridId(node)
+      const possibleLinks: PossibleLink[] = []
+
+      let searchRadius = 0;
+      const maxSearchRadius = Math.ceil(maxLinkLength / gridCellSize)
+      while (searchRadius <= maxSearchRadius) {
+        for (let dx = -searchRadius; dx <= searchRadius; dx++) {
+          for (let dz = -searchRadius; dz <= searchRadius; dz++) {
+            for (let dy = -searchRadius; dy <= searchRadius; dy++) {
+              if (Math.max(Math.abs(dx), Math.abs(dz), Math.abs(dy)) != searchRadius) {
+                continue;
+              }
+
+              let cellId = startGridId + gridCoordsToCellId(dx, dy, dz);
+              for (const dbIdStr in gridNodes[cellId]) {
+                const dbId = parseInt(dbIdStr)
+                if (dbId == node.dbId) {
+                  continue;
+                }
+                const cellNode = nodes.nodes[dbId]
+
+                const distSqr = calcDistanceSquared(node, cellNode);
+                if (distSqr > maxLinkLengthSqr) {
+                  continue;
+                }
+
+                const angle = calcAngleRadians(node, cellNode)
+
+                possibleLinks.push({
+                  angle,
+                  distSqr,
+                  end: cellNode
+                });
+              }
+            }
+          }
+        }
+
+        searchRadius++;
+      }
+
+      const acceptedLinks = []
+      possibleLinks.sort((a, b) => {
+        return a.distSqr - b.distSqr;
+      })
+
+      for (const link of possibleLinks) {
+        // Check if there's another better link blocking
+        let wasBlocked = false;
+        for (const otherLink of possibleLinks) {
+          let diffAngle = Math.abs(link.angle - otherLink.angle);
+          if ((diffAngle < minHalfBlockingAngle || diffAngle > maxHalfBlockingAngle) && otherLink.distSqr < link.distSqr) {
+            wasBlocked = true;
+            break;
+          }
+        }
+
+        if (wasBlocked) {
+          continue;
+        }
+
+        acceptedLinks.push(link)
+      }
+
+      const adjustedStart = copyAdjustedPosition(node);
+      for (const link of acceptedLinks) {
+        const hits = castRay(node, link.end, ps.zoneMesh);
+        if (hits.length == 0) {
+          lines.addLine(adjustedStart, copyAdjustedPosition(link.end))
+        }
+      }
+    }
+  };
+
+  const exportToClipboard = async () => {
+    const data =
+      Object.keys(nodes.nodes).map(id => {
+        const node = nodes.nodes[id]
+        return [
+          node.x,
+          node.y,
+          node.z,
+        ]
+      });
+
+    await navigator.clipboard.writeText(JSON.stringify(data));
+  }
 
   return (
     <div class="h-full absolute left-0 top-0 overflow-y-auto m-0 p-0 pointer-events-none noselect z-50" style={{ "width": "20%", "min-width": "40ch" }}>
@@ -346,9 +625,16 @@ export default function PathNodes(ps: PathNodesProps) {
             <div class="italic">{nodes.collectionName}</div>
 
             <div>Node count: <span class="font-bold">{Object.keys(nodes.nodes).length}</span></div>
+            <div><button onClick={exportToClipboard}>Export</button></div>
+            <div><button onClick={buildNodeConnections}>Build</button></div>
+
 
             <Show when={selectedDistance()}>
               <div>Distance: <span class="font-bold">{selectedDistance()}</span></div>
+            </Show>
+
+            <Show when={closestNeighbourToSelection() !== undefined}>
+              <div>Closest neighbour: <span class="font-bold">{closestNeighbourToSelection()}</span></div>
             </Show>
           </div>
         </Show>

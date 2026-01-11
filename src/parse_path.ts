@@ -48,6 +48,63 @@ interface PrevUpdates {
   rot?: PositionUpdate,
 }
 
+
+export function parsePath2(updates: EntityUpdate[]): PathPart[] {
+  let prev: PrevUpdates = {}
+  let path: PathPart[] = [];
+
+  let distMoved = 0;
+  let timeSinceLastMove = 0;
+  let moveTime = 0;
+  let stopDist = 0;
+  let stopTime = 0;
+
+  for (const update of updates) {
+    if (update.kind === EntityUpdateKind.OutOfRange || update.kind === EntityUpdateKind.Despawn) {
+      if (prev.rot) {
+        path.push({
+          kind: PathPartKind.Interrupted,
+          pos: prev.one.pos,
+          time: update.time,
+        });
+      }
+      prev = {}
+      continue;
+    }
+
+    if (update.kind !== EntityUpdateKind.Position) {
+      continue;
+    }
+
+    if (!prev.one) {
+      prev.one = update;
+      continue;
+    }
+
+    distMoved = calcDistance(update.pos, prev.one.pos);
+
+    if (distMoved > 0.1) {
+      if (prev.move) {
+        timeSinceLastMove = update.time - prev.move.time;
+
+        if (timeSinceLastMove > 3000) {
+
+        }
+      }
+
+      stopTime = 0;
+      prev.move = update;
+    } else {
+      stopTime += update.time - prev.one.time
+      if (stopTime > 3000) {
+
+      }
+    }
+  }
+
+  return path;
+}
+
 export function parsePath(updates: EntityUpdate[]): PathPart[] {
   let prev: PrevUpdates = {}
 
@@ -75,6 +132,7 @@ export function parsePath(updates: EntityUpdate[]): PathPart[] {
 
     if (!prev.one) {
       prev.one = update;
+      prev.rot = update;
       continue;
     }
 
@@ -131,6 +189,14 @@ export function parsePath(updates: EntityUpdate[]): PathPart[] {
     }
 
     prev.one = update;
+  }
+
+  if (prev.one && path.length > 0 && path[-1]?.kind !== PathPartKind.End) {
+    path.push({
+      kind: PathPartKind.Interrupted,
+      pos: prev.one.pos,
+      time: prev.one.time,
+    });
   }
 
   return path;
