@@ -47,6 +47,7 @@ export interface EntityUpdates {
   id: number;
   firstName?: string;
   updates: EntityUpdate[];
+  levels: number[],
 }
 
 export type ZoneEntityUpdates = {
@@ -143,6 +144,7 @@ export class PacketParser {
     let entity: EntityUpdates = updatesByEntity[entityKey] = updatesByEntity[entityKey] || {
       id: entityId,
       updates: [],
+      levels: [],
     };
 
     const updateMask = this.extractByte(lines, 0x0A);
@@ -203,6 +205,7 @@ export class PacketParser {
     const entityId = ((0x1000 + this.currentZoneId) << 12) + entityIndex;
     const entityKey = `0x${entityIndex.toString(16).toUpperCase().padStart(3, "0")}-${entityId}`;
 
+    const level = this.extractByte(lines, 0x06);
     const name = this.extractString(lines, 0x0C);
 
     const timestamp = this.parseTimestamp(lines[0]);
@@ -220,10 +223,15 @@ export class PacketParser {
       id: entityId,
       firstName: name,
       updates: [],
+      levels: [],
     };
 
     if (name && !entity.firstName) {
       entity.firstName = name;
+    }
+
+    if (!entity.levels.includes(level)) {
+      entity.levels.push(level)
     }
 
     entity.updates.push({

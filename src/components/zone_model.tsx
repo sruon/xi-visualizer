@@ -96,6 +96,7 @@ interface EntityRow {
   entityKey: string;
   name: string;
   updateCount: number;
+  levels: string;
 }
 
 interface NormalizedEntityUpdates {
@@ -227,12 +228,13 @@ export default function ZoneModel(props: ZoneDataProps) {
 
           const split = entityKey.split("-");
           return {
-            id: entity.id,
+            id: entity.id.toString(),
             index: split[0],
             entityKey,
             name: entity.firstName,
+            levels: entity.levels.toSorted().join(","),
             updateCount,
-          };
+          } as EntityRow;
         },
       ).filter(x => x !== undefined);
 
@@ -327,7 +329,8 @@ export default function ZoneModel(props: ZoneDataProps) {
         const adjustedEntity = adjusted[zoneId][entityKey] = {
           id: entity.id,
           firstName: entity.firstName,
-          updates: new Array(entity.updates.length)
+          updates: new Array(entity.updates.length),
+          levels: entity.levels,
         };
         const adjustedUpdates = adjustedEntity.updates;
 
@@ -1774,6 +1777,7 @@ export default function ZoneModel(props: ZoneDataProps) {
               { name: "Name", key: "name" },
               { name: "ID", key: "id" },
               { name: "Index", key: "index" },
+              { name: "Levels", key: "levels" },
               { name: "Count", key: "updateCount", defaultSortAsc: false },
             ]}
             defaultSortColumn="index"
