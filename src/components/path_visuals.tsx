@@ -46,16 +46,17 @@ export default function PathVisualsComponent(ps: PathVisualsProps) {
     }
 
     const timeDiff = maxTime - minTime;
-    const barCount = timeDiff + 1;
-    const bucketSize = 1;
+    const maxBars = 50;
+    const barCount = Math.min(timeDiff + 1, maxBars);
+    const bucketSize = Math.max(1, Math.ceil((timeDiff + 1) / maxBars));
 
     let bars: number[] = new Array(barCount).fill(0);
     for (const waitTime of waitTimes) {
-      const barIdx = Math.floor((waitTime - minTime) / bucketSize);
+      const barIdx = Math.min(Math.floor((waitTime - minTime) / bucketSize), barCount - 1);
       bars[barIdx]++;
     }
 
-    const labels = new Array(barCount).fill("").map((_, idx) => `${(minTime + idx * bucketSize)}`);
+    const labels = new Array(barCount).fill("").map((_, idx) => `${(minTime + idx * bucketSize).toFixed(0)}`);
 
     const chartData: ChartData = {
       labels,
@@ -111,12 +112,13 @@ export default function PathVisualsComponent(ps: PathVisualsProps) {
     }
 
     const diff = maxTurns - minTurns;
-    const barCount = diff + 1;
-    const bucketSize = 1;
+    const maxBars = 50;
+    const barCount = Math.min(diff + 1, maxBars);
+    const bucketSize = Math.max(1, Math.ceil((diff + 1) / maxBars));
 
     let bars: number[] = new Array(barCount).fill(0);
     for (const turnCount of turnCounts) {
-      const barIdx = Math.floor((turnCount - minTurns) / bucketSize);
+      const barIdx = Math.min(Math.floor((turnCount - minTurns) / bucketSize), barCount - 1);
       bars[barIdx]++;
     }
 

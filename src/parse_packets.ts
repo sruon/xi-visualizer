@@ -57,41 +57,68 @@ export type ZoneEntityUpdates = {
 const enc = new TextDecoder("utf-8");
 
 export class PacketParser {
-  private lines: string[];
-
-  public zoneEntityUpdates: ZoneEntityUpdates;
-  public clientUpdates: PositionUpdate[];
+  public zoneEntityUpdates: ZoneEntityUpdates = {};
+  public clientUpdates: PositionUpdate[] = [];
 
   private lastClientPosition: Position;
-  private currentShownEntities: { [entityKey: string]: { time: number; pos: Position; }; };
+  private currentShownEntities: { [entityKey: string]: { time: number; pos: Position; }; } = {};
   private currentZoneId: number = 0;
 
-  constructor(content: string) {
-    console.time("line-splitting");
-    this.lines = content.split("\n");
-    console.timeEnd("line-splitting");
-  }
+  private buffer: string = "";
+  private packetCount: number = 0;
 
-  public parsePackets() {
-    console.time("parse-packets");
-    this.zoneEntityUpdates = {};
-    this.clientUpdates = [];
-    this.currentShownEntities = {};
-    let packetCount = 0;
+  public feedChunk(chunk: string) {
+    this.buffer += chunk;
 
-    for (let i = 0; i < this.lines.length; i++) {
-      if (PACKET_START.test(this.lines[i])) {
-        let start = i;
-        i++;
-        while (i < this.lines.length && !PACKET_START.test(this.lines[i])) {
-          i++;
+    const lines = this.buffer.split("\n");
+    // Keep the last line in buffer (might be incomplete)
+    this.buffer = lines.pop() || "";
+
+    let currentPacketLines: string[] = [];
+
+    for (const line of lines) {
+      if (PACKET_START.test(line)) {
+        // New packet starting - process previous if exists
+        if (currentPacketLines.length > 0) {
+          this.parsePacket(currentPacketLines);
+          this.packetCount++;
         }
-        this.parsePacket(this.lines.slice(start, i));
-        packetCount++;
-        i--;
+        currentPacketLines = [line];
+      } else if (currentPacketLines.length > 0) {
+        currentPacketLines.push(line);
       }
     }
-    console.timeEnd("parse-packets");
+
+    // Keep incomplete packet lines in a separate buffer
+    if (currentPacketLines.length > 0) {
+      this.buffer = currentPacketLines.join("\n") + "\n" + this.buffer;
+    }
+  }
+
+  public finalize() {
+    // Process any remaining data
+    if (this.buffer.length > 0) {
+      const lines = this.buffer.split("\n");
+      let currentPacketLines: string[] = [];
+
+      for (const line of lines) {
+        if (PACKET_START.test(line)) {
+          if (currentPacketLines.length > 0) {
+            this.parsePacket(currentPacketLines);
+            this.packetCount++;
+          }
+          currentPacketLines = [line];
+        } else if (currentPacketLines.length > 0) {
+          currentPacketLines.push(line);
+        }
+      }
+
+      if (currentPacketLines.length > 0) {
+        this.parsePacket(currentPacketLines);
+        this.packetCount++;
+      }
+    }
+
   }
 
   private parsePacket(lines: string[]) {

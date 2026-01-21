@@ -19,11 +19,7 @@ export async function fetchProgress(url: string, setProgress: (progress: number)
   }
 
   const contentLength = response.headers.get("content-length");
-  if (!contentLength) {
-    throw new Error("Unknown file size");
-  }
-
-  const total = parseInt(contentLength, 10);
+  const total = contentLength ? parseInt(contentLength, 10) : null;
 
   const reader = response.body.getReader();
   const chunks: Uint8Array<ArrayBuffer>[] = [];
@@ -38,7 +34,7 @@ export async function fetchProgress(url: string, setProgress: (progress: number)
     bytesRead += stream.value.length;
 
     chunks.push(stream.value);
-    setProgress(bytesRead / total);
+    setProgress(total ? bytesRead / total : undefined);
   }
 
   const blob = new Blob(chunks);
