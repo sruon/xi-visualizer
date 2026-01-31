@@ -5,9 +5,9 @@ export async function compress(inString) {
   return await new Response(compressedStream).arrayBuffer();
 }
 
-export async function decompress(bytes) {
+export async function decompress(bytes, format: CompressionFormat = "deflate") {
   const decompressedStream = new Response(bytes).body!.pipeThrough(
-    new DecompressionStream("deflate"),
+    new DecompressionStream(format),
   );
   return await new Response(decompressedStream).arrayBuffer();
 }

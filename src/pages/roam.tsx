@@ -117,7 +117,7 @@ export default function RoamPage() {
             setLoadingMessage(`Loading path data ${(progress * 100).toFixed(0)}%`);
           }
         });
-        const bytes = await decompress(compressed);
+        const bytes = await decompress(compressed, "gzip");
         const text = new TextDecoder().decode(bytes);
         const data: PathData = JSON.parse(text);
         setLoadingMessage(undefined);
