@@ -195,7 +195,7 @@ export function createZoneMesh(zoneId: number, buffer: ArrayBufferLike, prep: Pr
         color: 0x333333,
         transparent: true,
         wireframe: true,
-        opacity: 0.10,
+        opacity: 0.05,
         depthTest: true,
         polygonOffset: true,
         polygonOffsetFactor: -1,

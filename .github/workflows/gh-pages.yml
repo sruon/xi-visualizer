@@ -49,6 +49,8 @@ jobs:
 
       - name: Build
         run: pnpm run build
+        env:
+          VITE_PATHDATA_URL: https://f002.backblazeb2.com/file/ffxi-roam-data
 
       - name: Setup Pages
         uses: actions/configure-pages@v4
