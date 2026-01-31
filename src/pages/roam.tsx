@@ -109,7 +109,7 @@ export default function RoamPage() {
       if (!roamZone) return undefined;
 
       setLoadingMessage("Loading path data...");
-      const url = `${PATHDATA_BASE_URL}/${roamZone.pathFile}.json.gz`;
+      const url = `${PATHDATA_BASE_URL}/${encodeURIComponent(roamZone.pathFile)}.json.gz`;
 
       try {
         const compressed = await fetchProgress(url, (progress) => {
