@@ -100,7 +100,11 @@ export default function RoamViewer(props: RoamViewerProps) {
   const [visibleMobs, setVisibleMobs] = createSignal<Set<string>>(new Set());
   const [searchFilter, setSearchFilter] = createSignal("");
   const [hoveredMob, setHoveredMob] = createSignal<MobEntry | null>(null);
+  const [selectedMob, setSelectedMob] = createSignal<MobEntry | null>(null);
   const [tooltipPos, setTooltipPos] = createSignal<{ x: number; y: number } | null>(null);
+  const [pointPos, setPointPos] = createSignal<{ x: number; y: number; z: number } | null>(null);
+
+  const activeMob = () => selectedMob() || hoveredMob();
 
   const filteredMobs = createMemo(() => {
     const filter = searchFilter().toLowerCase();
@@ -179,14 +183,14 @@ export default function RoamViewer(props: RoamViewerProps) {
   });
 
   createEffect(() => {
-    const hovered = hoveredMob();
+    const active = activeMob();
     for (const entry of mobEntries()) {
       if (!entry.points) continue;
       const material = entry.points.material as THREE.ShaderMaterial;
-      const isHovered = hovered && entry.id === hovered.id;
-      material.uniforms.pointSize.value = isHovered ? 10 : 6;
-      material.uniforms.opacity.value = hovered ? (isHovered ? 1.0 : 0.05) : 1.0;
-      entry.points.renderOrder = isHovered ? 1 : 0;
+      const isActive = active && entry.id === active.id;
+      material.uniforms.pointSize.value = isActive ? 10 : 6;
+      material.uniforms.opacity.value = active ? (isActive ? 1.0 : 0.05) : 1.0;
+      entry.points.renderOrder = isActive ? 1 : 0;
     }
   });
 
@@ -249,14 +253,46 @@ export default function RoamViewer(props: RoamViewerProps) {
         if (entry) {
           setHoveredMob(entry);
           setTooltipPos({ x: event.clientX, y: event.clientY });
+          const p = intersects[0].point;
+          setPointPos({ x: p.x, y: p.y, z: p.z });
           return;
         }
       }
       setHoveredMob(null);
-      setTooltipPos(null);
+      if (!selectedMob()) {
+        setTooltipPos(null);
+        setPointPos(null);
+      }
     };
 
     canvasElement.addEventListener("mousemove", onMouseMove);
+
+    const onClick = (event: MouseEvent) => {
+      const rect = canvasElement.getBoundingClientRect();
+      mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+      raycaster.setFromCamera(mouse, camera());
+      const pointsObjects = mobEntries().filter(e => e.points?.visible).map(e => e.points!);
+      const intersects = raycaster.intersectObjects(pointsObjects);
+
+      if (intersects.length > 0) {
+        const mobId = intersects[0].object.userData.mobId;
+        const entry = mobEntries().find(e => e.id === mobId);
+        if (entry) {
+          const isDeselect = selectedMob()?.id === entry.id;
+          setSelectedMob(isDeselect ? null : entry);
+          setTooltipPos({ x: event.clientX, y: event.clientY });
+          const p = intersects[0].point;
+          setPointPos(isDeselect ? null : { x: p.x, y: p.y, z: p.z });
+          return;
+        }
+      }
+      setSelectedMob(null);
+      setPointPos(null);
+    };
+
+    canvasElement.addEventListener("click", onClick);
 
     const clock = new THREE.Clock();
     const animate = () => {
@@ -270,6 +306,7 @@ export default function RoamViewer(props: RoamViewerProps) {
     onCleanup(() => {
       window.removeEventListener("resize", resizeCanvas);
       canvasElement.removeEventListener("mousemove", onMouseMove);
+      canvasElement.removeEventListener("click", onClick);
       renderer.setAnimationLoop(null);
       renderer.dispose();
       controls?.dispose();
@@ -367,13 +404,18 @@ export default function RoamViewer(props: RoamViewerProps) {
         >
           📋
         </button>
-        <Show when={hoveredMob() && tooltipPos()}>
+        <Show when={activeMob() && tooltipPos()}>
           <div
             class="fixed bg-slate-900 text-white px-2 py-1 rounded text-sm pointer-events-none z-50"
             style={{ left: `${tooltipPos()!.x + 10}px`, top: `${tooltipPos()!.y + 10}px` }}
           >
-            <div class="font-bold">{hoveredMob()!.name}</div>
-            <div class="text-slate-400">{hoveredMob()!.id}</div>
+            <div class="font-bold">{activeMob()!.name}</div>
+            <div class="text-slate-400">{activeMob()!.id}</div>
+            <Show when={pointPos()}>
+              <div class="text-slate-400 text-xs">
+                {pointPos()!.x.toFixed(1)}, {pointPos()!.y.toFixed(1)}, {pointPos()!.z.toFixed(1)}
+              </div>
+            </Show>
           </div>
         </Show>
       </div>
