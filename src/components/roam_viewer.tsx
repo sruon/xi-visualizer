@@ -86,6 +86,7 @@ function createPointMaterial(color: THREE.Color, size: number): THREE.ShaderMate
 export default function RoamViewer(props: RoamViewerProps) {
   let canvasElement: HTMLCanvasElement;
   let controls: MapControls | undefined;
+  let rendererRef: THREE.WebGLRenderer | undefined;
 
   const scene = createMemo(() => setupBaseScene());
   const camera = createMemo(() => {
@@ -226,7 +227,8 @@ export default function RoamViewer(props: RoamViewerProps) {
     resizeCanvas();
 
     controls = addMapControls(camera(), canvasElement);
-    const renderer = new THREE.WebGLRenderer({ canvas: canvasElement, antialias: true, alpha: true });
+    const renderer = new THREE.WebGLRenderer({ canvas: canvasElement, antialias: true, alpha: true, preserveDrawingBuffer: true });
+    rendererRef = renderer;
 
     const raycaster = new THREE.Raycaster();
     raycaster.params.Points = { threshold: 5 };
@@ -279,6 +281,92 @@ export default function RoamViewer(props: RoamViewerProps) {
     <div class="flex gap-4" style={{ height: "70vh" }}>
       <div class="flex-1 relative">
         <canvas class="block w-full h-full outline-none" ref={canvasElement!} />
+        <button
+          class="absolute top-2 right-2 px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded text-sm"
+          onClick={() => {
+            if (!rendererRef || !controls) return;
+
+            const box = new THREE.Box3();
+            scene().traverse(obj => {
+              if (obj instanceof THREE.Mesh) {
+                box.expandByObject(obj);
+              }
+            });
+            if (box.isEmpty()) return;
+
+            const zoneCenter = new THREE.Vector3();
+            box.getCenter(zoneCenter);
+
+            const cam = camera();
+            const prevPos = cam.position.clone();
+            const prevTarget = controls.target.clone();
+
+            const size = new THREE.Vector3();
+            box.getSize(size);
+
+            const zoneAspect = size.x / size.z;
+            const resH = 4096;
+            const resW = Math.round(resH * zoneAspect);
+
+            const fov = cam.fov * (Math.PI / 180);
+            const verticalFov = fov;
+            const horizontalFov = 2 * Math.atan(Math.tan(fov / 2) * zoneAspect);
+            const distV = (size.z / 2) / Math.tan(verticalFov / 2);
+            const distH = (size.x / 2) / Math.tan(horizontalFov / 2);
+            const distance = Math.max(distV, distH) * 1.05;
+
+            const dir = new THREE.Vector3().subVectors(cam.position, controls.target).normalize();
+            cam.position.copy(zoneCenter).addScaledVector(dir, distance);
+            controls.target.copy(zoneCenter);
+            cam.lookAt(zoneCenter);
+
+            const target = new THREE.WebGLRenderTarget(resW, resH);
+
+            const prevAspect = cam.aspect;
+            cam.aspect = zoneAspect;
+            cam.updateProjectionMatrix();
+
+            rendererRef.setRenderTarget(target);
+            rendererRef.render(scene(), cam);
+            rendererRef.setRenderTarget(null);
+
+            cam.position.copy(prevPos);
+            controls.target.copy(prevTarget);
+            cam.aspect = prevAspect;
+            cam.updateProjectionMatrix();
+
+            const pixels = new Uint8Array(resW * resH * 4);
+            rendererRef.readRenderTargetPixels(target, 0, 0, resW, resH, pixels);
+            target.dispose();
+
+            const flipped = new Uint8Array(resW * resH * 4);
+            for (let y = 0; y < resH; y++) {
+              const srcRow = (resH - 1 - y) * resW * 4;
+              const dstRow = y * resW * 4;
+              flipped.set(pixels.subarray(srcRow, srcRow + resW * 4), dstRow);
+            }
+
+            const imgData = new ImageData(new Uint8ClampedArray(flipped), resW, resH);
+            const offscreen = new OffscreenCanvas(resW, resH);
+            const ctx = offscreen.getContext("2d")!;
+            ctx.putImageData(imgData, 0, 0);
+
+            ctx.font = "bold 64px sans-serif";
+            ctx.fillStyle = "white";
+            ctx.strokeStyle = "black";
+            ctx.lineWidth = 4;
+            ctx.textAlign = "left";
+            ctx.strokeText(props.zoneData.name, 20, 74);
+            ctx.fillText(props.zoneData.name, 20, 74);
+
+            offscreen.convertToBlob({ type: "image/png" }).then(blob => {
+              navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+            });
+          }}
+          title="Copy hi-res centered screenshot"
+        >
+          📋
+        </button>
         <Show when={hoveredMob() && tooltipPos()}>
           <div
             class="fixed bg-slate-900 text-white px-2 py-1 rounded text-sm pointer-events-none z-50"
@@ -298,10 +386,22 @@ export default function RoamViewer(props: RoamViewerProps) {
           onInput={(e) => setSearchFilter(e.currentTarget.value)}
         />
         <div class="flex gap-1 mb-2 text-xs">
-          <button class="flex-1 px-2 py-1 bg-slate-600 hover:bg-slate-500 rounded" onClick={() => setVisibleMobs(new Set(mobEntries().map(m => m.id)))}>
+          <button class="flex-1 px-2 py-1 bg-slate-600 hover:bg-slate-500 rounded" onClick={() => {
+            setVisibleMobs(prev => {
+              const next = new Set(prev);
+              for (const m of filteredMobs()) next.add(m.id);
+              return next;
+            });
+          }}>
             Show All
           </button>
-          <button class="flex-1 px-2 py-1 bg-slate-600 hover:bg-slate-500 rounded" onClick={() => setVisibleMobs(new Set())}>
+          <button class="flex-1 px-2 py-1 bg-slate-600 hover:bg-slate-500 rounded" onClick={() => {
+            setVisibleMobs(prev => {
+              const next = new Set(prev);
+              for (const m of filteredMobs()) next.delete(m.id);
+              return next;
+            });
+          }}>
             Hide All
           </button>
         </div>
