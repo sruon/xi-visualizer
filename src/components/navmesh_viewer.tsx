@@ -185,17 +185,6 @@ export default function NavMeshViewer(props: NavMeshViewerProps) {
 
     canvasElement.addEventListener("mousemove", onMouseMove);
 
-    // Suppress the native context menu and mark right-button presses as handled.
-    // Browser-native swipe-back is already blocked via overscroll-behavior; this
-    // additionally discourages mouse-gesture extensions that key off right-drag.
-    const onContextMenu = (e: MouseEvent) => e.preventDefault();
-    const onCanvasMouseDown = (e: MouseEvent) => {
-      if (e.button === 2) e.preventDefault();
-    };
-
-    canvasElement.addEventListener("contextmenu", onContextMenu);
-    canvasElement.addEventListener("mousedown", onCanvasMouseDown);
-
     const clock = new THREE.Clock();
     renderer.setAnimationLoop(() => {
       controls?.update(clock.getDelta());
@@ -210,8 +199,6 @@ export default function NavMeshViewer(props: NavMeshViewerProps) {
     onCleanup(() => {
       window.removeEventListener("resize", resizeCanvas);
       canvasElement.removeEventListener("mousemove", onMouseMove);
-      canvasElement.removeEventListener("contextmenu", onContextMenu);
-      canvasElement.removeEventListener("mousedown", onCanvasMouseDown);
       renderer.setAnimationLoop(null);
       renderer.dispose();
       controls?.dispose();
@@ -222,7 +209,7 @@ export default function NavMeshViewer(props: NavMeshViewerProps) {
   return (
     <div class="flex gap-4" style={{ height: "70vh" }}>
       <div class="flex-1 relative">
-        <canvas class="block w-full h-full outline-none touch-none overscroll-none" ref={canvasElement!} />
+        <canvas class="block w-full h-full outline-none" ref={canvasElement!} />
         <Show when={hoverPos()}>
           <div class="absolute bottom-2 left-2 bg-slate-900/80 text-white px-2 py-1 rounded text-xs font-mono pointer-events-none">
             {hoverPos()!.x.toFixed(2)}, {hoverPos()!.y.toFixed(2)}, {hoverPos()!.z.toFixed(2)}
