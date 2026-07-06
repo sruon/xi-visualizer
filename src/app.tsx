@@ -31,6 +31,11 @@ const App = (props: { children?: JSX.Element; }) => {
               Zone
             </A>
           </li>
+          <li class="py-2 px-4">
+            <A href="/navmesh" class="no-underline hover:underline">
+              Navmesh
+            </A>
+          </li>
         </ul>
       </nav>
 

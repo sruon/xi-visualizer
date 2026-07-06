@@ -2,6 +2,7 @@ import type { RouteDefinition } from "@solidjs/router";
 import { lazy } from "solid-js";
 
 import HomePage from "./pages/home";
+import NavMeshPage from "./pages/navmesh";
 import PacketPage from "./pages/packet";
 import PathPage from "./pages/path";
 import RoamPage from "./pages/roam";
@@ -27,6 +28,10 @@ export const routes: RouteDefinition[] = [
   {
     path: "/zone/:id?",
     component: ZonesPage,
+  },
+  {
+    path: "/navmesh",
+    component: NavMeshPage,
   },
   {
     path: "**",
