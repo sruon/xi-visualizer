@@ -3,7 +3,7 @@ import * as THREE from "three";
 import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from "three-mesh-bvh";
 import { MapControls } from "three/examples/jsm/Addons.js";
 import { addMapControls, adjustCameraAspect } from "../graphics/camera";
-import { buildNavMeshGroup, parseNavMesh } from "../graphics/navmesh";
+import { buildNavMeshGroup, nearestIsland, parseNavMesh } from "../graphics/navmesh";
 import { setupBaseScene } from "../graphics/scene";
 import { cleanupNode } from "../graphics/util";
 import { ColorKind, createZoneMesh, prepareMeshData } from "../graphics/ximesh";
@@ -21,12 +21,17 @@ interface NavMeshViewerProps {
 export default function NavMeshViewer(props: NavMeshViewerProps) {
   let canvasElement: HTMLCanvasElement;
   let controls: MapControls | undefined;
+  let marker: THREE.Object3D | undefined;
 
   const [showSurface, setShowSurface] = createSignal(true);
   const [showEdges, setShowEdges] = createSignal(true);
   const [colorByTile, setColorByTile] = createSignal(true);
+  const [colorByComponent, setColorByComponent] = createSignal(false);
+  const [showOffMesh, setShowOffMesh] = createSignal(true);
   const [opacity, setOpacity] = createSignal(0.85);
   const [hoverPos, setHoverPos] = createSignal<{ x: number; y: number; z: number; } | null>(null);
+  const [coordText, setCoordText] = createSignal("");
+  const [snapInfo, setSnapInfo] = createSignal("");
 
   const [showXimesh, setShowXimesh] = createSignal(false);
   const [ximeshStatus, setXimeshStatus] = createSignal("");
@@ -48,6 +53,8 @@ export default function NavMeshViewer(props: NavMeshViewerProps) {
       showSurface: showSurface(),
       showEdges: showEdges(),
       colorByTile: colorByTile(),
+      colorByComponent: colorByComponent(),
+      showOffMesh: showOffMesh(),
       opacity: opacity(),
     });
     scene().add(group);
@@ -138,6 +145,66 @@ export default function NavMeshViewer(props: NavMeshViewerProps) {
     controls.update();
   };
 
+  // A bright pin (sphere + tall vertical needle) marking a snapped coordinate.
+  // Lives as a child of the scaled scene, so its local FFXI (x, y, z) co-locates
+  // with the navmesh geometry (also stored in FFXI coords).
+  const makeMarker = (): THREE.Object3D => {
+    const g = new THREE.Group();
+    const ball = new THREE.Mesh(
+      new THREE.SphereGeometry(2, 16, 12),
+      new THREE.MeshBasicMaterial({ color: 0xff2d55, depthTest: false }),
+    );
+    const needle = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.35, 0.35, 80, 8),
+      new THREE.MeshBasicMaterial({ color: 0xff2d55, depthTest: false, transparent: true, opacity: 0.7 }),
+    );
+    needle.position.y = 40;
+    ball.renderOrder = 999;
+    needle.renderOrder = 999;
+    g.add(ball);
+    g.add(needle);
+    g.name = "coord-marker";
+    return g;
+  };
+
+  // Snap the camera to an FFXI coordinate, drop a marker, and report which
+  // walkable island that point sits on.
+  const goToCoord = () => {
+    const nums = coordText().trim().split(/[\s,]+/).map(Number).filter(n => !Number.isNaN(n));
+    if (nums.length < 3) {
+      setSnapInfo("enter: x y z");
+      return;
+    }
+
+    const [x, y, z] = nums;
+
+    if (!marker) {
+      marker = makeMarker();
+      scene().add(marker);
+    }
+
+    marker.position.set(x, y, z);
+    marker.visible = true;
+
+    const hit = nearestIsland(parsed(), x, y, z);
+    setSnapInfo(
+      hit
+        ? `island #${hit.island} · ${hit.size.toLocaleString()} polys · ${hit.dist.toFixed(1)}u to mesh`
+        : "no navmesh nearby",
+    );
+
+    if (controls) {
+      const cam = camera();
+      const center = new THREE.Vector3(x, y, z);
+      const dir = new THREE.Vector3().subVectors(cam.position, controls.target).normalize();
+      if (dir.lengthSq() === 0) dir.set(0, 1, 0.0001).normalize();
+      cam.position.copy(center).addScaledVector(dir, 80);
+      controls.target.copy(center);
+      cam.lookAt(center);
+      controls.update();
+    }
+  };
+
   // Frame the mesh once after the first build.
   createEffect(() => {
     parsed();
@@ -224,6 +291,11 @@ export default function NavMeshViewer(props: NavMeshViewerProps) {
           polys: <span class="text-slate-200">{parsed().stats.totalPolys.toLocaleString()}</span>
           <br />
           verts: <span class="text-slate-200">{parsed().stats.totalVerts.toLocaleString()}</span>
+          <br />
+          islands: <span class="text-slate-200">{parsed().components.islands.toLocaleString()}</span>{" "}
+          <span class="text-slate-500">(largest {parsed().components.largestPct.toFixed(1)}%)</span>
+          <br />
+          off-mesh links: <span class="text-slate-200">{parsed().stats.offMeshLinks.toLocaleString()}</span>
         </div>
 
         <label class="flex items-center gap-2 cursor-pointer">
@@ -235,8 +307,35 @@ export default function NavMeshViewer(props: NavMeshViewerProps) {
           Poly edges
         </label>
         <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" checked={colorByTile()} onChange={e => setColorByTile(e.currentTarget.checked)} />
+          <input
+            type="checkbox"
+            checked={colorByTile()}
+            onChange={e => {
+              setColorByTile(e.currentTarget.checked);
+              if (e.currentTarget.checked) setColorByComponent(false);
+            }}
+          />
           Color by tile
+        </label>
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={colorByComponent()}
+            onChange={e => {
+              setColorByComponent(e.currentTarget.checked);
+              if (e.currentTarget.checked) setColorByTile(false);
+            }}
+          />
+          Color by island
+        </label>
+        <Show when={colorByComponent()}>
+          <div class="text-xs text-slate-400 -mt-1">
+            Each color = one connected walkable region Detour can path within. Grey = specks (&lt;3 polys). Many colors = fragmented mesh.
+          </div>
+        </Show>
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" checked={showOffMesh()} onChange={e => setShowOffMesh(e.currentTarget.checked)} />
+          Off-mesh links <span class="text-rose-400">●</span>
         </label>
         <label class="flex items-center gap-2 cursor-pointer">
           <input type="checkbox" checked={showXimesh()} onChange={e => setShowXimesh(e.currentTarget.checked)} />
@@ -257,6 +356,28 @@ export default function NavMeshViewer(props: NavMeshViewerProps) {
             onInput={e => setOpacity(parseFloat(e.currentTarget.value))}
           />
         </label>
+
+        <label class="flex flex-col gap-1">
+          <span class="text-xs text-slate-400">Go to coord (x y z)</span>
+          <div class="flex gap-1">
+            <input
+              type="text"
+              placeholder="-20 14 -9"
+              value={coordText()}
+              onInput={e => setCoordText(e.currentTarget.value)}
+              onKeyDown={e => {
+                if (e.key === "Enter") goToCoord();
+              }}
+              class="flex-1 min-w-0 px-2 py-1 bg-slate-900 rounded font-mono text-xs"
+            />
+            <button class="px-2 py-1 bg-slate-600 hover:bg-slate-500 rounded" onClick={goToCoord}>
+              Go
+            </button>
+          </div>
+        </label>
+        <Show when={snapInfo()}>
+          <div class="text-xs text-rose-300 -mt-1 font-mono">{snapInfo()}</div>
+        </Show>
 
         <button
           class="mt-1 px-2 py-1 bg-slate-600 hover:bg-slate-500 rounded"
