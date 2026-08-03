@@ -34,10 +34,15 @@ const listZones = async (repo: string, ref: string): Promise<string[]> => {
   return zones;
 };
 
+const DEFAULT_REPO = "sruon/xiNavmeshes";
+
 export default function NavMeshDiffPage() {
   const [params, setParams] = useSearchParams();
 
-  const [repo, setRepo] = createSignal((params.repo as string) || "sruon/xiNavmeshes");
+  // repoA/repoB are independent, but both fall back to a shared `repo` param (and default),
+  // so same-repo links stay compact and cross-repo links carry both.
+  const [repoA, setRepoA] = createSignal((params.repoA as string) || (params.repo as string) || DEFAULT_REPO);
+  const [repoB, setRepoB] = createSignal((params.repoB as string) || (params.repo as string) || DEFAULT_REPO);
   const [refA, setRefA] = createSignal((params.a as string) || "base");
   const [refB, setRefB] = createSignal((params.b as string) || "navmesh_offmesh_links");
   const [zone, setZone] = createSignal((params.zone as string) || "");
@@ -55,11 +60,13 @@ export default function NavMeshDiffPage() {
   const [zones, setZones] = createSignal<string[]>([]);
   const [zonesMsg, setZonesMsg] = createSignal("");
 
-  // Zones present in BOTH refs (only these can diff). Falls back to whichever ref
+  const sameRepo = () => repoA() === repoB();
+
+  // Zones present in BOTH sides (only these can diff). Falls back to whichever side
   // resolved if the other fails; leaves manual entry working on total failure.
   const loadZones = async () => {
     setZonesMsg("loading zone list…");
-    const [a, b] = await Promise.allSettled([listZones(repo(), refA()), listZones(repo(), refB())]);
+    const [a, b] = await Promise.allSettled([listZones(repoA(), refA()), listZones(repoB(), refB())]);
     const listA = a.status === "fulfilled" ? a.value : undefined;
     const listB = b.status === "fulfilled" ? b.value : undefined;
     if (!listA && !listB) {
@@ -73,10 +80,10 @@ export default function NavMeshDiffPage() {
     setZonesMsg(`${both.length} zones`);
   };
 
-  const fetchNav = async (ref: string, z: string): Promise<ArrayBuffer> => {
-    const res = await fetch(rawUrl(repo(), ref, z));
+  const fetchNav = async (repo: string, ref: string, z: string): Promise<ArrayBuffer> => {
+    const res = await fetch(rawUrl(repo, ref, z));
     if (!res.ok) {
-      throw new Error(`${ref}/${z}.nav → HTTP ${res.status}`);
+      throw new Error(`${repo}@${ref}/${z}.nav → HTTP ${res.status}`);
     }
 
     return res.arrayBuffer();
@@ -91,12 +98,21 @@ export default function NavMeshDiffPage() {
 
     setError(undefined);
     setLoading(true);
-    // Reflect the current selection in the URL so it can be shared/bookmarked.
-    setParams({ repo: repo(), a: refA(), b: refB(), zone: z });
+    // Reflect the current selection in the URL so it can be shared/bookmarked. Use a single
+    // `repo` param when both sides match, else split into repoA/repoB (undefined clears the other).
+    setParams({
+      repo: sameRepo() ? repoA() : undefined,
+      repoA: sameRepo() ? undefined : repoA(),
+      repoB: sameRepo() ? undefined : repoB(),
+      a: refA(),
+      b: refB(),
+      zone: z,
+    });
     try {
-      const [a, b] = await Promise.all([fetchNav(refA(), z), fetchNav(refB(), z)]);
-      setLabelA(`${refA()} · ${z}`);
-      setLabelB(`${refB()} · ${z}`);
+      const [a, b] = await Promise.all([fetchNav(repoA(), refA(), z), fetchNav(repoB(), refB(), z)]);
+      // Prefix the repo only when the two sides differ, to keep the common case clean.
+      setLabelA(`${sameRepo() ? "" : repoA() + "@"}${refA()} · ${z}`);
+      setLabelB(`${sameRepo() ? "" : repoB() + "@"}${refB()} · ${z}`);
       setNavA(a);
       setNavB(b);
       setToken(token() + 1);
@@ -152,16 +168,20 @@ export default function NavMeshDiffPage() {
 
       <div class="flex flex-wrap items-end gap-3 mb-3">
         <label class="flex flex-col gap-1">
-          <span class="text-xs text-slate-400">Repo (owner/name)</span>
-          <input class={`${field} w-52`} value={repo()} onInput={e => setRepo(e.currentTarget.value)} onChange={() => loadZones()} />
+          <span class="text-xs text-emerald-400">Repo A</span>
+          <input class={`${field} w-52`} value={repoA()} onInput={e => setRepoA(e.currentTarget.value)} onChange={() => loadZones()} />
         </label>
         <label class="flex flex-col gap-1">
-          <span class="text-xs text-slate-400">Ref A (base)</span>
-          <input class={`${field} w-44`} value={refA()} onInput={e => setRefA(e.currentTarget.value)} onChange={() => loadZones()} />
+          <span class="text-xs text-emerald-400">Ref A (base)</span>
+          <input class={`${field} w-40`} value={refA()} onInput={e => setRefA(e.currentTarget.value)} onChange={() => loadZones()} />
         </label>
         <label class="flex flex-col gap-1">
-          <span class="text-xs text-slate-400">Ref B (new)</span>
-          <input class={`${field} w-44`} value={refB()} onInput={e => setRefB(e.currentTarget.value)} onChange={() => loadZones()} />
+          <span class="text-xs text-sky-400">Repo B</span>
+          <input class={`${field} w-52`} value={repoB()} onInput={e => setRepoB(e.currentTarget.value)} onChange={() => loadZones()} />
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-xs text-sky-400">Ref B (new)</span>
+          <input class={`${field} w-40`} value={refB()} onInput={e => setRefB(e.currentTarget.value)} onChange={() => loadZones()} />
         </label>
         <label class="flex flex-col gap-1">
           <span class="text-xs text-slate-400">
@@ -231,7 +251,7 @@ export default function NavMeshDiffPage() {
 
       <Show
         when={navA() && navB()}
-        fallback={<div class="text-xs text-slate-500">Enter refs + a zone and hit Compare, or open a shared link.</div>}
+        fallback={<div class="text-xs text-slate-500">Enter repos + refs + a zone and hit Compare, or open a shared link.</div>}
       >
         <div class="flex items-center gap-3 mb-2 text-sm">
           <span class="text-slate-400">
@@ -239,7 +259,13 @@ export default function NavMeshDiffPage() {
           </span>
         </div>
         <Show keyed when={token()}>
-          <NavMeshCompareViewer navA={navA()!} navB={navB()!} labelA={labelA()} labelB={labelB()} repo={repo()} />
+          <NavMeshCompareViewer
+            navA={navA()!}
+            navB={navB()!}
+            labelA={labelA()}
+            labelB={labelB()}
+            repo={sameRepo() ? repoA() : `${repoA()} ↔ ${repoB()}`}
+          />
         </Show>
       </Show>
     </section>
