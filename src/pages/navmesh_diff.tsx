@@ -44,7 +44,7 @@ export default function NavMeshDiffPage() {
   const [repoA, setRepoA] = createSignal((params.repoA as string) || (params.repo as string) || DEFAULT_REPO);
   const [repoB, setRepoB] = createSignal((params.repoB as string) || (params.repo as string) || DEFAULT_REPO);
   const [refA, setRefA] = createSignal((params.a as string) || "base");
-  const [refB, setRefB] = createSignal((params.b as string) || "navmesh_offmesh_links");
+  const [refB, setRefB] = createSignal((params.b as string) || "master");
   const [zone, setZone] = createSignal((params.zone as string) || "");
 
   const [navA, setNavA] = createSignal<ArrayBuffer | undefined>();
