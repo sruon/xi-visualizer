@@ -3,6 +3,7 @@ import { lazy } from "solid-js";
 
 import HomePage from "./pages/home";
 import NavMeshPage from "./pages/navmesh";
+import NavMeshDiffPage from "./pages/navmesh_diff";
 import PacketPage from "./pages/packet";
 import PathPage from "./pages/path";
 import RoamPage from "./pages/roam";
@@ -32,6 +33,10 @@ export const routes: RouteDefinition[] = [
   {
     path: "/navmesh",
     component: NavMeshPage,
+  },
+  {
+    path: "/navmesh-diff",
+    component: NavMeshDiffPage,
   },
   {
     path: "**",

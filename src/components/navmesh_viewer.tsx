@@ -25,8 +25,8 @@ export default function NavMeshViewer(props: NavMeshViewerProps) {
 
   const [showSurface, setShowSurface] = createSignal(true);
   const [showEdges, setShowEdges] = createSignal(true);
-  const [colorByTile, setColorByTile] = createSignal(true);
-  const [colorByComponent, setColorByComponent] = createSignal(false);
+  const [colorByTile, setColorByTile] = createSignal(false);
+  const [colorByComponent, setColorByComponent] = createSignal(true);
   const [showOffMesh, setShowOffMesh] = createSignal(true);
   const [opacity, setOpacity] = createSignal(0.85);
   const [hoverPos, setHoverPos] = createSignal<{ x: number; y: number; z: number; } | null>(null);
