@@ -159,6 +159,7 @@ export default function RegionEditor(props: RegionEditorProps) {
   const [terrainColors, setTerrainColors] = createSignal(true);
   const [hover, setHover] = createSignal<{ spawn: Spawn; x: number; y: number; } | null>(null);
   const [cursor, setCursor] = createSignal<THREE.Vector3 | undefined>();
+  const [toast, setToast] = createSignal<string | undefined>();
   const [rowFocus, setRowFocus] = createSignal<string | null>(null);
   const [pinnedId, setPinnedId] = createSignal<string | null>(null);
 
@@ -166,6 +167,17 @@ export default function RegionEditor(props: RegionEditorProps) {
   // the row pins it, so the trail stays put while you reshape the polygon around it.
   const focusId = () => hover()?.spawn.id ?? rowFocus() ?? pinnedId();
   const pinnedSpawn = () => props.spawns.find(s => s.id === pinnedId());
+
+  const xyz = (p: THREE.Vector3) => [p.x, p.y, p.z].map(n => n.toFixed(3)).join(" ");
+
+  let toastTimer: ReturnType<typeof setTimeout> | undefined;
+  const copy = (text: string) => {
+    navigator.clipboard.writeText(text);
+    setToast(text);
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => setToast(undefined), 1600);
+  };
+  onCleanup(() => clearTimeout(toastTimer));
 
   const active = () => regions().find(r => r.name === activeName());
   const matches = (s: Spawn) => {
@@ -612,6 +624,13 @@ export default function RegionEditor(props: RegionEditorProps) {
 
     const lastY = (r?: RegionEntry) => r?.rings.flat().at(-1)?.[1] ?? 0;
 
+    // Where the cursor meets terrain. Only a real mesh hit counts — the plane fallback used for
+    // editing would report coordinates for empty space.
+    const groundPoint = () => {
+      const hit = zoneMesh && raycaster.intersectObject(zoneMesh, true)[0];
+      return hit ? scene().worldToLocal(hit.point.clone()) : undefined;
+    };
+
     const removeVertex = (handle: Handle) =>
       editActive(r => {
         r.rings[handle.ring].splice(handle.idx, 1);
@@ -630,6 +649,7 @@ export default function RegionEditor(props: RegionEditorProps) {
     const onMouseDown = (ev: MouseEvent) => {
       if (ev.button !== 0) return;
       downAt = { x: ev.clientX, y: ev.clientY };
+      if (ev.altKey) return; // alt is for copying a position, never for dragging something
       aim(ev);
       const handle = pickHandle();
 
@@ -648,11 +668,6 @@ export default function RegionEditor(props: RegionEditorProps) {
       }
 
       checkpoint();
-      if (ev.altKey && !handle.mid) {
-        removeVertex(handle);
-        downAt = null;
-        return;
-      }
       if (handle.mid) {
         const p = pickZonePoint(lastY(active()));
         editActive(r => {
@@ -673,10 +688,7 @@ export default function RegionEditor(props: RegionEditorProps) {
 
     const onMouseMove = (ev: MouseEvent) => {
       aim(ev);
-      // Ground position under the cursor, for comparing against the game. Only when the ray really
-      // hits terrain — the plane fallback would report coordinates for empty space.
-      const ground = zoneMesh && raycaster.intersectObject(zoneMesh, true)[0];
-      setCursor(ground ? scene().worldToLocal(ground.point.clone()) : undefined);
+      setCursor(groundPoint());
 
       if (drag) {
         const p = pickZonePoint(lastY(active()));
@@ -725,6 +737,12 @@ export default function RegionEditor(props: RegionEditorProps) {
     const onClick = (ev: MouseEvent) => {
       if (!downAt || Math.hypot(ev.clientX - downAt.x, ev.clientY - downAt.y) > 3) return;
       aim(ev);
+
+      if (ev.altKey) {
+        const p = groundPoint();
+        if (p) copy(`!pos ${xyz(p)}`);
+        return;
+      }
       if (pickHandle()) return;
 
       if (mode() === "draw") {
@@ -872,7 +890,9 @@ export default function RegionEditor(props: RegionEditorProps) {
         <div class="absolute top-2 left-2 text-xs text-slate-300 bg-slate-900/70 rounded px-2 py-1 pointer-events-none">
           <Show
             when={mode() === "draw"}
-            fallback={<>drag handles to reshape · right-click one to remove it · drag a spawn into a region to assign it · ctrl+z undoes</>}
+            fallback={
+              <>drag handles to reshape · right-click one to remove it · drag a spawn into a region to assign it · alt+click copies !pos · ctrl+z undoes</>
+            }
           >
             drawing <b>{activeName()}</b> — click to add vertices, Enter/Esc when done
           </Show>
@@ -885,10 +905,15 @@ export default function RegionEditor(props: RegionEditorProps) {
         <Show when={cursor()}>
           <div
             class="absolute bottom-2 left-2 font-mono text-xs text-slate-200 bg-slate-900/75 rounded px-2 py-1 cursor-pointer select-none"
-            title="Ground position under the cursor — click to copy"
-            onClick={() => navigator.clipboard.writeText([cursor()!.x, cursor()!.y, cursor()!.z].map(n => n.toFixed(3)).join(" "))}
+            title="Ground position under the cursor — click to copy, alt+click the map for !pos"
+            onClick={() => copy(xyz(cursor()!))}
           >
-            {cursor()!.x.toFixed(3)} {cursor()!.y.toFixed(3)} {cursor()!.z.toFixed(3)}
+            {xyz(cursor()!)}
+          </div>
+        </Show>
+        <Show when={toast()}>
+          <div class="absolute bottom-2 left-1/2 -translate-x-1/2 bg-emerald-600 text-white text-xs font-mono rounded px-3 py-1 pointer-events-none">
+            copied {toast()}
           </div>
         </Show>
         <Show when={hover()}>
