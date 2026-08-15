@@ -158,6 +158,7 @@ export default function RegionEditor(props: RegionEditorProps) {
   const [tab, setTab] = createSignal<"regions" | "unassigned" | "review">("regions");
   const [terrainColors, setTerrainColors] = createSignal(true);
   const [hover, setHover] = createSignal<{ spawn: Spawn; x: number; y: number; } | null>(null);
+  const [cursor, setCursor] = createSignal<THREE.Vector3 | undefined>();
   const [rowFocus, setRowFocus] = createSignal<string | null>(null);
   const [pinnedId, setPinnedId] = createSignal<string | null>(null);
 
@@ -672,6 +673,11 @@ export default function RegionEditor(props: RegionEditorProps) {
 
     const onMouseMove = (ev: MouseEvent) => {
       aim(ev);
+      // Ground position under the cursor, for comparing against the game. Only when the ray really
+      // hits terrain — the plane fallback would report coordinates for empty space.
+      const ground = zoneMesh && raycaster.intersectObject(zoneMesh, true)[0];
+      setCursor(ground ? scene().worldToLocal(ground.point.clone()) : undefined);
+
       if (drag) {
         const p = pickZonePoint(lastY(active()));
         if (p) editActive(r => (r.rings[drag!.ring][drag!.idx] = [p.x, p.y, p.z]));
@@ -863,7 +869,7 @@ export default function RegionEditor(props: RegionEditorProps) {
             }}
           </For>
         </div>
-        <div class="absolute top-2 left-2 text-xs text-slate-300 bg-slate-900/70 rounded px-2 py-1">
+        <div class="absolute top-2 left-2 text-xs text-slate-300 bg-slate-900/70 rounded px-2 py-1 pointer-events-none">
           <Show
             when={mode() === "draw"}
             fallback={<>drag handles to reshape · right-click one to remove it · drag a spawn into a region to assign it · ctrl+z undoes</>}
@@ -876,6 +882,15 @@ export default function RegionEditor(props: RegionEditorProps) {
             </span>
           </Show>
         </div>
+        <Show when={cursor()}>
+          <div
+            class="absolute bottom-2 left-2 font-mono text-xs text-slate-200 bg-slate-900/75 rounded px-2 py-1 cursor-pointer select-none"
+            title="Ground position under the cursor — click to copy"
+            onClick={() => navigator.clipboard.writeText([cursor()!.x, cursor()!.y, cursor()!.z].map(n => n.toFixed(3)).join(" "))}
+          >
+            {cursor()!.x.toFixed(3)} {cursor()!.y.toFixed(3)} {cursor()!.z.toFixed(3)}
+          </div>
+        </Show>
         <Show when={hover()}>
           <div
             class="fixed bg-slate-900 text-white px-2 py-1 rounded text-xs pointer-events-none z-50"
