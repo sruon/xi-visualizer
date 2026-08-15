@@ -395,7 +395,7 @@ export default function RegionsPage() {
         </div>
       </Show>
 
-      <Show when={files()} fallback={<div class="mt-4 text-slate-400">Open your LSB checkout's data/zones folder, or load the bundled sample.</div>}>
+      <Show when={files()} fallback={<div class="mt-4 text-slate-400">Pick a zone.</div>}>
         <Switch>
           <Match when={zoneMesh.loading}>
             <div class="mt-4">Loading... {status()}</div>
