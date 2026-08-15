@@ -307,7 +307,7 @@ export default function RegionsPage() {
           title={`${repo()}@${ref()}`}
           onChange={e => navigate(`/regions/${e.currentTarget.value}`)}
         >
-          <option value="">{folders().length ? `${folders().length} zones — pick one` : "no zones"}</option>
+          <option value="">{folders().length ? `${folders().length} zones, pick one` : "no zones"}</option>
           <For each={folders()}>{f => <option value={f}>{f}</option>}</For>
         </select>
         <button class="px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded" onClick={listZones} title={`Re-read ${repo()}@${ref()}`}>
@@ -352,7 +352,7 @@ export default function RegionsPage() {
       <Show when={askToken()}>
         <div class="mt-3 flex flex-wrap items-center gap-2 text-sm bg-slate-800 border border-slate-600 rounded px-3 py-2">
           <span>
-            GitHub token — a fine-grained one limited to <b>{repo()}</b> with Contents and Pull requests set to read/write.
+            GitHub token: a fine-grained one limited to <b>{repo()}</b> with Contents and Pull requests set to read/write.
           </span>
           <input
             type="password"
@@ -387,7 +387,7 @@ export default function RegionsPage() {
       <Show when={draft()}>
         <div class="mt-3 flex items-center gap-3 text-sm bg-amber-900/40 border border-amber-700 rounded px-3 py-2">
           <span>
-            Unsaved work on {files()!.folder} from {new Date(draft()!.at).toLocaleString()} — {Object.keys(draft()!.regions).length} regions,{" "}
+            Unsaved work on {files()!.folder} from {new Date(draft()!.at).toLocaleString()}: {Object.keys(draft()!.regions).length} regions,{" "}
             {Object.keys(draft()!.assign).length} assignments.
           </span>
           <button class="px-2 py-1 bg-amber-600 hover:bg-amber-500 rounded" onClick={restoreDraft}>Restore</button>

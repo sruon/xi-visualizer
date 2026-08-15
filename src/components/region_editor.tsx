@@ -7,8 +7,8 @@ import { setupBaseScene } from "../graphics/scene";
 import { cleanupNode } from "../graphics/util";
 import { ColorKind, colorMesh, createZoneMesh, prepareMeshData } from "../graphics/ximesh";
 import type { RoamData } from "../pages/regions";
-import { containsXZ, regionAt, regionHue, simplifyRing, validate } from "../regions";
-import type { Finding, Region, RegionSet, Spawn, Vertex } from "../regions";
+import { containsXZ, regionAt, regionHue, regionsFromPoints, simplifyRing, validate } from "../regions";
+import type { Finding, Region, RegionSet, Spawn, TrailPoint, Vertex } from "../regions";
 import type { ZoneData } from "./zone_model";
 
 THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
@@ -36,6 +36,37 @@ interface RegionEditorProps {
 }
 
 const GOLDEN = 0.61803398875; // successive regions land far apart on the colour wheel
+
+// The chip is the input, the text says what it acts on — no glyph decoding required.
+const SHORTCUTS: { title: string; keys: [string, string][]; }[] = [
+  {
+    title: "Polygon",
+    keys: [
+      ["click", "while drawing, add a vertex"],
+      ["drag", "a corner to move that vertex"],
+      ["drag", "a small square on an edge to add a vertex"],
+      ["right-click", "a corner to remove that vertex"],
+      ["enter / esc", "finish drawing"],
+    ],
+  },
+  {
+    title: "Spawns",
+    keys: [
+      ["click", "a spawn dot to assign it to the selected region"],
+      ["drag", "a spawn dot into a polygon to assign it there"],
+      ["hover", "a dot or a list row to show its roam trail"],
+      ["click", "a list row to keep that trail on screen"],
+    ],
+  },
+  {
+    title: "Map",
+    keys: [
+      ["alt+click", "copy !pos x y z"],
+      ["drag", "pan · right-drag rotates · wheel zooms"],
+      ["ctrl+z", "undo · ctrl+shift+z redoes"],
+    ],
+  },
+];
 
 const POINT_VERTEX = `
   uniform float pointSize;
@@ -95,9 +126,9 @@ const roamMaterial = () =>
         float d = length(gl_PointCoord - vec2(0.5));
         if (d > 0.5) discard;
         if (vBig > 0.5) {
-          // White core, dark rim: the focused trail has to read on top of its own region's fill,
-          // which is the one colour it can never borrow.
-          gl_FragColor = d > 0.34 ? vec4(0.02, 0.02, 0.04, 1.0) : vec4(1.0, 1.0, 1.0, 1.0);
+          // Cyan core, dark rim. White is what a spawn point looks like, so the focused trail must
+          // not borrow it, and cyan reads on top of any region fill.
+          gl_FragColor = d > 0.34 ? vec4(0.02, 0.02, 0.04, 1.0) : vec4(0.35, 0.95, 1.0, 1.0);
         } else {
           gl_FragColor = vec4(vColor, 0.6);
         }
@@ -160,6 +191,7 @@ export default function RegionEditor(props: RegionEditorProps) {
   const [hover, setHover] = createSignal<{ spawn: Spawn; x: number; y: number; } | null>(null);
   const [cursor, setCursor] = createSignal<THREE.Vector3 | undefined>();
   const [toast, setToast] = createSignal<string | undefined>();
+  const [showKeys, setShowKeys] = createSignal(true);
   const [rowFocus, setRowFocus] = createSignal<string | null>(null);
   const [pinnedId, setPinnedId] = createSignal<string | null>(null);
 
@@ -205,7 +237,65 @@ export default function RegionEditor(props: RegionEditorProps) {
     return counts;
   });
 
-  const findings = createMemo(() => validate(asSet(regions()), props.spawns, assign()));
+  // How much of a region's mobs' roam trails actually fall inside it: the objective version of
+  // "does this polygon look right". Debounced and sampled, since it re-runs while dragging.
+  const [coverage, setCoverage] = createSignal<Record<string, number>>({});
+  let coverageTimer: ReturnType<typeof setTimeout> | undefined;
+  createEffect(() => {
+    const set = asSet(regions());
+    const a = assign();
+    const data = props.roam;
+    clearTimeout(coverageTimer);
+    if (!data) return setCoverage({});
+    coverageTimer = setTimeout(() => {
+      const acc: Record<string, [number, number]> = {};
+      for (const [id, name] of Object.entries(a)) {
+        const r = set[name];
+        const range = data.ranges[id];
+        if (!r || !range) continue;
+        const [start, count] = range;
+        const stride = Math.max(1, Math.floor(count / 120));
+        const tally = (acc[name] ??= [0, 0]);
+        for (let i = 0; i < count; i += stride) {
+          const o = (start + i) * 3;
+          tally[1]++;
+          if (containsXZ(r, data.positions[o], data.positions[o + 2])) tally[0]++;
+        }
+      }
+      setCoverage(Object.fromEntries(Object.entries(acc).map(([n, [inside, total]]) => [n, inside / total])));
+    }, 300);
+  });
+  onCleanup(() => clearTimeout(coverageTimer));
+
+  const findings = createMemo<Finding[]>(() => {
+    const thin: Finding[] = Object.entries(coverage())
+      .filter(([, v]) => v < 0.9)
+      .sort((a, b) => a[1] - b[1])
+      .map(([name, v]) => ({
+        level: v < 0.7 ? "warn" : "info",
+        region: name,
+        text: `${name} covers ${(v * 100).toFixed(0)}% of its mobs' trails`,
+      }));
+    return [...thin, ...validate(asSet(regions()), props.spawns, assign())];
+  });
+
+  // Roam points of the given mobs, thinned to what a 4 yalm raster can actually use.
+  const trailPoints = (ids: string[]): TrailPoint[] => {
+    const data = props.roam;
+    if (!data) return [];
+    const out: TrailPoint[] = [];
+    for (const id of ids) {
+      const range = data.ranges[id];
+      if (!range) continue;
+      const [start, count] = range;
+      const stride = Math.max(1, Math.floor(count / 400));
+      for (let i = 0; i < count; i += stride) {
+        const o = (start + i) * 3;
+        out.push({ x: data.positions[o], y: data.positions[o + 1], z: data.positions[o + 2] });
+      }
+    }
+    return out;
+  };
 
   // --- history ---
   interface Snapshot {
@@ -327,6 +417,53 @@ export default function RegionEditor(props: RegionEditorProps) {
     return props.spawns.filter(s => assign()[s.id] === name && matches(s));
   });
 
+  /** Rebuilds the active region's shape from the roam trails of the mobs assigned to it. */
+  const refitActive = () => {
+    const r = active();
+    if (!r) return;
+    const built = regionsFromPoints(trailPoints(Object.keys(assign()).filter(id => assign()[id] === r.name)));
+    if (!built.length) return setToast("no roam trails for that region's mobs");
+    checkpoint();
+    setRegions(rs => rs.map(x => (x.name === r.name ? { name: r.name, rings: built[0].rings } : x)));
+    if (built.length > 1) setToast(`those trails form ${built.length} clusters, fitted the biggest`);
+  };
+
+  /** Builds a new region around a set of mobs' trails and assigns them (plus anything inside it). */
+  const buildFrom = (spawns: Spawn[]) => {
+    const built = regionsFromPoints(trailPoints(spawns.map(s => s.id)));
+    if (!built.length) return setToast("no roam trails for those mobs");
+
+    // Named after whichever template dominates the selection, since that is what it will hold.
+    const common = spawns.map(s => s.name).sort((a, b) => spawns.filter(s => s.name === b).length - spawns.filter(s => s.name === a).length)[0] ?? "region";
+    const base = common.toLowerCase().replace(/[^a-z0-9_]/g, "_");
+    const taken = new Set(regions().map(r => r.name));
+    const named = built.map((region, i) => {
+      let name = i ? `${base}_${i + 1}` : base;
+      for (let n = built.length + 1; taken.has(name); n++) name = `${base}_${n}`;
+      taken.add(name);
+      return { name, rings: region.rings };
+    });
+
+    checkpoint();
+    setRegions(rs => [...rs, ...named]);
+    setAssign(a => {
+      const next = { ...a };
+      for (const s of spawns) {
+        // Whichever cluster actually holds this mob: its trail if there is one, else its spawn point.
+        const trail = props.roam?.ranges[s.id];
+        const home = named.find(r =>
+          trail
+            ? containsXZ(r, props.roam!.positions[trail[0] * 3], props.roam!.positions[trail[0] * 3 + 2])
+            : s.at && containsXZ(r, s.x, s.z)
+        );
+        if (home) next[s.id] = home.name;
+      }
+      return next;
+    });
+    setActiveName(named[0].name);
+    if (named.length > 1) setToast(`built ${named.length} regions, one per cluster`);
+  };
+
   const unassign = (id: string) => {
     checkpoint();
     setAssign(a => {
@@ -402,10 +539,10 @@ export default function RegionEditor(props: RegionEditorProps) {
     const a = assign();
     const act = activeName();
     const colors = points.geometry.getAttribute("color") as THREE.BufferAttribute;
-    // Trails fade back only when the selected region actually has mobs to contrast against —
-    // otherwise dimming them all would just turn the overlay into black specks.
+    // Cyan is the roam palette, kept clear of the white a spawn point uses. Trails fade back only
+    // when the selected region has mobs to contrast against; dimming them all would leave specks.
     const highlighting = !!act && Object.keys(data.ranges).some(id => a[id] === act);
-    const dim = highlighting ? new THREE.Color(0.22, 0.28, 0.36) : new THREE.Color(0.55, 0.7, 0.85);
+    const dim = highlighting ? new THREE.Color(0.16, 0.34, 0.42) : new THREE.Color(0.3, 0.75, 0.9);
     const lit = act ? colorOf(act) : dim;
     for (const [mobId, [start, count]] of Object.entries(data.ranges)) {
       const c = act && a[mobId] === act ? lit : dim;
@@ -875,11 +1012,15 @@ export default function RegionEditor(props: RegionEditorProps) {
           <For each={regions()}>
             {r => {
               onCleanup(() => labelRefs.delete(r.name));
+              // A DOM element over the canvas, so clicking it beats whatever the raycast would
+              // pick. That makes it the reliable way to grab a region buried under another.
               return (
                 <div
                   ref={el => labelRefs.set(r.name, el)}
-                  class="absolute top-0 left-0 hidden whitespace-nowrap text-xs font-bold px-1.5 py-0.5 rounded bg-slate-900/75"
+                  class="absolute top-0 left-0 hidden whitespace-nowrap text-xs font-bold px-1.5 py-0.5 rounded bg-slate-900/75 pointer-events-auto cursor-pointer hover:bg-slate-900 hover:ring-1 hover:ring-slate-500"
                   style={{ color: cssOf(r.name) }}
+                  title={`Select ${r.name}`}
+                  onClick={() => setActiveName(r.name)}
                 >
                   {r.name} <span class="text-slate-400 font-normal">{spawnCounts()[r.name] ?? 0}</span>
                 </div>
@@ -887,25 +1028,54 @@ export default function RegionEditor(props: RegionEditorProps) {
             }}
           </For>
         </div>
-        <div class="absolute top-2 left-2 text-xs text-slate-300 bg-slate-900/70 rounded px-2 py-1 pointer-events-none">
-          <Show
-            when={mode() === "draw"}
-            fallback={
-              <>drag handles to reshape · right-click one to remove it · drag a spawn into a region to assign it · alt+click copies !pos · ctrl+z undoes</>
-            }
+        {/* Only what is true right now — the full list lives in the shortcuts card. */}
+        <Show when={mode() === "draw" || pinnedSpawn()}>
+          <div class="absolute top-2 left-2 text-xs text-slate-200 bg-slate-900/80 rounded px-2 py-1 pointer-events-none">
+            <Show when={mode() === "draw"}>
+              drawing <b style={{ color: cssOf(activeName()!) }}>{activeName()}</b>: click to add vertices, Enter/Esc when done
+            </Show>
+            <Show when={pinnedSpawn()}>
+              <span classList={{ "ml-2": mode() === "draw" }}>
+                holding <b>{pinnedSpawn()!.name}</b> {pinnedSpawn()!.id}, click it again to release
+              </span>
+            </Show>
+          </div>
+        </Show>
+
+        <div class="absolute top-2 right-2 flex flex-col items-end gap-1 text-xs">
+          <button
+            class="w-6 h-6 rounded bg-slate-900/80 text-slate-300 hover:text-white"
+            title={showKeys() ? "Hide shortcuts" : "Show shortcuts"}
+            onClick={() => setShowKeys(k => !k)}
           >
-            drawing <b>{activeName()}</b> — click to add vertices, Enter/Esc when done
-          </Show>
-          <Show when={pinnedSpawn()}>
-            <span class="ml-2 text-white">
-              · holding <b>{pinnedSpawn()!.name}</b> {pinnedSpawn()!.id} — click it again to release
-            </span>
+            {showKeys() ? "×" : "?"}
+          </button>
+          <Show when={showKeys()}>
+            <div class="bg-slate-900/85 rounded px-3 py-2 space-y-2 pointer-events-none">
+              <For each={SHORTCUTS}>
+                {group => (
+                  <div class="space-y-1">
+                    <div class="text-[10px] uppercase tracking-wide text-slate-500">{group.title}</div>
+                    <For each={group.keys}>
+                      {([key, what]) => (
+                        <div class="flex items-center gap-2">
+                          <kbd class="inline-block min-w-24 text-center bg-slate-700 border-b-2 border-slate-600 rounded px-1.5 py-0.5 font-mono text-[10px] text-slate-100">
+                            {key}
+                          </kbd>
+                          <span class="text-slate-300">{what}</span>
+                        </div>
+                      )}
+                    </For>
+                  </div>
+                )}
+              </For>
+            </div>
           </Show>
         </div>
         <Show when={cursor()}>
           <div
             class="absolute bottom-2 left-2 font-mono text-xs text-slate-200 bg-slate-900/75 rounded px-2 py-1 cursor-pointer select-none"
-            title="Ground position under the cursor — click to copy, alt+click the map for !pos"
+            title="Ground position under the cursor. Click to copy, or alt+click the map for !pos"
             onClick={() => copy(xyz(cursor()!))}
           >
             {xyz(cursor()!)}
@@ -969,6 +1139,14 @@ export default function RegionEditor(props: RegionEditorProps) {
             value={filter()}
             onInput={e => setFilter(e.currentTarget.value)}
           />
+          <button
+            class="w-full px-2 py-1 mb-2 bg-slate-600 hover:bg-slate-500 rounded text-xs disabled:opacity-40 disabled:text-slate-300"
+            disabled={!props.roam || !unassigned().length}
+            title="Rasterise these mobs' roam trails into a new region and assign them to it"
+            onClick={() => buildFrom(unassigned())}
+          >
+            Build a region around these {unassigned().length}
+          </button>
           <div class="text-xs text-slate-400 mb-1">
             <Show when={active()} fallback={<>select a region to assign these to it</>}>
               click one to assign it to <span style={{ color: cssOf(activeName()!) }}>{activeName()}</span>
@@ -1062,6 +1240,19 @@ export default function RegionEditor(props: RegionEditorProps) {
                   <span class="text-xs text-slate-400">
                     {vertexCount(r)}v{r.rings.length > 1 ? `+${r.rings.length - 1}h` : ""} · {spawnCounts()[r.name] ?? 0}
                   </span>
+                  <Show when={coverage()[r.name] !== undefined}>
+                    <span
+                      class="text-xs"
+                      classList={{
+                        "text-slate-500": coverage()[r.name] >= 0.9,
+                        "text-amber-400": coverage()[r.name] < 0.9 && coverage()[r.name] >= 0.7,
+                        "text-red-400": coverage()[r.name] < 0.7,
+                      }}
+                      title="Share of its mobs' roam points that fall inside this polygon"
+                    >
+                      {(coverage()[r.name] * 100).toFixed(0)}%
+                    </span>
+                  </Show>
                   <button class="px-1 text-slate-400 hover:text-white" title="Center" onClick={e => (e.stopPropagation(), centerOn(r.name))}>⌖</button>
                   <button class="text-slate-400 hover:text-red-400" onClick={e => (e.stopPropagation(), deleteRegion(r.name))}>✕</button>
                 </div>
@@ -1087,13 +1278,21 @@ export default function RegionEditor(props: RegionEditorProps) {
                 </button>
                 <button
                   class="px-2 py-1 bg-slate-600 hover:bg-slate-500 rounded text-xs"
-                  title="Drop vertices that barely change the shape"
+                  title="Drop the least important quarter of the vertices"
                   onClick={() => {
                     checkpoint();
-                    editActive(r => (r.rings = r.rings.map(ring => simplifyRing(ring))));
+                    editActive(r => (r.rings = r.rings.map(ring => simplifyRing(ring, Infinity, Math.ceil(ring.length * 0.75)))));
                   }}
                 >
                   Simplify
+                </button>
+                <button
+                  class="px-2 py-1 bg-slate-600 hover:bg-slate-500 rounded text-xs disabled:opacity-40 disabled:text-slate-300"
+                  disabled={!props.roam}
+                  title="Reshape this region around the roam trails of the mobs in it"
+                  onClick={refitActive}
+                >
+                  Refit
                 </button>
               </div>
               <div class="text-xs text-slate-400">
@@ -1137,7 +1336,7 @@ function ReviewList(props: { findings: Finding[]; onJump: (f: Finding) => void; 
           <div class="py-1 px-1 rounded hover:bg-slate-700 cursor-pointer text-xs" onClick={() => props.onJump(f)}>
             <span class={color[f.level]}>●</span> <span class="text-slate-300">{f.text}</span>
             <Show when={f.region && !f.spawnId}>
-              <span class="text-slate-500">— {f.region}</span>
+              <span class="text-slate-500">in {f.region}</span>
             </Show>
           </div>
         )}

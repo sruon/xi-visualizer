@@ -211,20 +211,25 @@ function spanXZ(r: Region): number {
   return (Math.max(...xs) - Math.min(...xs)) * (Math.max(...zs) - Math.min(...zs));
 }
 
-/** Region at a point: horizontal containment, then whichever floor is nearest, then the smallest. */
+/** Floors are 10+ yalms apart, so anything this close to the nearest one counts as the same floor. */
+const SAME_FLOOR = 5;
+
+/**
+ * Region at a point: horizontal containment, then the nearest floor, and among regions sharing that
+ * floor the smallest one. Smallest-wins is what makes a region nested inside another clickable at
+ * all, since the bigger one covers every point the smaller one does.
+ */
 export function regionAt(regions: RegionSet, x: number, z: number, y: number): string | null {
-  const over = Object.entries(regions).filter(([, r]) => containsXZ(r, x, z));
+  const over = Object.entries(regions)
+    .filter(([, r]) => containsXZ(r, x, z))
+    .map(([name, r]) => ({ name, dy: Math.abs(floorYAt(r, x, z) - y), span: spanXZ(r) }));
   if (!over.length) return null;
-  let best = over[0];
-  let bestKey = [Math.abs(floorYAt(best[1], x, z) - y), spanXZ(best[1])];
-  for (const cand of over.slice(1)) {
-    const key = [Math.abs(floorYAt(cand[1], x, z) - y), spanXZ(cand[1])];
-    if (key[0] < bestKey[0] - 0.001 || (Math.abs(key[0] - bestKey[0]) <= 0.001 && key[1] < bestKey[1])) {
-      best = cand;
-      bestKey = key;
-    }
-  }
-  return best[0];
+
+  const nearest = Math.min(...over.map(c => c.dy));
+  return over
+    .filter(c => c.dy <= nearest + SAME_FLOOR)
+    .reduce((a, b) => (a.span <= b.span ? a : b))
+    .name;
 }
 
 /**
@@ -232,7 +237,7 @@ export function regionAt(regions: RegionSet, x: number, z: number, y: number): s
  * until every remaining one covers more than `minArea` square yalms. Keeps the shape's silhouette
  * where a distance-based filter would flatten curves.
  */
-export function simplifyRing(ring: Ring, minArea = 4): Ring {
+export function simplifyRing(ring: Ring, minArea = 4, keep = 3): Ring {
   // ponytail: recomputes areas each pass instead of keeping a heap, fine for a few hundred vertices.
   const out = ring.slice();
   const areaAt = (i: number) => {
@@ -241,7 +246,7 @@ export function simplifyRing(ring: Ring, minArea = 4): Ring {
     const [cx, , cz] = out[(i + 1) % out.length];
     return Math.abs((bx - ax) * (cz - az) - (bz - az) * (cx - ax)) / 2;
   };
-  while (out.length > 3) {
+  while (out.length > Math.max(3, keep)) {
     let worst = 0;
     let worstArea = Infinity;
     for (let i = 0; i < out.length; i++) {
@@ -255,6 +260,159 @@ export function simplifyRing(ring: Ring, minArea = 4): Ring {
     out.splice(worst, 1);
   }
   return out;
+}
+
+export interface TrailPoint {
+  x: number;
+  y: number;
+  z: number;
+}
+
+// Positive for an outline, negative for a hole, given the edge order emitted below.
+const signedArea = (ring: Ring) => {
+  let sum = 0;
+  for (let i = 0; i < ring.length; i++) {
+    const a = ring[i];
+    const b = ring[(i + 1) % ring.length];
+    sum += a[0] * b[2] - b[0] * a[2];
+  }
+  return sum / 2;
+};
+
+/**
+ * Builds regions covering a set of roam points: rasterise onto a grid, grow by one cell so gaps
+ * between samples close, then trace the outline of the occupied cells. A raster follows concave
+ * shapes and yields holes for free, which no hull can do. Vertex heights come from the points
+ * themselves, so each polygon lands on the floor the mobs were standing on.
+ *
+ * One region per connected cluster, biggest first: mobs of a kind often live in several separate
+ * camps, and a single polygon around all of them would cover everything in between.
+ */
+export function regionsFromPoints(points: TrailPoint[], cell = 6, close = 2): Region[] {
+  if (points.length < 3) return [];
+
+  let minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity;
+  for (const p of points) {
+    minX = Math.min(minX, p.x);
+    maxX = Math.max(maxX, p.x);
+    minZ = Math.min(minZ, p.z);
+    maxZ = Math.max(maxZ, p.z);
+  }
+
+  const pad = close + 3; // keeps the grown shape clear of the grid border
+  const w = Math.ceil((maxX - minX) / cell) + pad * 2 + 1;
+  const h = Math.ceil((maxZ - minZ) / cell) + pad * 2 + 1;
+  const key = (x: number, z: number) => z * w + x;
+
+  const heights = new Map<number, [number, number]>(); // cell -> [y sum, count]
+  const filled = new Set<number>();
+  for (const p of points) {
+    const k = key(Math.floor((p.x - minX) / cell) + pad, Math.floor((p.z - minZ) / cell) + pad);
+    filled.add(k);
+    const acc = heights.get(k);
+    if (acc) (acc[0] += p.y, acc[1]++);
+    else heights.set(k, [p.y, 1]);
+  }
+
+  const dilate = (src: Set<number>, by: number) => {
+    let out = src;
+    for (let step = 0; step < by; step++) {
+      const next = new Set(out);
+      for (const k of out) {
+        const x = k % w;
+        const z = (k - x) / w;
+        for (let dz = -1; dz <= 1; dz++) {
+          for (let dx = -1; dx <= 1; dx++) next.add(key(x + dx, z + dz));
+        }
+      }
+      out = next;
+    }
+    return out;
+  };
+  const erode = (src: Set<number>, by: number) => {
+    let out = src;
+    for (let step = 0; step < by; step++) {
+      const next = new Set<number>();
+      for (const k of out) {
+        const x = k % w;
+        const z = (k - x) / w;
+        let solid = true;
+        for (let dz = -1; dz <= 1 && solid; dz++) {
+          for (let dx = -1; dx <= 1 && solid; dx++) solid = out.has(key(x + dx, z + dz));
+        }
+        if (solid) next.add(k);
+      }
+      out = next;
+    }
+    return out;
+  };
+
+  // Close the shape (grow then shrink) so gaps between samples and between nearby camps join up
+  // without inflating the outline, then grow once more so every sampled point sits inside it.
+  const grown = dilate(erode(dilate(filled, close + 1), close), 1);
+
+  // Every cell edge with no occupied neighbour is a boundary edge. Shared edges cancel out, so
+  // what remains chains into closed loops: the outline plus any holes.
+  // ponytail: a corner where two loops pinch diagonally would collide in this map. Growing by a
+  // full 8-neighbourhood fills those, so it cannot happen from this pipeline's own output.
+  const corner = (x: number, z: number) => z * (w + 1) + x;
+  const edges = new Map<number, number>();
+  for (const k of grown) {
+    const x = k % w;
+    const z = (k - x) / w;
+    if (!grown.has(key(x, z - 1))) edges.set(corner(x, z), corner(x + 1, z));
+    if (!grown.has(key(x + 1, z))) edges.set(corner(x + 1, z), corner(x + 1, z + 1));
+    if (!grown.has(key(x, z + 1))) edges.set(corner(x + 1, z + 1), corner(x, z + 1));
+    if (!grown.has(key(x - 1, z))) edges.set(corner(x, z + 1), corner(x, z));
+  }
+
+  // Height at a corner: whichever of the four cells touching it were actually visited, widening
+  // the search a little because the boundary sits on grown cells rather than sampled ones.
+  const fallback = points.reduce((s, p) => s + p.y, 0) / points.length;
+  const heightAt = (x: number, z: number) => {
+    for (let radius = 1; radius <= 3; radius++) {
+      let sum = 0;
+      let n = 0;
+      for (let dz = -radius; dz < radius; dz++) {
+        for (let dx = -radius; dx < radius; dx++) {
+          const acc = heights.get(key(x + dx, z + dz));
+          if (acc) (sum += acc[0], n += acc[1]);
+        }
+      }
+      if (n) return sum / n;
+    }
+    return fallback;
+  };
+
+  const rings: Ring[] = [];
+  while (edges.size) {
+    const start = edges.keys().next().value as number;
+    const ring: Ring = [];
+    let at = start;
+    while (true) {
+      const next = edges.get(at);
+      if (next === undefined) break;
+      edges.delete(at);
+      const x = at % (w + 1);
+      const z = (at - x) / (w + 1);
+      ring.push([minX + (x - pad) * cell, heightAt(x, z), minZ + (z - pad) * cell]);
+      at = next;
+      if (at === start) break;
+    }
+    if (ring.length >= 4) rings.push(ring);
+  }
+
+  // Winding tells outlines from holes, so separate clusters stay separate regions instead of being
+  // mistaken for holes in the biggest one. Specks a few cells across are sampling noise.
+  const speck = cell * cell * 4;
+  const outlines = rings.filter(r => signedArea(r) >= speck).sort((a, b) => signedArea(b) - signedArea(a));
+  const holes = rings.filter(r => -signedArea(r) >= speck);
+  // Boundary staircases carry no information, and cutting them costs no coverage in practice.
+  const smooth = (r: Ring) => simplifyRing(r, cell * cell * 4);
+
+  return outlines.map(outline => ({
+    rings: [smooth(outline), ...holes.filter(h => inRingXZ(outline, h[0][0], h[0][2])).map(smooth)],
+  }));
 }
 
 // ponytail: O(n^2) edge pairs, fine for the few dozen vertices a simplified region carries.

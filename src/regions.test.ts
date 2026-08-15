@@ -9,12 +9,13 @@ import {
   patchMobsYaml,
   patchZoneYaml,
   regionAt,
+  regionsFromPoints,
   selfIntersects,
   simplifyRing,
   validate,
   zoneOfMobId,
 } from "./regions.ts";
-import type { RegionSet, Ring } from "./regions.ts";
+import type { RegionSet, Ring, TrailPoint } from "./regions.ts";
 
 // Two stacked floors sharing the same footprint, ground floor has a hole.
 const regions: RegionSet = {
@@ -35,6 +36,14 @@ assert.strictEqual(floorYAt(regions.f1_hall, 1, 1), -50);
 assert.strictEqual(regionAt(regions, 1, 1, -49), "f1_hall", "nearest floor picks the ground floor");
 assert.strictEqual(regionAt(regions, 1, 1, -69), "f2_hall", "nearest floor picks the upper floor");
 assert.strictEqual(regionAt(regions, 99, 99, -50), null, "outside everything");
+
+// a small region nested in a bigger one on the same floor has to win, or it can never be clicked
+const nested: RegionSet = {
+  big: { rings: [[[0, -50, 0], [40, -50, 0], [40, -50, 40], [0, -50, 40]]] },
+  small: { rings: [[[10, -50.4, 10], [20, -50.4, 10], [20, -50.4, 20], [10, -50.4, 20]]] },
+};
+assert.strictEqual(regionAt(nested, 15, 15, -50), "small", "nested region wins inside it");
+assert.strictEqual(regionAt(nested, 35, 35, -50), "big", "outside the nested one, the big one wins");
 assert.ok(selfIntersects([[0, 0, 0], [10, 0, 10], [10, 0, 0], [0, 0, 10]]), "bowtie");
 
 // simplify drops near-collinear filler, keeps the corners, and never destroys the shape
@@ -43,6 +52,43 @@ assert.deepStrictEqual(simplifyRing(noisy), [[0, 0, 0], [10, 0, 0], [10, 0, 10],
 assert.strictEqual(simplifyRing(noisy, 1000).length, 3, "never goes below a triangle");
 assert.strictEqual(simplifyRing(regions.f1_hall.rings[0]).length, 4, "a clean square is left alone");
 assert.ok(!selfIntersects(regions.f1_hall.rings[0]), "square is clean");
+
+// --- building a region out of roam points ---
+const blob: TrailPoint[] = [];
+for (let x = 0; x <= 40; x += 2) {
+  for (let z = 0; z <= 40; z += 2) blob.push({ x, y: -50, z });
+}
+const built = regionsFromPoints(blob)[0];
+assert.strictEqual(regionsFromPoints(blob).length, 1, "one cluster, one region");
+assert.strictEqual(built.rings.length, 1, "a solid blob has no holes");
+assert.ok(built.rings[0].length >= 4 && built.rings[0].length <= 12, `outline stays simple, got ${built.rings[0].length}`);
+assert.ok(built.rings[0].every(v => Math.abs(v[1] + 50) < 0.01), "vertex heights come from the points");
+const xs = built.rings[0].map(v => v[0]);
+const zs = built.rings[0].map(v => v[2]);
+assert.ok(Math.min(...xs) <= 0 && Math.max(...xs) >= 40, "outline covers the points in x");
+assert.ok(Math.min(...zs) <= 0 && Math.max(...zs) >= 40, "outline covers the points in z");
+assert.ok(blob.every(p => containsXZ(built, p.x, p.z)), "every point it was built from is inside it");
+
+// an annulus of points has to come out as an outline plus a hole
+const donut: TrailPoint[] = [];
+for (let a = 0; a < 360; a += 2) {
+  for (let r = 34; r <= 60; r += 2) {
+    donut.push({ x: Math.cos((a * Math.PI) / 180) * r, y: -20, z: Math.sin((a * Math.PI) / 180) * r });
+  }
+}
+const ring = regionsFromPoints(donut)[0];
+assert.strictEqual(ring.rings.length, 2, "annulus keeps its hole");
+assert.ok(!containsXZ(ring, 0, 0), "the middle of the donut is not inside");
+assert.ok(containsXZ(ring, 45, 0), "the band itself is inside");
+assert.deepStrictEqual(regionsFromPoints([{ x: 0, y: 0, z: 0 }]), [], "not enough points to build anything");
+
+// two camps have to come out as two regions, not one region with the other punched out of it
+const camps: TrailPoint[] = [];
+for (let x = 0; x <= 30; x += 2) for (let z = 0; z <= 30; z += 2) camps.push({ x, y: -50, z });
+for (let x = 200; x <= 240; x += 2) for (let z = 0; z <= 30; z += 2) camps.push({ x, y: -50, z });
+const split = regionsFromPoints(camps);
+assert.strictEqual(split.length, 2, "two clusters, two regions");
+assert.ok(camps.every(p => split.some(r => containsXZ(r, p.x, p.z))), "every point lands in one of them");
 
 // --- zone.yaml round trip and patching ---
 const zoneYaml = `# yaml-language-server: $schema=../../schemas/zone.schema.json
