@@ -6,6 +6,7 @@ import NavMeshPage from "./pages/navmesh";
 import NavMeshDiffPage from "./pages/navmesh_diff";
 import PacketPage from "./pages/packet";
 import PathPage from "./pages/path";
+import RegionsPage from "./pages/regions";
 import RoamPage from "./pages/roam";
 import ZonesPage from "./pages/zones";
 
@@ -37,6 +38,10 @@ export const routes: RouteDefinition[] = [
   {
     path: "/navmesh-diff",
     component: NavMeshDiffPage,
+  },
+  {
+    path: "/regions/:zone?",
+    component: RegionsPage,
   },
   {
     path: "**",
