@@ -35,6 +35,7 @@ interface Draft {
 const DEFAULT_REPO = "sruon/lsb-roam-data-temp";
 const ZONES = "data/zones"; // where the zone folders live inside the repo
 const TOKEN_KEY = "xi-visualizer:github-token";
+const LOCAL = "/local-zones"; // dev middleware over a folder on disk, see vite.config.ts
 
 const draftKey = (folder: string) => `xi-visualizer:regions-draft:${folder}`;
 
@@ -56,6 +57,7 @@ export default function RegionsPage() {
   const [token, setToken] = createSignal(localStorage.getItem(TOKEN_KEY) ?? "");
   const [askToken, setAskToken] = createSignal(false);
   const [pr, setPr] = createSignal<{ url: string; note: string; } | undefined>();
+  const [local, setLocal] = createSignal(false);
   const [folders, setFolders] = createSignal<string[]>([]);
   const [files, setFiles] = createSignal<ZoneFiles | undefined>();
   const [error, setError] = createSignal<string | undefined>();
@@ -127,6 +129,23 @@ export default function RegionsPage() {
   };
 
   const listZones = async () => {
+    // In dev, a local zones folder wins if the vite middleware has one to serve (see vite.config).
+    if (import.meta.env.DEV) {
+      try {
+        const res = await fetch(`${LOCAL}/`);
+        const names = res.ok ? ((await res.json()) as string[]) : [];
+        if (names.length) {
+          setLocal(true);
+          setFolders(names);
+          setStatus(undefined);
+          setError(undefined);
+          return;
+        }
+      } catch {
+        // no local folder, fall through to GitHub
+      }
+    }
+    setLocal(false);
     setStatus(`Listing ${repo()}…`);
     try {
       const res = await fetch(`https://api.github.com/repos/${repo()}/git/trees/${ref()}?recursive=1`);
@@ -150,9 +169,11 @@ export default function RegionsPage() {
     if (!folder) return;
     setStatus(`Loading ${folder}…`);
     try {
-      const raw = (name: string) =>
-        fetch(`https://raw.githubusercontent.com/${repo()}/${ref() === "HEAD" ? "main" : ref()}/${ZONES}/${folder}/${name}`)
-          .then(r => (r.ok ? r.text() : Promise.reject(new Error(`${name} → HTTP ${r.status}`))));
+      const url = (name: string) =>
+        local()
+          ? `${LOCAL}/${folder}/${name}`
+          : `https://raw.githubusercontent.com/${repo()}/${ref() === "HEAD" ? "main" : ref()}/${ZONES}/${folder}/${name}`;
+      const raw = (name: string) => fetch(url(name)).then(r => (r.ok ? r.text() : Promise.reject(new Error(`${name} → HTTP ${r.status}`))));
       const [zoneYaml, mobsYaml] = await Promise.all([raw("zone.yaml"), raw("mobs.yaml")]);
       open({ folder, zoneYaml, mobsYaml });
       setStatus(undefined);
@@ -204,6 +225,28 @@ export default function RegionsPage() {
       zoneYaml: patchZoneYaml(f.zoneYaml, pending.regions),
       mobsYaml: patchMobsYaml(f.mobsYaml, pending.assign, positions()),
     };
+  };
+
+  /** Writes both files back to the local folder through the dev middleware. */
+  const saveLocal = async () => {
+    const f = files();
+    const next = patched();
+    if (!f || !next) return;
+    setStatus(`Saving ${f.folder}…`);
+    try {
+      for (const [name, text] of [["zone.yaml", next.zoneYaml], ["mobs.yaml", next.mobsYaml]] as const) {
+        const res = await fetch(`${LOCAL}/${f.folder}/${name}`, { method: "PUT", body: text });
+        if (!res.ok) throw new Error(`${name} → HTTP ${res.status}`);
+      }
+      setFiles({ ...f, ...next });
+      setBaseline({ block: emitRegionsBlock(pending!.regions), assign: pending!.assign });
+      setDirty(false);
+      clearDraft(f.folder);
+      setStatus(`Saved ${f.folder}`);
+    } catch (e) {
+      setStatus(undefined);
+      setError(`save: ${e}`);
+    }
   };
 
   const copyPatched = () => {
@@ -304,13 +347,17 @@ export default function RegionsPage() {
         <select
           class="px-2 py-1 bg-slate-700 rounded max-w-64"
           value={folders().includes(params.zone ?? "") ? params.zone! : ""}
-          title={`${repo()}@${ref()}`}
+          title={local() ? "served from a local folder" : `${repo()}@${ref()}`}
           onChange={e => navigate(`/regions/${e.currentTarget.value}`)}
         >
           <option value="">{folders().length ? `${folders().length} zones, pick one` : "no zones"}</option>
           <For each={folders()}>{f => <option value={f}>{f}</option>}</For>
         </select>
-        <button class="px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded" onClick={listZones} title={`Re-read ${repo()}@${ref()}`}>
+        <button
+          class="px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded"
+          onClick={listZones}
+          title={local() ? "Re-read the local folder" : `Re-read ${repo()}@${ref()}`}
+        >
           ⟳
         </button>
         <Show when={files()}>
@@ -320,10 +367,10 @@ export default function RegionsPage() {
           <button
             class="px-2 py-1 rounded"
             classList={{ "bg-emerald-600 hover:bg-emerald-500": dirty(), "bg-slate-700 text-slate-400": !dirty() }}
-            onClick={proposePr}
-            title="Commit to a branch and open a pull request"
+            onClick={local() ? saveLocal : proposePr}
+            title={local() ? "Write both files back to the local folder" : "Commit to a branch and open a pull request"}
           >
-            {dirty() ? "Propose PR" : "Pushed"}
+            {local() ? (dirty() ? "Save" : "Saved") : dirty() ? "Propose PR" : "Pushed"}
           </button>
           <button class="px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded" onClick={copyPatched}>Copy YAML</button>
         </Show>
