@@ -436,6 +436,84 @@ export function selfIntersects(ring: Ring): boolean {
   return false;
 }
 
+// --- diffing two versions of a zone ---
+
+/** Outline area minus its holes, in square yalms. */
+export function regionArea(r: Region): number {
+  const outer = Math.abs(signedArea(r.rings[0] ?? []));
+  const holes = r.rings.slice(1).reduce((sum, h) => sum + Math.abs(signedArea(h)), 0);
+  return Math.max(0, outer - holes);
+}
+
+export interface RegionChange {
+  name: string;
+  fromVertices: number;
+  toVertices: number;
+  /** head area / base area, so 1.18 means the region grew by 18%. */
+  areaRatio: number;
+}
+
+export interface SpawnMove {
+  id: string;
+  name: string;
+  from?: string;
+  to?: string;
+}
+
+export interface RegionsDiff {
+  added: string[];
+  removed: string[];
+  reshaped: RegionChange[];
+  unchanged: string[];
+  moved: SpawnMove[];
+  addedSpawns: string[];
+  removedSpawns: string[];
+}
+
+export interface ZoneSide {
+  regions: RegionSet;
+  spawns: Spawn[];
+}
+
+/**
+ * What changed between two versions of a zone. Shapes are compared through the canonical emitter,
+ * so a difference here is a difference that would show up in the file rather than float noise.
+ */
+export function diffRegions(base: ZoneSide, head: ZoneSide): RegionsDiff {
+  const shape = (r: Region) => emitRegionsBlock({ r });
+  const names = new Set([...Object.keys(base.regions), ...Object.keys(head.regions)]);
+
+  const diff: RegionsDiff = { added: [], removed: [], reshaped: [], unchanged: [], moved: [], addedSpawns: [], removedSpawns: [] };
+  for (const name of [...names].sort()) {
+    const before = base.regions[name];
+    const after = head.regions[name];
+    if (!before) diff.added.push(name);
+    else if (!after) diff.removed.push(name);
+    else if (shape(before) === shape(after)) diff.unchanged.push(name);
+    else {
+      diff.reshaped.push({
+        name,
+        fromVertices: before.rings[0]?.length ?? 0,
+        toVertices: after.rings[0]?.length ?? 0,
+        areaRatio: regionArea(before) ? regionArea(after) / regionArea(before) : Infinity,
+      });
+    }
+  }
+
+  const baseSpawns = new Map(base.spawns.map(s => [s.id, s]));
+  const headSpawns = new Map(head.spawns.map(s => [s.id, s]));
+  for (const [id, after] of headSpawns) {
+    const before = baseSpawns.get(id);
+    if (!before) diff.addedSpawns.push(id);
+    else if (before.region !== after.region) diff.moved.push({ id, name: after.name, from: before.region, to: after.region });
+  }
+  for (const id of baseSpawns.keys()) {
+    if (!headSpawns.has(id)) diff.removedSpawns.push(id);
+  }
+  diff.moved.sort((a, b) => a.name.localeCompare(b.name) || Number(a.id) - Number(b.id));
+  return diff;
+}
+
 // --- review ---
 
 export interface Finding {

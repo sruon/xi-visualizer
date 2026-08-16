@@ -46,6 +46,11 @@ const App = (props: { children?: JSX.Element; }) => {
               Regions
             </A>
           </li>
+          <li class="py-2 px-4">
+            <A href="/regions-diff" class="no-underline hover:underline">
+              Regions Diff
+            </A>
+          </li>
         </ul>
       </nav>
 

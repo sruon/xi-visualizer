@@ -254,9 +254,12 @@ export default function RegionEditor(props: RegionEditorProps) {
         const range = data.ranges[id];
         if (!r || !range) continue;
         const [start, count] = range;
-        const stride = Math.max(1, Math.floor(count / 120));
+        // Every point, not a sample of 120. This figure is what the review tab reports as "covers
+        // N% of its mobs' trails", and it was being estimated from a twentieth of the data -- fine
+        // for a rough sort, misleading for the one number a reviewer trusts. It runs debounced and
+        // off the drag path, so the extra work is not felt.
         const tally = (acc[name] ??= [0, 0]);
-        for (let i = 0; i < count; i += stride) {
+        for (let i = 0; i < count; i++) {
           const o = (start + i) * 3;
           tally[1]++;
           if (containsXZ(r, data.positions[o], data.positions[o + 2])) tally[0]++;
@@ -279,7 +282,14 @@ export default function RegionEditor(props: RegionEditorProps) {
     return [...thin, ...validate(asSet(regions()), props.spawns, assign())];
   });
 
-  // Roam points of the given mobs, thinned to what a 4 yalm raster can actually use.
+  /**
+   * Every recorded point of the given mobs. Not thinned.
+   *
+   * This used to keep 400 points per mob, which drew 40% of the trail on a two thousand point mob
+   * and hid exactly the thing a reviewer is looking for: a brief excursion -- over a hill, into a
+   * corner -- is a handful of consecutive samples, and a stride of four erases it. Two mobs at one
+   * spot in Valkurm vanished from the view completely while the region was correctly covering them.
+   */
   const trailPoints = (ids: string[]): TrailPoint[] => {
     const data = props.roam;
     if (!data) return [];
@@ -288,8 +298,7 @@ export default function RegionEditor(props: RegionEditorProps) {
       const range = data.ranges[id];
       if (!range) continue;
       const [start, count] = range;
-      const stride = Math.max(1, Math.floor(count / 400));
-      for (let i = 0; i < count; i += stride) {
+      for (let i = 0; i < count; i++) {
         const o = (start + i) * 3;
         out.push({ x: data.positions[o], y: data.positions[o + 1], z: data.positions[o + 2] });
       }

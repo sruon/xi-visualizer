@@ -37,13 +37,42 @@ const ZONES = "data/zones"; // where the zone folders live inside the repo
 const TOKEN_KEY = "xi-visualizer:github-token";
 const LOCAL = "/local-zones"; // dev middleware over a folder on disk, see vite.config.ts
 
-const draftKey = (folder: string) => `xi-visualizer:regions-draft:${folder}`;
+/**
+ * Draft slot for a zone, identified by the files it was taken from and not just the folder name.
+ *
+ * Keying on the name alone meant every `west_ronfaure` shared one slot -- the repo's, a local
+ * folder's, an LSB checkout's -- so a stale draft from one source was silently restored over
+ * another and the page showed different geometry depending on when it was last reloaded.
+ */
+const draftKey = (folder: string, source: string) => `xi-visualizer:regions-draft:${folder}:${source}`;
 
-function readDraft(folder: string): Draft | undefined {
+/** Cheap non-cryptographic digest, only needs to tell one version of a file from another. */
+function fingerprint(...texts: string[]): string {
+  let h = 0x811c9dc5;
+  for (const text of texts) {
+    for (let i = 0; i < text.length; i++) {
+      h ^= text.charCodeAt(i);
+      h = Math.imul(h, 0x01000193);
+    }
+  }
+  return (h >>> 0).toString(36);
+}
+
+function readDraft(folder: string, source: string): Draft | undefined {
   try {
-    return JSON.parse(localStorage.getItem(draftKey(folder)) ?? "null") ?? undefined;
+    return JSON.parse(localStorage.getItem(draftKey(folder, source)) ?? "null") ?? undefined;
   } catch {
     return undefined;
+  }
+}
+
+/** Drops draft slots for this zone that no longer match the files in front of us. */
+function dropStaleDrafts(folder: string, source: string) {
+  const keep = draftKey(folder, source);
+  const prefix = `xi-visualizer:regions-draft:${folder}`;
+  for (let i = localStorage.length - 1; i >= 0; i--) {
+    const k = localStorage.key(i);
+    if (k && k !== keep && (k === prefix || k.startsWith(`${prefix}:`))) localStorage.removeItem(k);
   }
 }
 
@@ -65,6 +94,8 @@ export default function RegionsPage() {
   const [dirty, setDirty] = createSignal(false);
   const [draft, setDraft] = createSignal<Draft | undefined>();
   const [restored, setRestored] = createSignal<Draft | undefined>();
+  // Fingerprint of the files currently open, so a draft belongs to the version it was taken from.
+  const [source, setSource] = createSignal("");
   const [editorKey, setEditorKey] = createSignal("");
 
   // Latest editor state, written back on save.
@@ -73,7 +104,7 @@ export default function RegionsPage() {
   let edited = false;
 
   const clearDraft = (folder: string) => {
-    localStorage.removeItem(draftKey(folder));
+    localStorage.removeItem(draftKey(folder, source()));
     setDraft(undefined);
   };
 
@@ -89,7 +120,7 @@ export default function RegionsPage() {
     draftTimer = setTimeout(() => {
       if (!pending) return;
       try {
-        localStorage.setItem(draftKey(f.folder), JSON.stringify({ at: Date.now(), ...pending }));
+        localStorage.setItem(draftKey(f.folder, source()), JSON.stringify({ at: Date.now(), ...pending }));
       } catch (e) {
         setError(`autosave failed: ${e}`);
       }
@@ -206,7 +237,10 @@ export default function RegionsPage() {
     setDirty(false);
     setError(undefined);
     setRestored(undefined);
-    setDraft(readDraft(next.folder));
+    const stamp = fingerprint(next.zoneYaml, next.mobsYaml);
+    setSource(stamp);
+    dropStaleDrafts(next.folder, stamp);
+    setDraft(readDraft(next.folder, stamp));
     setEditorKey(next.folder);
   };
 

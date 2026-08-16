@@ -2,12 +2,14 @@
 import assert from "node:assert";
 import {
   containsXZ,
+  diffRegions,
   emitRegionsBlock,
   floorYAt,
   parseMobsYaml,
   parseZoneYaml,
   patchMobsYaml,
   patchZoneYaml,
+  regionArea,
   regionAt,
   regionsFromPoints,
   selfIntersects,
@@ -15,7 +17,7 @@ import {
   validate,
   zoneOfMobId,
 } from "./regions.ts";
-import type { RegionSet, Ring, TrailPoint } from "./regions.ts";
+import type { RegionSet, Ring, TrailPoint, ZoneSide } from "./regions.ts";
 
 // Two stacked floors sharing the same footprint, ground floor has a hole.
 const regions: RegionSet = {
@@ -149,6 +151,45 @@ assert.deepStrictEqual(spawns[0], { id: "17186822", name: "Wild_Rabbit", x: 0, y
 assert.deepStrictEqual(spawns[1].at, [1, 2, 3]);
 assert.strictEqual(spawns[1].region, undefined);
 assert.strictEqual(zoneOfMobId("17186822"), 100); // West Ronfaure
+
+// --- diffing two versions of a zone ---
+const before: ZoneSide = {
+  regions: {
+    kept: { rings: [[[0, -50, 0], [10, -50, 0], [10, -50, 10], [0, -50, 10]]] },
+    grown: { rings: [[[0, -50, 0], [10, -50, 0], [10, -50, 10], [0, -50, 10]]] },
+    gone: { rings: [[[50, -50, 50], [60, -50, 50], [60, -50, 60], [50, -50, 60]]] },
+  },
+  spawns: [
+    { id: "1", name: "Rabbit", x: 1, y: -50, z: 1, region: "kept" },
+    { id: "2", name: "Bat", x: 2, y: -50, z: 2, region: "gone" },
+    { id: "3", name: "Worm", x: 3, y: -50, z: 3, at: [3, -50, 3] },
+  ],
+};
+const after: ZoneSide = {
+  regions: {
+    kept: { rings: [[[0, -50, 0], [10, -50, 0], [10, -50, 10], [0, -50, 10]]] },
+    grown: { rings: [[[0, -50, 0], [20, -50, 0], [20, -50, 10], [0, -50, 10]]] },
+    fresh: { rings: [[[70, -50, 70], [80, -50, 70], [80, -50, 80]]] },
+  },
+  spawns: [
+    { id: "1", name: "Rabbit", x: 1, y: -50, z: 1, region: "kept" },
+    { id: "2", name: "Bat", x: 2, y: -50, z: 2, region: "grown" },
+    { id: "3", name: "Worm", x: 3, y: -50, z: 3, region: "fresh" },
+  ],
+};
+const delta = diffRegions(before, after);
+assert.deepStrictEqual(delta.added, ["fresh"]);
+assert.deepStrictEqual(delta.removed, ["gone"]);
+assert.deepStrictEqual(delta.unchanged, ["kept"]);
+assert.deepStrictEqual(delta.reshaped, [{ name: "grown", fromVertices: 4, toVertices: 4, areaRatio: 2 }]);
+assert.deepStrictEqual(delta.moved, [
+  { id: "2", name: "Bat", from: "gone", to: "grown" },
+  { id: "3", name: "Worm", from: undefined, to: "fresh" },
+]);
+assert.deepStrictEqual([delta.addedSpawns, delta.removedSpawns], [[], []]);
+assert.deepStrictEqual(diffRegions(after, after).reshaped, [], "a side against itself has no changes");
+assert.strictEqual(regionArea(before.regions.kept), 100);
+assert.strictEqual(regionArea(regions.f1_hall), 96, "holes come out of the area");
 
 // --- review ---
 const findings = validate(
