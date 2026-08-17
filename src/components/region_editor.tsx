@@ -637,10 +637,12 @@ export default function RegionEditor(props: RegionEditorProps) {
    * and a tail of where it just came from, which is the only way to see which way round it goes.
    * A still trail cannot show direction, and direction is what tells a patrol from a wanderer.
    */
-  const REPLAY_RATE = 12; // samples a second, slow enough to follow and quick enough to sit through
-  const REPLAY_TAIL = 40;
+  const REPLAY_RATE = 3; // samples a second at 1x, with the head gliding between them
+  const REPLAY_TAIL = 24;
+  const SPEEDS = [0.5, 1, 2, 4];
   const [replayId, setReplayId] = createSignal<string | null>(null);
   const [replayAt, setReplayAt] = createSignal(0);
+  const [replaySpeed, setReplaySpeed] = createSignal(1);
 
   const replayTrail = createMemo(() => {
     const id = replayId();
@@ -1323,29 +1325,77 @@ export default function RegionEditor(props: RegionEditorProps) {
       (comet.material as THREE.Material).dispose();
     });
 
+    // An arrowhead riding the comet, because a fading tail says where it has been and only an arrow
+    // says where it is going. Two barbs swept back from the head, drawn as a line so its thickness
+    // is in pixels and it stays visible however far out the camera is.
+    const arrowGeo = new LineGeometry();
+    arrowGeo.setPositions([0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    const arrowMaterial = new LineMaterial({ color: 0xffc733, linewidth: 3, depthTest: false, transparent: true });
+    const arrow = new Line2(arrowGeo, arrowMaterial);
+    arrow.renderOrder = 7;
+    arrow.visible = false;
+    scene().add(arrow);
+    onCleanup(() => {
+      scene().remove(arrow);
+      arrowGeo.dispose();
+      arrowMaterial.dispose();
+    });
+
     let playhead = 0;
     const stepReplay = (dt: number) => {
       const trail = replayTrail();
-      comet.visible = trail.length > 1;
+      comet.visible = arrow.visible = trail.length > 1;
       if (!comet.visible) {
         playhead = 0;
         return;
       }
-      playhead = (playhead + dt * REPLAY_RATE) % trail.length;
+      playhead = (playhead + dt * REPLAY_RATE * replaySpeed()) % trail.length;
       const head = Math.floor(playhead);
       if (head !== replayAt()) setReplayAt(head);
+
+      // Between one sample and the next the head slides, so it reads as a mob walking rather than a
+      // dot blinking from place to place. Not across a break in the capture: there it did jump.
+      const from = trail[head];
+      const to = trail[(head + 1) % trail.length];
+      const step = Math.hypot(to.x - from.x, to.z - from.z);
+      const frac = step > 30 ? 0 : playhead - head;
+      const hx = from.x + (to.x - from.x) * frac;
+      const hy = from.y + (to.y - from.y) * frac;
+      const hz = from.z + (to.z - from.z) * frac;
 
       const pos = cometGeo.getAttribute("position") as THREE.BufferAttribute;
       const col = cometGeo.getAttribute("color") as THREE.BufferAttribute;
       const big = cometGeo.getAttribute("big") as THREE.BufferAttribute;
-      for (let i = 0; i <= REPLAY_TAIL; i++) {
-        const p = trail[(head - i + trail.length) % trail.length];
+      pos.setXYZ(0, hx, hy, hz);
+      col.setXYZ(0, 1, 0.75, 0.15);
+      big.setX(0, 1);
+      for (let i = 1; i <= REPLAY_TAIL; i++) {
+        const p = trail[(head - i + 1 + trail.length) % trail.length];
         pos.setXYZ(i, p.x, p.y, p.z);
-        const fade = 1 - i / (REPLAY_TAIL + 1);
-        col.setXYZ(i, 0.3 + fade * 0.7, fade * 0.6, 0.1); // cooling from amber to dark red behind it
-        big.setX(i, i === 0 ? 1 : 0);
+        const fade = 1 - (i - 1) / REPLAY_TAIL;
+        col.setXYZ(i, 0.25 + fade * 0.75, fade * fade * 0.6, 0.08); // amber, dropping away to dark red
+        big.setX(i, 0);
       }
       pos.needsUpdate = col.needsUpdate = big.needsUpdate = true;
+
+      // Barbs sized in world units from the camera distance, so the arrow keeps its size on screen.
+      const cam = camera();
+      const perPixel = (2 * Math.tan((cam.fov * Math.PI) / 360) * cam.position.distanceTo(controls!.target))
+        / canvasElement.clientHeight;
+      const len = Math.max(2, perPixel * 24);
+      const ahead = trail[(head + (step > 30 ? 2 : 1)) % trail.length];
+      const dx = ahead.x - hx;
+      const dz = ahead.z - hz;
+      const away = Math.hypot(dx, dz) || 1;
+      const ux = dx / away;
+      const uz = dz / away;
+      const barb = (turn: number): [number, number, number] => {
+        const c = Math.cos(turn);
+        const s = Math.sin(turn);
+        return [hx - (ux * c - uz * s) * len, hy, hz - (ux * s + uz * c) * len];
+      };
+      arrowGeo.setPositions([...barb(0.5), hx, hy, hz, ...barb(-0.5)]);
+      arrowMaterial.resolution.set(canvasElement.clientWidth, canvasElement.clientHeight);
     };
 
     renderer.setAnimationLoop(() => {
@@ -1482,8 +1532,17 @@ export default function RegionEditor(props: RegionEditorProps) {
                 <div>
                   Replaying <b style={{ color: "#fbbf24" }}>{spawn().name}</b>{" "}
                   <span class="text-slate-400">
-                    {replayAt()} of {replayTrail().length} points{replayClock() ? `, ${replayClock()}` : ""} · Esc to stop
-                  </span>
+                    {replayAt()} of {replayTrail().length} points{replayClock() ? `, ${replayClock()}` : ""}
+                  </span>{" "}
+                  {/* The banner ignores clicks, so the one control on it has to ask for them back. */}
+                  <button
+                    class="pointer-events-auto px-1.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-100"
+                    title="Playback speed"
+                    onClick={() => setReplaySpeed(SPEEDS[(SPEEDS.indexOf(replaySpeed()) + 1) % SPEEDS.length])}
+                  >
+                    {replaySpeed()}x
+                  </button>{" "}
+                  <span class="text-slate-400">· Esc to stop</span>
                 </div>
               )}
             </Show>
