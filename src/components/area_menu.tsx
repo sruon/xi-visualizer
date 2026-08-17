@@ -186,7 +186,7 @@ export default function AreaMenu(ps: AreaMenuProps) {
     ps.setAreas(ps.selectedAreaIdx, "holes", holes => holes.filter((_, idx) => idx !== index));
   };
 
-  const [copyTimers, setCopyTimers] = createStore<{ [idx: number]: number; }>({});
+  const [copyTimers, setCopyTimers] = createStore<{ [idx: number]: ReturnType<typeof setTimeout>; }>({});
   const areaToClipboard = (index?: number) => {
     const idxToUse = index ?? ps.selectedAreaIdx;
     const area = ps.areas[idxToUse];

@@ -20,7 +20,7 @@ import {
   validate,
   zoneOfMobId,
 } from "./regions.ts";
-import type { Region, RegionSet, Ring, TrailPoint, ZoneSide } from "./regions.ts";
+import type { Region, RegionSet, Ring, TrailPoint, Vertex, ZoneSide } from "./regions.ts";
 
 // Two stacked floors sharing the same footprint, ground floor has a hole.
 const regions: RegionSet = {

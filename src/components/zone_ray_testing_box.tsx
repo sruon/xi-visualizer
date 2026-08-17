@@ -14,7 +14,7 @@ export function ZoneRayTestingBox(props: ZoneRayTestingBoxProps) {
     const [getShowDetails, setShowDetails] = createSignal<boolean>(false);
 
     const positionField = (getter: () => THREE.Vector3 | undefined, setter: (val: THREE.Vector3) => THREE.Vector3) => {
-        let copyTimer: number | undefined;
+        let copyTimer: ReturnType<typeof setTimeout> | undefined;
 
         return <>
             <input class="w-24 text-center hide-spin-buttons" type="number" lang="en-US"

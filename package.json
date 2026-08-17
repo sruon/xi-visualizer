@@ -7,7 +7,9 @@
     "start": "vite",
     "dev": "vite",
     "build": "vite build",
-    "serve": "vite preview"
+    "serve": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "node src/regions.test.ts && node src/regions_files.test.ts"
   },
   "license": "MIT",
   "devDependencies": {
@@ -17,6 +19,7 @@
     "dprint": "^0.47.6",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.15",
+    "typescript": "^7.0.2",
     "vite": "^7.2.4",
     "vite-plugin-solid": "^2.11.10"
   },

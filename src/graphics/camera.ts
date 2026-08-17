@@ -1,7 +1,7 @@
 import CameraControls from "camera-controls";
 import * as holdEvent from "hold-event";
 import * as THREE from "three";
-import { MapControls } from "three/examples/jsm/controls/MapControls";
+import { MapControls } from "three/examples/jsm/controls/MapControls.js";
 
 export function adjustCameraAspect(camera: THREE.PerspectiveCamera, canvas: HTMLCanvasElement) {
   camera.aspect = canvas.clientWidth / canvas.clientHeight;
