@@ -9,7 +9,8 @@
     "build": "vite build",
     "serve": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "node src/regions.test.ts && node src/regions_files.test.ts"
+    "test": "node src/regions.test.ts && node src/regions_files.test.ts",
+    "smoke": "node scripts/smoke.mjs"
   },
   "license": "MIT",
   "devDependencies": {
@@ -18,6 +19,7 @@
     "babel-preset-solid": "^1.9.10",
     "dprint": "^0.47.6",
     "postcss": "^8.4.49",
+    "puppeteer-core": "^25.8.0",
     "tailwindcss": "^3.4.15",
     "typescript": "^7.0.2",
     "vite": "^7.2.4",
