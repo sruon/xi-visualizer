@@ -367,20 +367,41 @@ export default function RegionEditor(props: RegionEditorProps) {
   };
 
   // --- history ---
+  /**
+   * What is being edited belongs in here with what is being edited, or undo puts them out of step:
+   * undoing the conversion of a region into a patrol used to bring the region back while leaving the
+   * editor holding the route that no longer existed.
+   */
   interface Snapshot {
     regions: RegionEntry[];
     assign: Record<string, string>;
     paths: Record<string, Patrol>;
     activeName: string | null;
+    walker: string | null;
+    mirror: string[];
+    mode: "select" | "draw";
   }
   const undoStack: Snapshot[] = [];
   const redoStack: Snapshot[] = [];
-  const snap = (): Snapshot => ({ regions: regions(), assign: assign(), paths: paths(), activeName: activeName() });
+  const snap = (): Snapshot => ({
+    regions: regions(),
+    assign: assign(),
+    paths: paths(),
+    activeName: activeName(),
+    walker: walker(),
+    mirror: mirror(),
+    mode: mode(),
+  });
   const restore = (s: Snapshot) => {
     setRegions(s.regions);
     setAssign(s.assign);
     setPaths(s.paths);
-    setActiveName(s.activeName);
+    // Selection last, and only where there is something to select: a snapshot older than a rename
+    // or a delete can still name one that has since gone, and pointing at it strands the editor.
+    setActiveName(s.activeName && s.regions.some(r => r.name === s.activeName) ? s.activeName : null);
+    setWalker(s.walker && s.paths[s.walker] ? s.walker : null);
+    setMirror(s.mirror.filter(id => s.paths[id]));
+    setMode(s.mode);
   };
 
   // Snapshots are taken at operation boundaries, so a whole vertex drag collapses into one step.
