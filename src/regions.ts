@@ -883,7 +883,8 @@ export function validate(regions: RegionSet, spawns: Spawn[], assign: Record<str
   }
 
   const loose = spawns.filter(s => !assign[s.id]);
-  if (loose.length) findings.push({ level: "info", text: `${loose.length} spawns unassigned` });
+  // Informational, not a fault: a mob that stands in one place is placed correctly by a fixed point.
+  if (loose.length) findings.push({ level: "info", text: `${loose.length} spawns on a fixed point` });
 
   // A region or a route replaces `at:`, so a spawn with none has nowhere to be placed. Counted, not
   // listed: zones ship with entries that never had a position, and one line per spawn buries the

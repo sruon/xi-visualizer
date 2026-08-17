@@ -350,7 +350,7 @@ assert.ok(has("no spawns assigned"), "unused region");
 assert.ok(has("nearer f2_hall's floor"), "wrong floor");
 assert.ok(has("stands outside"), "assigned but outside");
 assert.ok(has("undefined region ghost_region"), "dangling reference");
-assert.ok(has("2 spawns unassigned"), "unassigned tally");
+assert.ok(has("2 spawns on a fixed point"), "tally of the ones no region or route places");
 assert.ok(has("1 spawns have no position, region or route"), "spawn left with nowhere to go");
 
 console.log("ok");

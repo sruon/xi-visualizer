@@ -1330,7 +1330,7 @@ export default function RegionEditor(props: RegionEditorProps) {
     // is in pixels and it stays visible however far out the camera is.
     const arrowGeo = new LineGeometry();
     arrowGeo.setPositions([0, 0, 0, 0, 0, 0, 0, 0, 0]);
-    const arrowMaterial = new LineMaterial({ color: 0xffc733, linewidth: 3, depthTest: false, transparent: true });
+    const arrowMaterial = new LineMaterial({ color: 0xffc733, linewidth: 2, depthTest: false, transparent: true });
     const arrow = new Line2(arrowGeo, arrowMaterial);
     arrow.renderOrder = 7;
     arrow.visible = false;
@@ -1382,7 +1382,7 @@ export default function RegionEditor(props: RegionEditorProps) {
       const cam = camera();
       const perPixel = (2 * Math.tan((cam.fov * Math.PI) / 360) * cam.position.distanceTo(controls!.target))
         / canvasElement.clientHeight;
-      const len = Math.max(2, perPixel * 24);
+      const len = Math.max(0.2, perPixel * 12); // in world units, but that is 12 pixels at any zoom
       const ahead = trail[(head + (step > 30 ? 2 : 1)) % trail.length];
       const dx = ahead.x - hx;
       const dz = ahead.z - hz;
@@ -1682,8 +1682,9 @@ export default function RegionEditor(props: RegionEditorProps) {
             <div class="text-slate-400">
               {hover()!.spawn.x.toFixed(1)}, {hover()!.spawn.y.toFixed(1)}, {hover()!.spawn.z.toFixed(1)}
             </div>
+            {/* A fixed point is not necessarily an oversight: plenty of mobs are meant to stand still. */}
             <div style={{ color: assign()[hover()!.spawn.id] ? cssOf(assign()[hover()!.spawn.id]) : "#888" }}>
-              {assign()[hover()!.spawn.id] ?? "unassigned"}
+              {assign()[hover()!.spawn.id] ?? (paths()[hover()!.spawn.id] ? "walks a route" : "unassigned or static")}
             </div>
             <Show when={props.roam?.ranges[hover()!.spawn.id]}>
               <div class="text-slate-400">{props.roam!.ranges[hover()!.spawn.id][1]} roam points</div>
