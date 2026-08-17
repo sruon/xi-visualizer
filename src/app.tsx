@@ -12,16 +12,6 @@ const App = (props: { children?: JSX.Element; }) => {
             </A>
           </li>
           <li class="py-2 px-4">
-            <A href="/packet" class="no-underline hover:underline">
-              Packet
-            </A>
-          </li>
-          <li class="py-2 px-4">
-            <A href="/path" class="no-underline hover:underline">
-              Path
-            </A>
-          </li>
-          <li class="py-2 px-4">
             <A href="/roam" class="no-underline hover:underline">
               Roam
             </A>

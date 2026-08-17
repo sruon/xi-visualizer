@@ -1,12 +1,9 @@
-import "./zone_model.css";
-
-
 // @ts-ignore
 import Stats from "three/addons/libs/stats.module.js";
 import * as THREE from "three";
 
 import { IoHelpCircle, IoSettings } from "solid-icons/io";
-import { batch, createEffect, createMemo, createSignal, For, mapArray, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
+import { createEffect, createMemo, createSignal, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
 import { createMutable, createStore, produce, SetStoreFunction, unwrap } from "solid-js/store";
 import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from "three-mesh-bvh";
 import { MapControls } from "three/examples/jsm/Addons.js";
@@ -14,17 +11,11 @@ import { CSS2DObject, CSS2DRenderer } from "three/examples/jsm/renderers/CSS2DRe
 import { addMapControls, adjustCameraAspect, fitCameraToContents } from "../graphics/camera";
 import { setupBaseScene } from "../graphics/scene";
 import { cleanupNode, roundDecimals } from "../graphics/util";
-import { EntityUpdate, EntityUpdateKind, Position, PositionUpdate, ZoneEntityUpdates, type EntityUpdates } from "../parse_packets";
 import { ByZone } from "../types";
-import { binarySearchLower, deepMerge } from "../util";
 import AreaMenu, { Area, deriveAreaYs as deriveAreaYRange, Point } from "./area_menu";
-import LookupInput from "./lookup_input";
-import RangeInput from "./range_input";
-import Table from "./table";
 import { ColorKind, colorMesh, createZoneMesh, getHitData, getMapId, markLineCollisions, prepareMeshData, RayHit } from "../graphics/ximesh";
 import { ZoneInfoBox, TargetInfo } from "./zone_info_box";
 import { ZoneRayTestingBox } from "./zone_ray_testing_box";
-import { parsePath, PathPart, PathPartKind } from "../parse_path";
 import PathNodes from "./path_nodes";
 import SelectionBox, { type SelectionBoxResult } from "./selection_box";
 
@@ -38,8 +29,6 @@ interface ZoneDataProps {
   zoneData: ByZone<ZoneData>;
   sourceKey?: string,
   defaultSettings?: ZoneModelSettingsDefault;
-  entityUpdates?: ZoneEntityUpdates;
-  clientUpdates?: PositionUpdate[];
 }
 
 interface ZoneModelSettings {
@@ -50,60 +39,12 @@ interface ZoneModelSettings {
   colorKind: ColorKind,
 }
 
-interface EntityUpdatesSettings {
-  show: {
-    discrete: boolean,
-    animated: boolean,
-    lastOnly: boolean,
-    rendered: boolean,
-    widescan: boolean,
-    paths: boolean,
-    pathKinds: {
-      start: boolean,
-      preturn: boolean,
-      turn: boolean,
-      end: boolean,
-      interrupt: boolean,
-      lines: boolean,
-    }
-  }
-}
-
 type ZoneModelSettingsDefault = Partial<ZoneModelSettings>;
 
 export interface ZoneData {
   id: number;
   name: string;
   mesh: ArrayBuffer;
-}
-
-export interface EntitySettings {
-  hidden?: boolean;
-  color?: number;
-}
-
-export interface EntitiesSettings {
-  [entityKey: string]: EntitySettings;
-}
-
-export interface EntitiesMeshes {
-  [entityKey: string]: THREE.InstancedMesh;
-}
-
-interface EntityRow {
-  id: string;
-  index: string;
-  entityKey: string;
-  name: string;
-  updateCount: number;
-  levels: string;
-}
-
-interface NormalizedEntityUpdates {
-  entityRows: EntityRow[];
-  maxUpdatesKey: string;
-  firstTime: number;
-  lastTime: number;
 }
 
 const enum MenuPopup {
@@ -146,108 +87,10 @@ export default function ZoneModel(props: ZoneDataProps) {
     localStorage.setItem(generalSettingsKey, JSON.stringify(generalSettings));
   });
 
-  // Entity updates settings
-  const updatesSettingsKey = "xi-visualizer.settings.packet.entity-updates";
-  const localStorageUpdatesSettings: EntityUpdatesSettings = JSON.parse(localStorage.getItem(updatesSettingsKey)) || {};
-
-  const defaultUpdatesSettings: EntityUpdatesSettings = {
-    show: {
-      discrete: true,
-      animated: false,
-      lastOnly: false,
-      rendered: true,
-      widescan: true,
-      paths: false,
-      pathKinds: {
-        start: true,
-        preturn: false,
-        turn: true,
-        end: true,
-        interrupt: true,
-        lines: true,
-      }
-    }
-  }
-
-  const updatesSettings = createMutable<EntityUpdatesSettings>(deepMerge(defaultUpdatesSettings, localStorageUpdatesSettings));
-
-  // Update local storage on change
-  createEffect(() => {
-    localStorage.setItem(updatesSettingsKey, JSON.stringify(updatesSettings));
-  });
-
-  // Zone and entity signals and stores
+  // Zone signals and stores
   const zoneIds = Object.keys(props.zoneData);
   const startingZoneId = zoneIds[0] != "0" ? parseInt(zoneIds[0]) : (parseInt(zoneIds[1]) || 0);
   const [getSelectedZone, setSelectedZone] = createSignal<number>(startingZoneId);
-
-  const [entitySettings, setEntitySettings] = createStore<EntitiesSettings>({});
-
-  const [getNewDiscrete, setNewDiscrete] = createSignal<[number, number] | undefined>();
-  const [getDiscreteLowerTime, setDiscreteLowerTime] = createSignal<number>(0);
-  const [getDiscreteUpperTime, setDiscreteUpperTime] = createSignal<number>(1);
-
-  const summarizedEntityUpdates = createMemo(() => {
-    if (!props.entityUpdates) {
-      return {};
-    }
-
-    let result: {
-      [zoneId: number]: NormalizedEntityUpdates;
-    } = {};
-
-    Object.keys(props.entityUpdates).forEach(zoneId => {
-      let firstTime = Number.MAX_SAFE_INTEGER;
-      let lastTime = Number.MIN_SAFE_INTEGER;
-
-      let maxUpdatesKey;
-      let maxUpdates = Number.MIN_SAFE_INTEGER;
-
-      let rows = Object.keys(props.entityUpdates[zoneId]).map(
-        entityKey => {
-          const entity: EntityUpdates = props.entityUpdates[zoneId][entityKey];
-          const updates: EntityUpdate[] = entity.updates;
-          const updateCount = updates.length;
-          if (updateCount == 0) {
-            return undefined;
-          }
-
-          firstTime = Math.min(firstTime, updates[0].time);
-          lastTime = Math.max(lastTime, updates[updates.length - 1].time);
-
-          if (updates.length > maxUpdates) {
-            maxUpdates = updates.length;
-            if (maxUpdatesKey) {
-              setEntitySettings(maxUpdatesKey, { hidden: true });
-            }
-            maxUpdatesKey = entityKey;
-          } else {
-            setEntitySettings(entityKey, { hidden: true });
-          }
-
-
-          const split = entityKey.split("-");
-          return {
-            id: entity.id.toString(),
-            index: split[0],
-            entityKey,
-            name: entity.firstName,
-            levels: entity.levels.toSorted().join(","),
-            updateCount,
-          } as EntityRow;
-        },
-      ).filter(x => x !== undefined);
-
-      result[zoneId] = {
-        entityRows: rows,
-        firstTime,
-        lastTime,
-        maxUpdatesKey,
-      };
-    });
-
-    return result;
-  });
 
   const scene = createMemo(() => {
     return setupBaseScene();
@@ -291,7 +134,6 @@ export default function ZoneModel(props: ZoneDataProps) {
     }
 
     onCleanup(() => {
-      setEntitySettings({});
       for (const zoneId in zoneMeshes) {
         console.log("Disposing zone", zoneId);
         const mesh = zoneMeshes[zoneId];
@@ -303,609 +145,13 @@ export default function ZoneModel(props: ZoneDataProps) {
     return zoneMeshes;
   }, {});
 
-  // Adjust widescan updates to nearest ground point on the zone mesh in the Y-axis
-  const adjustedEntityUpdates = createMemo(() => {
-    const scanPoint = new THREE.Vector3();
-    const rayStartPoint = new THREE.Vector3();
-    const down = new THREE.Vector3(0, 1, 0);
-    const rayResults: THREE.Intersection<THREE.Object3D<THREE.Object3DEventMap>>[] = [];
-    let bestResult: THREE.Intersection<THREE.Object3D<THREE.Object3DEventMap>> | undefined = undefined;
-    let bestDistance = Number.MAX_SAFE_INTEGER;
-
-    // Enable multi hit for this purpose
-    raycaster.firstHitOnly = false;
-
-    const adjusted: ZoneEntityUpdates = {};
-    for (const zoneId in props.entityUpdates) {
-      const zoneMesh = zoneMeshes()[zoneId];
-      if (!zoneMesh) {
-        continue;
-      }
-
-      adjusted[zoneId] = {};
-
-      for (const entityKey in props.entityUpdates[zoneId]) {
-        const entity = props.entityUpdates[zoneId][entityKey];
-        const adjustedEntity = adjusted[zoneId][entityKey] = {
-          id: entity.id,
-          firstName: entity.firstName,
-          updates: new Array(entity.updates.length),
-          levels: entity.levels,
-        };
-        const adjustedUpdates = adjustedEntity.updates;
-
-        for (let i = 0; i < entity.updates.length; i++) {
-          const update = entity.updates[i];
-          if (update.kind !== EntityUpdateKind.Widescan) {
-            adjustedUpdates[i] = update;
-            continue;
-          }
-
-          scanPoint.set(update.pos.x, update.pos.y, update.pos.z);
-          rayStartPoint.set(update.pos.x, update.pos.y - 100, update.pos.z);
-
-          raycaster.set(rayStartPoint, down);
-          raycaster.intersectObject(zoneMesh, false, rayResults);
-
-          bestResult = undefined;
-          bestDistance = Number.MAX_SAFE_INTEGER;
-          for (const result of rayResults) {
-            const dist = result.point.distanceTo(scanPoint);
-            if (!bestResult || dist < bestDistance) {
-              bestResult = result;
-              bestDistance = dist;
-            }
-          }
-
-          if (bestResult) {
-            adjustedUpdates[i] = {
-              ...update,
-              pos: {
-                ...update.pos,
-                y: bestResult.point.y - 1,
-              },
-            };
-          } else {
-            // Did not find a new Y value for the update, so keep whatever it had originally
-            adjustedUpdates[i] = update;
-          }
-
-          // Clear the result array again
-          rayResults.length = 0;
-        }
-      }
-    }
-
-    raycaster.firstHitOnly = true;
-    return adjusted;
-  });
-
-  const [isPlaying, setIsPlaying] = createSignal<boolean>(false);
-  const [isSeeking, setIsSeeking] = createSignal<boolean>(false);
-  const [getPlayTime, setPlayTime] = createSignal<number>(0);
-  const [getTimeScale, setTimeScale] = createSignal<number>(10);
-
-  const getPlayTimeMax = () => {
-    return (currentEntityUpdates().lastTime - currentEntityUpdates().firstTime) / 1000;
-  };
-
-  // Common entity setup
-  const mobColor = new THREE.Color(0xFF0000);
-  const pathStartColor = new THREE.Color(0x55AA55);
-  const pathDirectionColor = new THREE.Color(0xAAAA00);
-  const pathEndColor = new THREE.Color(0x5555AA);
-  const pathInterruptColor = new THREE.Color(0xFF5555);
-  const clientColor = new THREE.Color(0x0000FF);
-  const npcColor = new THREE.Color(0x00FF00);
-  const widescanColor = new THREE.Color(0xE000DC);
-  const geo = new THREE.CapsuleGeometry();
-  const ROT_TO_RADIANS = Math.PI * 2 / 256;
-
-  // Setup animations for entities
-  const mixers = createMemo(() => {
-    if (!updatesSettings.show.animated) {
-      return [];
-    }
-
-    const zoneId = getSelectedZone();
-    let parsedUpdates = summarizedEntityUpdates();
-    if (!parsedUpdates[zoneId]) {
-      return [];
-    }
-
-    let mixers: THREE.AnimationMixer[] = [];
-
-    const startTime = parsedUpdates[zoneId].firstTime;
-    const endTime = parsedUpdates[zoneId].lastTime;
-    const length = endTime - startTime;
-
-    for (const entityKey in props.entityUpdates[zoneId]) {
-      if (entitySettings[entityKey]?.hidden) {
-        continue;
-      }
-
-      const updates = props.entityUpdates[zoneId][entityKey].updates;
-
-      // Count how long the arrays needs to be.
-      let count = 0;
-      let prevPosUpdate: PositionUpdate | undefined = undefined;
-      for (const update of updates) {
-        if (update.kind == EntityUpdateKind.Position) {
-          if (!prevPosUpdate) {
-            // No previous position, so add a hidden frame just before this one.
-            count++;
-          }
-          prevPosUpdate = update;
-          count++;
-        } else if (prevPosUpdate && (update.kind == EntityUpdateKind.OutOfRange || update.kind == EntityUpdateKind.Despawn)) {
-          // Out of range
-          prevPosUpdate = undefined;
-          count++;
-        }
-      }
-
-      if (count == 0) {
-        continue;
-      }
-      if (prevPosUpdate) {
-        count++; // Last hiding frame
-      }
-
-      const times = new Float32Array(count);
-      const opacity = new Float32Array(count);
-      const positions = new Float32Array(count * 3);
-      const scale = new Float32Array(count * 3);
-
-      let i = 0;
-      const addFrame = (pos: Position, time: number, show: boolean = true) => {
-        times[i] = (time - startTime) / 1000;
-        const showNum = show ? 1 : 0;
-        opacity[i] = showNum;
-        scale.set([showNum, showNum, showNum], i * 3);
-        positions.set([pos.x, pos.y - 1, pos.z], i * 3);
-        i++;
-      };
-
-      prevPosUpdate = undefined;
-      for (const update of updates) {
-        if (update.kind == EntityUpdateKind.Position) {
-          if (!prevPosUpdate) {
-            // No previous position, so add a hidden frame just before this one.
-            addFrame(update.pos, update.time - 1000, false);
-          }
-          // Add current position frame
-          addFrame(update.pos, update.time, true);
-          prevPosUpdate = update;
-        } else if (prevPosUpdate && (update.kind == EntityUpdateKind.OutOfRange || update.kind == EntityUpdateKind.Despawn)) {
-          addFrame(prevPosUpdate.pos, prevPosUpdate.time + 1000, false);
-          prevPosUpdate = undefined;
-        }
-      }
-
-      // Add final hide frame
-      if (prevPosUpdate) {
-        addFrame(prevPosUpdate.pos, prevPosUpdate.time + 1000, false);
-      }
-
-      const positionKF = new THREE.VectorKeyframeTrack(".position", times, positions);
-      const scaleKF = new THREE.VectorKeyframeTrack(".scale", times, scale);
-      const opacityKF = new THREE.NumberKeyframeTrack(".material.opacity", times, opacity);
-      const clip = new THREE.AnimationClip(entityKey, length / 1000, [positionKF, scaleKF, opacityKF]);
-
-      const mat = new THREE.MeshToonMaterial({
-        color: mobColor,
-        opacity: 1,
-        transparent: true,
-      });
-      const mesh = new THREE.Mesh(geo, mat);
-      scene().add(mesh);
-
-      const mixer = new THREE.AnimationMixer(mesh);
-      mixer.timeScale = 1;
-      mixers.push(mixer);
-
-      const clipAction = mixer.clipAction(clip);
-      clipAction.play();
-      mixer.update(0);
-    }
-
-    // Client mesh
-    if (props.clientUpdates) {
-      const updates = props.clientUpdates;
-
-      // Count how long the arrays needs to be.
-      let startIdx = binarySearchLower(updates, startTime, x => x.time);
-      let endIdx = binarySearchLower(updates, endTime + 1, x => x.time);
-
-      const count = endIdx - startIdx;
-
-      const times = new Float32Array(count);
-      const positions = new Float32Array(count * 3);
-
-      for (let i = startIdx, j = 0; i < endIdx; i++, j++) {
-        times[j] = (updates[i].time - startTime) / 1000;
-        const pos = updates[i].pos;
-        positions.set([pos.x, pos.y - 1, pos.z], j * 3);
-      }
-
-      const positionKF = new THREE.VectorKeyframeTrack(".position", times, positions);
-      const clip = new THREE.AnimationClip("client", length / 1000, [positionKF]);
-
-      const mat = new THREE.MeshToonMaterial({
-        color: clientColor,
-      });
-      const mesh = new THREE.Mesh(geo, mat);
-      scene().add(mesh);
-
-      const mixer = new THREE.AnimationMixer(mesh);
-      mixer.timeScale = 1;
-      mixers.push(mixer);
-
-      const clipAction = mixer.clipAction(clip);
-      clipAction.play();
-      mixer.update(0);
-    }
-
-    onCleanup(() => {
-      for (const mixer of mixers) {
-        const mesh = mixer.getRoot() as THREE.Mesh;
-        cleanupNode(mesh);
-        scene().remove(mesh);
-      }
-    });
-    return mixers;
-  });
-
-  // Setup meshes for entities
-  const mat = new THREE.MeshToonMaterial();
-  const discreteEntityMeshes = createMemo(() => {
-    let discreteEntityMeshes: ByZone<{ [entityKey: string]: THREE.InstancedMesh; }> = {};
-
-    for (const zoneId in adjustedEntityUpdates()) {
-      const entities = (discreteEntityMeshes[zoneId] = discreteEntityMeshes[zoneId] || {});
-
-      for (const entityKey in adjustedEntityUpdates()[zoneId]) {
-        const updates = adjustedEntityUpdates()[zoneId][entityKey].updates;
-        const mesh = new THREE.InstancedMesh(geo, mat, updates.length);
-
-        scene().add(mesh);
-        entities[entityKey] = mesh;
-      }
-    }
-
-    onCleanup(() => {
-      for (const zoneId in discreteEntityMeshes) {
-        for (const entityKey in discreteEntityMeshes[zoneId]) {
-          const mesh = discreteEntityMeshes[zoneId][entityKey];
-          scene().remove(mesh);
-          cleanupNode(mesh);
-        }
-      }
-    });
-
-    return discreteEntityMeshes;
-  });
-
-  interface EntityPath {
-    line: THREE.Line,
-    pointMesh: THREE.InstancedMesh,
-    startTime: number,
-  }
-
-  const entityPathLines = createMemo(() => {
-    let pathLines: ByZone<{ [entityKey: string]: EntityPath[]; }> = {};
-
-    const lineMat = new THREE.LineBasicMaterial({
-      color: 0xCC0000,
-      linewidth: 1,
-      depthTest: true,
-    });
-    const pointMat = new THREE.MeshBasicMaterial();
-    const pointSize = 2
-    const pointGeo = new THREE.ConeGeometry(pointSize / 4, pointSize);
-    pointGeo.rotateZ(-Math.PI / 2);
-    pointGeo.translate(pointSize / 2, 0, 0);
-
-    const obj = new THREE.Object3D();
-
-    const copyAdjustedPos = (p: Position) => {
-      return new THREE.Vector3(p.x, p.y - 0.5, p.z);
-    }
-
-    const adjusted = adjustedEntityUpdates();
-
-    for (const zoneId in adjusted) {
-      const entityLines = (pathLines[zoneId] = pathLines[zoneId] || {});
-
-      for (const entityKey in adjusted[zoneId]) {
-        entityLines[entityKey] = [];
-
-        const updates = adjusted[zoneId][entityKey].updates;
-        const parts = parsePath(updates);
-
-        let currentParts: PathPart[] = [];
-
-        const endPath = () => {
-          if (currentParts.length <= 1) {
-            currentParts = []
-            return;
-          }
-
-          const lineGeo = new THREE.BufferGeometry().setFromPoints(currentParts.map(p => copyAdjustedPos(p.pos)));
-          const line = new THREE.Line(lineGeo, lineMat);
-
-          const pointMesh = new THREE.InstancedMesh(pointGeo, pointMat, currentParts.length * 2);
-
-          let lastRot = 0;
-          let pointColor: THREE.Color | undefined = undefined;
-
-          let pointCount = 0;
-          for (const part of currentParts) {
-            pointColor = undefined;
-
-            let rot = "rot" in part ? part.rot : lastRot;
-
-            if (part.kind == PathPartKind.Start && updatesSettings.show.pathKinds.start) {
-              pointColor = pathStartColor;
-            } else if (part.kind == PathPartKind.NewDirection && (updatesSettings.show.pathKinds.turn || updatesSettings.show.pathKinds.preturn)) {
-              pointColor = pathDirectionColor;
-            } else if (part.kind == PathPartKind.End && updatesSettings.show.pathKinds.end) {
-              pointColor = pathEndColor;
-            } else if (part.kind == PathPartKind.Interrupted && updatesSettings.show.pathKinds.interrupt) {
-              pointColor = pathInterruptColor;
-            }
-
-            if (pointColor) {
-              const pos = copyAdjustedPos(part.pos);
-              obj.position.set(pos.x, pos.y, pos.z);
-
-              // Draw non-direction points, and direction points when turns are enabled
-              if (part.kind != PathPartKind.NewDirection || updatesSettings.show.pathKinds.turn) {
-                obj.rotation.y = ROT_TO_RADIANS * rot;
-                obj.updateMatrix();
-
-                pointMesh.setMatrixAt(pointCount, obj.matrix);
-                pointMesh.setColorAt(pointCount, pointColor);
-                pointCount++;
-              }
-
-              // Draw an extra point for pre-turn points if enabled
-              if (part.kind == PathPartKind.NewDirection && updatesSettings.show.pathKinds.preturn) {
-                obj.rotation.y = ROT_TO_RADIANS * lastRot;
-                obj.updateMatrix();
-
-                pointMesh.setMatrixAt(pointCount, obj.matrix);
-                pointMesh.setColorAt(pointCount, pointColor);
-                pointCount++;
-              }
-            }
-
-            lastRot = rot;
-          }
-
-          pointMesh.count = pointCount;
-          if (pointMesh.instanceColor) {
-            pointMesh.instanceColor.needsUpdate = true;
-            pointMesh.instanceMatrix.needsUpdate = true;
-          }
-
-          entityLines[entityKey].push({
-            line,
-            startTime: currentParts[0]?.time,
-            pointMesh,
-          });
-
-          scene().add(line);
-          scene().add(pointMesh);
-
-          currentParts = []
-        }
-
-        for (const part of parts) {
-          if (part.kind == PathPartKind.Start) {
-            endPath();
-            currentParts = [part];
-          } else if (part.kind == PathPartKind.NewDirection) {
-            currentParts.push(part);
-          } else if (part.kind == PathPartKind.End || part.kind == PathPartKind.Interrupted) {
-            currentParts.push(part);
-            endPath();
-          }
-        }
-      }
-    }
-
-    onCleanup(() => {
-      for (const zoneId in pathLines) {
-        for (const entityKey in pathLines[zoneId]) {
-          for (const path of pathLines[zoneId][entityKey]) {
-            scene().remove(path.line);
-            scene().remove(path.pointMesh);
-          }
-          pathLines[zoneId][entityKey] = [];
-        }
-      }
-    });
-
-    return pathLines;
-  });
-
-  // Show entities at different points in time
+  // Show/hide zone meshes
   createEffect(() => {
-    if (!props.entityUpdates || !updatesSettings.show.discrete) {
-      return;
-    }
-
-    const zoneId = getSelectedZone();
-    const meshes = discreteEntityMeshes()[zoneId];
-    let obj = new THREE.Object3D();
-    const hideWidescan = !updatesSettings.show.widescan;
-    const hideRendered = !updatesSettings.show.rendered;
-    const onlyLatest = updatesSettings.show.lastOnly;
-    for (const entityKey in adjustedEntityUpdates()[zoneId]) {
-      if (entitySettings[entityKey]?.hidden) {
-        continue;
-      }
-
-      const updates = adjustedEntityUpdates()[zoneId][entityKey].updates;
-      const mesh = meshes[entityKey];
-      let showCount = 0;
-
-      if (onlyLatest) {
-        // Only show latest position
-
-        const summarized = summarizedEntityUpdates()[zoneId];
-        const firstZoneTime = summarized.firstTime;
-
-        // Skip until last visible update
-        const endTime = isPlaying() ? firstZoneTime + getPlayTime() * 1000 : getDiscreteUpperTime();
-
-        let idx = binarySearchLower(updates, endTime, x => x.time);
-
-        const endTimeCutoff = endTime - 90000;
-        const cutoffTime = endTimeCutoff > getDiscreteLowerTime() ? endTimeCutoff : getDiscreteLowerTime();
-
-        while (idx >= 0 && updates[idx].time >= cutoffTime) {
-          const update = updates[idx];
-          if (update.kind !== EntityUpdateKind.Position && update.kind !== EntityUpdateKind.Widescan) {
-            // Only add positional updates
-            idx--;
-            continue;
-          }
-
-          if (hideWidescan && update.kind == EntityUpdateKind.Widescan) {
-            // Widescan is hidden
-            idx--;
-            continue;
-          }
-
-          if (hideRendered && update.kind == EntityUpdateKind.Position) {
-            // Entity updates is hidden
-            idx--;
-            continue;
-          }
-
-          obj.position.set(update.pos.x, update.pos.y, update.pos.z);
-          obj.updateMatrix();
-          mesh.setMatrixAt(showCount, obj.matrix);
-          if (update.kind == EntityUpdateKind.Position) {
-            mesh.setColorAt(showCount, mobColor);
-          } else {
-            mesh.setColorAt(showCount, widescanColor);
-          }
-          showCount = 1;
-          break;
-        }
-
-      } else {
-        // Show all positions
-
-        // Add from first visible update until last visible update
-        for (
-          let idx = binarySearchLower(updates, getDiscreteLowerTime(), x => x.time);
-          idx < updates.length && updates[idx].time <= getDiscreteUpperTime();
-          idx++
-        ) {
-          const update = updates[idx];
-          if (hideWidescan && update.kind == EntityUpdateKind.Widescan) {
-            // Widescan is hidden
-            continue;
-          }
-
-          if (hideRendered && (update.kind == EntityUpdateKind.Position || update.kind == EntityUpdateKind.OutOfRange || update.kind == EntityUpdateKind.Despawn)) {
-            // Entity updates is hidden
-            continue;
-          }
-
-          let pos = "pos" in update ? update.pos : undefined;
-          if (!pos) {
-            if (!hideRendered) {
-              continue;
-            }
-
-            const prevUpdate = updates[idx - 1];
-            pos = "pos" in prevUpdate ? prevUpdate.pos : undefined;
-            if (!pos) {
-              continue;
-            }
-          }
-
-          obj.position.set(pos.x, pos.y, pos.z);
-          obj.updateMatrix();
-          mesh.setMatrixAt(showCount, obj.matrix);
-          if (update.kind == EntityUpdateKind.Position) {
-            mesh.setColorAt(showCount, mobColor);
-          } else if (update.kind == EntityUpdateKind.Widescan) {
-            mesh.setColorAt(showCount, widescanColor);
-          } else if (update.kind == EntityUpdateKind.OutOfRange) {
-            mesh.setColorAt(showCount, pathDirectionColor);
-          } else if (update.kind == EntityUpdateKind.Despawn) {
-            mesh.setColorAt(showCount, pathStartColor);
-          }
-          showCount++;
-        }
-      }
-
-      mesh.count = showCount;
-      mesh.instanceMatrix.needsUpdate = true;
-      if (mesh.instanceColor) {
-        mesh.instanceColor.needsUpdate = true;
-      }
-      mesh.computeBoundingBox();
-      mesh.computeBoundingSphere();
-    }
-  });
-
-  // Show/hide paths for rendered entities
-  createEffect(() => {
-    if (!props.entityUpdates) {
-      return;
-    }
-
-    const zoneId = getSelectedZone();
-    const allHidden = !updatesSettings.show.paths;
-
-    for (const entityKey in adjustedEntityUpdates()[zoneId]) {
-      const entityHidden = allHidden || entitySettings[entityKey]?.hidden
-
-      let pathInfo = entityPathLines()[zoneId][entityKey];
-
-      for (const path of pathInfo) {
-        const hidden = entityHidden || path.startTime < getDiscreteLowerTime() || path.startTime >= getDiscreteUpperTime();
-        path.line.visible = updatesSettings.show.pathKinds.lines && !hidden;
-        path.pointMesh.visible = !hidden;
-      }
-    }
-  });
-
-  // Show/hide zone meshes and associated entities
-  createEffect(() => {
-    const parsedUpdates = summarizedEntityUpdates();
     for (const zoneId in zoneMeshes()) {
-      const zoneIsVisible = parseInt(zoneId) == getSelectedZone();
-      zoneMeshes()[zoneId].visible = zoneIsVisible;
-      if (!props.entityUpdates) {
-        continue;
-      }
-
-      // Show/hide entities from other zones
-      for (const entityKey in props.entityUpdates[zoneId]) {
-        setEntitySettings(entityKey, { hidden: !zoneIsVisible || (entityKey != parsedUpdates[zoneId].maxUpdatesKey) });
-      }
+      zoneMeshes()[zoneId].visible = parseInt(zoneId) == getSelectedZone();
     }
   });
 
-  // Show/hide discrete entity meshes
-  createEffect(() => {
-    for (const entityKey in entitySettings) {
-      const entityId = parseInt(entityKey.split("-")[1]);
-      const zoneId = (entityId >> 12) & 0x01ff;
-      const mesh = discreteEntityMeshes()?.[zoneId]?.[entityKey];
-      if (mesh) {
-        mesh.visible = updatesSettings.show.discrete && !entitySettings[entityKey]?.hidden;
-      }
-    }
-  });
 
   let canvasElement: HTMLCanvasElement;
   let labelRendererElement: HTMLDivElement;
@@ -1154,49 +400,14 @@ export default function ZoneModel(props: ZoneDataProps) {
       setNeedsResize(false);
     }
 
-    const newDiscrete = getNewDiscrete();
-    if (newDiscrete) {
-      setDiscreteLowerTime(newDiscrete[0]);
-      setDiscreteUpperTime(newDiscrete[1])
-      setNewDiscrete(undefined);
-    }
-
     if (hasMouseMovedSinceLast) {
       hasMouseMovedSinceLast = false;
       updatePosLabel();
     }
 
-    if (isPlaying()) {
-      if (!isSeeking()) {
-        const playTime = getPlayTime();
-        setPlayTime((playTime + delta * getTimeScale()) % getPlayTimeMax());
-      }
-    }
-
     renderer.render(scene(), camera());
     labelRenderer.render(scene(), camera());
   }
-
-  createEffect(() => {
-    for (const mixer of mixers()) {
-      mixer.setTime(getPlayTime());
-    }
-  });
-
-  const currentEntityUpdates = createMemo(() => {
-    const key = getSelectedZone();
-    if (key !== undefined && summarizedEntityUpdates()) {
-      const updates = summarizedEntityUpdates()[key];
-      if (updates) {
-        setDiscreteLowerTime(updates.firstTime);
-        setDiscreteUpperTime(updates.lastTime);
-        setPlayTime(0);
-        return updates;
-      }
-    }
-
-    return {} as NormalizedEntityUpdates;
-  });
 
   const [areas, setAreas] = createStore<Area[]>([]);
   const [getSelectedAreaIdx, setSelectedAreaIdx] = createSignal<number | undefined>();
@@ -1427,21 +638,6 @@ export default function ZoneModel(props: ZoneDataProps) {
     });
   });
 
-  const zoneSelector = (
-    <Show when={Object.keys(props.zoneData).length > 1}>
-      <div class="flex-grow m-1">
-        <LookupInput
-          options={props.zoneData}
-          nameFn={v => v.name}
-          onChange={v => setSelectedZone(parseInt(v.id) || undefined)}
-          placeholder="Select zone"
-          initialId={getSelectedZone() + ""}
-        >
-        </LookupInput>
-      </div>
-    </Show>
-  );
-
   const [getStartPos, setStartPos] = createSignal<THREE.Vector3 | undefined>();
   const [getEndPos, setEndPos] = createSignal<THREE.Vector3 | undefined>();
 
@@ -1551,29 +747,6 @@ export default function ZoneModel(props: ZoneDataProps) {
     return line;
   }));
 
-  const focusVisible = () => {
-    const zoneId = getSelectedZone();
-    const meshes = discreteEntityMeshes()[zoneId];
-    const paths = entityPathLines()[zoneId];
-
-    fitCameraToContents(camera(), controls(), fn => {
-      for (const entityKey in meshes) {
-        if (!entitySettings[entityKey]?.hidden) {
-          fn(meshes[entityKey])
-        }
-      }
-
-      for (const entityKey in paths) {
-        if (!entitySettings[entityKey]?.hidden) {
-          for (const path of paths[entityKey]) {
-            fn(path.line)
-            fn(path.pointMesh)
-          }
-        }
-      }
-    });
-  };
-
   createEffect(on(() => generalSettings.colorKind, (colorKind) => {
     const meshes = zoneMeshes();
     const prep = prepMeshData();
@@ -1673,7 +846,7 @@ export default function ZoneModel(props: ZoneDataProps) {
     </div>;
 
   return (
-    <div classList={{ "zone_model_layout": !!props.entityUpdates }}>
+    <div>
 
       <div class="relative" style={{ height: "70vh" }}>
         <canvas tabIndex={0} class="block w-full h-full outline-none" ref={canvasElement}>
@@ -1768,145 +941,6 @@ export default function ZoneModel(props: ZoneDataProps) {
         </div>
       </div>
 
-      <Show when={props.entityUpdates}>
-        {/* Table of entities in packets */}
-        <div style={{ "max-height": "70vh", "min-width": "70ch" }}>
-          <Table
-            inputRows={currentEntityUpdates().entityRows ?? []}
-            columns={[
-              { name: "Name", key: "name" },
-              { name: "ID", key: "id" },
-              { name: "Index", key: "index" },
-              { name: "Levels", key: "levels" },
-              { name: "Count", key: "updateCount", defaultSortAsc: false },
-            ]}
-            defaultSortColumn="index"
-            defaultSortAsc={true}
-            additionalColumns={[
-              {
-                name: "Visible",
-                content: v => (
-                  <input
-                    type="checkbox"
-                    checked={!entitySettings[v.entityKey]?.hidden}
-                  />
-                ),
-                onClick: (filteredRows) => {
-                  const anyChecked = filteredRows.find(r => !entitySettings[r.entityKey]?.hidden);
-                  const newValue = !!anyChecked;
-                  batch(() => filteredRows.forEach(v => setEntitySettings(v.entityKey, { hidden: newValue })))
-                }
-              },
-            ]}
-            onRowClick={v => {
-              setEntitySettings(v.entityKey, {
-                hidden: !entitySettings[v.entityKey]?.hidden,
-              });
-            }}
-            headerElements={[
-              <button onClick={focusVisible}>Focus visible</button>,
-              zoneSelector,
-            ]}
-          >
-          </Table>
-        </div>
-
-        {/* Entity controls below the viewing area */}
-        <Show
-          fallback={zoneSelector}
-          when={getSelectedZone() in summarizedEntityUpdates()}
-        >
-          <div class="flex flex-col gap-3 my-2 col-span-2">
-            <div class="flex flex-row">
-              <div class="m-auto h-full px-1 font-bold" style={{ "min-width": "6rem" }}>
-                Discrete:
-              </div>
-              <div class="px-1 m-auto h-full">
-                <button style={{ "min-width": "5rem" }} onClick={() => updatesSettings.show.discrete = !updatesSettings.show.discrete}>
-                  {updatesSettings.show.discrete ? "Hide" : "Show"}
-                </button>
-              </div>
-              <div class="flex-grow">
-                <RangeInput
-                  min={currentEntityUpdates().firstTime}
-                  max={currentEntityUpdates().lastTime}
-                  lower={getNewDiscrete()?.[0] ?? getDiscreteLowerTime()}
-                  upper={getNewDiscrete()?.[1] ?? getDiscreteUpperTime()}
-                  inputKind="timestamp"
-                  onChange={(lower, upper) => {
-                    setNewDiscrete([lower, upper]);
-                  }}
-                  disabled={!updatesSettings.show.discrete}
-                >
-                </RangeInput>
-              </div>
-            </div>
-
-            <div class="flex flex-row">
-              <div class="m-auto h-full px-1 font-bold" style={{ "min-width": "6rem" }}>
-                Animated:
-              </div>
-              <div class="m-auto h-full px-1">
-                <button style={{ "min-width": "5rem" }} onClick={() => updatesSettings.show.animated = !updatesSettings.show.animated}>
-                  {updatesSettings.show.animated ? "Hide" : "Show"}
-                </button>
-              </div>
-              <div class="m-auto h-full px-1">
-                <button style={{ "min-width": "5rem" }} onClick={() => setIsPlaying(!isPlaying())}>
-                  {isPlaying() ? "Pause" : "Play"}
-                </button>
-              </div>
-              <div class="m-auto relative">
-                <input
-                  type="number"
-                  class="text-right pr-3"
-                  min={1}
-                  max={1000}
-                  style={{ width: "4.5rem" }}
-                  value={getTimeScale()}
-                  onInput={e => setTimeScale(parseInt(e.target.value) || 1)}
-                >
-                </input>
-                <span style={{ position: "absolute", right: "0.8rem", top: "0.5rem", margin: "auto" }}>
-                  ×
-                </span>
-              </div>
-              <div class="m-auto flex-grow">
-                <input
-                  type="range"
-                  class="w-full"
-                  min={currentEntityUpdates().firstTime}
-                  max={currentEntityUpdates().lastTime}
-                  value={getPlayTime() * 1000 + currentEntityUpdates().firstTime}
-                  onMouseDown={() => setIsSeeking(true)}
-                  onMouseUp={() => setIsSeeking(false)}
-                  onInput={e => setPlayTime((parseInt(e.target.value) - currentEntityUpdates().firstTime) / 1000)}
-                >
-                </input>
-              </div>
-            </div>
-
-            <div class="flex gap-5">
-              {toggleButton("Widescan", (v) => { updatesSettings.show.widescan = v; }, () => updatesSettings.show.widescan)}
-              {toggleButton("Rendered", (v) => { updatesSettings.show.rendered = v; }, () => updatesSettings.show.rendered)}
-              {toggleButton("Rendered paths", (v) => { updatesSettings.show.paths = v; }, () => updatesSettings.show.paths)}
-              {toggleButton("Only latest", (v) => { updatesSettings.show.lastOnly = v; }, () => updatesSettings.show.lastOnly)}
-            </div>
-
-            <Show when={updatesSettings.show.paths}>
-              <div class="flex gap-5">
-                <div>Path parts:</div>
-                {toggleButton("Start", (v) => { updatesSettings.show.pathKinds.start = v; }, () => updatesSettings.show.pathKinds.start)}
-                {toggleButton("Pre-turn", (v) => { updatesSettings.show.pathKinds.preturn = v; }, () => updatesSettings.show.pathKinds.preturn)}
-                {toggleButton("Turn", (v) => { updatesSettings.show.pathKinds.turn = v; }, () => updatesSettings.show.pathKinds.turn)}
-                {toggleButton("End", (v) => { updatesSettings.show.pathKinds.end = v; }, () => updatesSettings.show.pathKinds.end)}
-                {toggleButton("Interrupt", (v) => { updatesSettings.show.pathKinds.interrupt = v; }, () => updatesSettings.show.pathKinds.interrupt)}
-                {toggleButton("Lines", (v) => { updatesSettings.show.pathKinds.lines = v; }, () => updatesSettings.show.pathKinds.lines)}
-              </div>
-            </Show>
-          </div>
-        </Show>
-      </Show>
     </div >
   );
 }
