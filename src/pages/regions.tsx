@@ -13,6 +13,7 @@ const PATHDATA = import.meta.env.VITE_PATHDATA_URL || `${import.meta.env.BASE_UR
 /** Flattened roam trails: one buffer for the whole zone, plus where each mob's points live in it. */
 export interface RoamData {
   positions: Float32Array;
+  times: Float64Array;
   ranges: Record<string, [number, number]>;
   count: number;
 }
@@ -341,17 +342,21 @@ export default function RegionsPage() {
     let count = 0;
     for (const mob of Object.values<any>(data)) count += mob.points.length;
     const positions = new Float32Array(count * 3);
+    // Capture time, kept because the samples are not evenly spaced: minutes can pass between two of
+    // them, and a route must not draw a leg through a stretch where nobody was watching the mob.
+    const times = new Float64Array(count);
     const ranges: Record<string, [number, number]> = {};
     let o = 0;
     for (const [mobId, mob] of Object.entries<any>(data)) {
       ranges[mobId] = [o / 3, mob.points.length];
       for (const p of mob.points) {
+        times[o / 3] = p.t ?? 0;
         positions[o++] = p.x;
         positions[o++] = p.y;
         positions[o++] = p.z;
       }
     }
-    return { positions, ranges, count };
+    return { positions, times, ranges, count };
   });
 
   const [zoneMesh] = createResource(zoneId, async id => {

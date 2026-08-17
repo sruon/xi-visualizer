@@ -306,90 +306,230 @@ export interface TrailPoint {
   x: number;
   y: number;
   z: number;
+  /** Capture time in seconds. Absent means the samples are assumed to be one unbroken run. */
+  t?: number;
+}
+
+/** Perpendicular distance in x/z from p to the segment ab. */
+function perpDistance(a: Vertex, b: Vertex, p: Vertex): number {
+  const dx = b[0] - a[0];
+  const dz = b[2] - a[2];
+  const len2 = dx * dx + dz * dz;
+  const t = len2 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[2] - a[2]) * dz) / len2)) : 0;
+  return Math.hypot(p[0] - (a[0] + t * dx), p[2] - (a[2] + t * dz));
 }
 
 /**
- * Visvalingam for an open line: the ends are fixed, only the middle thins out. Stops once every
- * remaining point matters more than `minArea`, or earlier if `max` points is already few enough.
+ * Douglas-Peucker for an open line: the ends are fixed, and a point survives when dropping it would
+ * pull the line more than `tolerance` yalms away from it. `max` legs is a ceiling, met by loosening
+ * the tolerance until it fits.
+ *
+ * Not Visvalingam, which is what regions use: a patrol that walks out and back doubles over itself,
+ * and the triangle at the turn is degenerate, so area ranks the one vertex that defines the route as
+ * the most disposable point on it. Removing it collapses the whole excursion. Perpendicular distance
+ * ranks that same vertex first instead, which is the only correct answer for a route.
  */
-export function simplifyLine(points: Vertex[], minArea = 25, max = Infinity): Vertex[] {
-  const out = points.slice();
-  while (out.length > 2) {
-    let worst = 1;
-    let worstArea = Infinity;
-    for (let i = 1; i < out.length - 1; i++) {
-      const [ax, , az] = out[i - 1];
-      const [bx, , bz] = out[i];
-      const [cx, , cz] = out[i + 1];
-      const area = Math.abs((bx - ax) * (cz - az) - (bz - az) * (cx - ax)) / 2;
-      if (area < worstArea) {
-        worstArea = area;
-        worst = i;
+export function simplifyLine(points: Vertex[], tolerance = 4, max = Infinity): Vertex[] {
+  if (points.length <= 2) return points.slice();
+
+  const thin = (limit: number) => {
+    const keep = new Uint8Array(points.length);
+    keep[0] = keep[points.length - 1] = 1;
+    const spans: [number, number][] = [[0, points.length - 1]];
+    while (spans.length) {
+      const [from, to] = spans.pop()!;
+      let far = -1;
+      let worst = limit;
+      for (let i = from + 1; i < to; i++) {
+        const d = perpDistance(points[from], points[to], points[i]);
+        if (d > worst) {
+          worst = d;
+          far = i;
+        }
       }
+      if (far < 0) continue;
+      keep[far] = 1;
+      spans.push([from, far], [far, to]);
     }
-    if (out.length <= max && worstArea > minArea) break;
-    out.splice(worst, 1);
+    return points.filter((_, i) => keep[i]);
+  };
+
+  let limit = tolerance;
+  let out = thin(limit);
+  while (out.length > max) out = thin(limit *= 1.5);
+  return out;
+}
+
+export interface TracedRoute {
+  legs: Vertex[];
+  /** Fraction of the trail that sits on the route. A mob walking a beat scores near 1. */
+  coverage: number;
+}
+
+const trailExtent = (run: TrailPoint[]) => {
+  const xs = run.map(p => p.x);
+  const zs = run.map(p => p.z);
+  return Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...zs) - Math.min(...zs));
+};
+
+/**
+ * The trail split into unbroken captures. Samples arrive a few seconds apart while someone is
+ * watching the mob and then stop for minutes, so consecutive entries in the file are not
+ * necessarily consecutive positions: a leg drawn across that boundary crosses ground nobody saw
+ * the mob walk. Rates differ per mob, from four seconds to well over a minute, so the threshold
+ * comes from the mob's own median rather than a fixed number of seconds.
+ */
+function capturesOf(points: TrailPoint[]): TrailPoint[][] {
+  const steps: number[] = [];
+  for (let i = 1; i < points.length; i++) steps.push((points[i].t ?? 0) - (points[i - 1].t ?? 0));
+  const typical = [...steps].sort((a, b) => a - b)[steps.length >> 1] || 0;
+  const maxStep = Math.max(20, typical * 6);
+
+  const out: TrailPoint[][] = [];
+  let run: TrailPoint[] = [points[0]];
+  for (let i = 1; i < points.length; i++) {
+    const jumped = points[i].t === undefined
+      ? (points[i].x - points[i - 1].x) ** 2 + (points[i].z - points[i - 1].z) ** 2 > 50 * 50
+      : steps[i - 1] > maxStep;
+    if (jumped) {
+      out.push(run);
+      run = [];
+    }
+    run.push(points[i]);
+  }
+  out.push(run);
+  return out.filter(r => r.length >= 8);
+}
+
+/**
+ * Stretches of one capture that might each be a circuit: from a point until the mob has gone well
+ * away and come back near it.
+ *
+ * On its own this cuts the circuit in the wrong place. A route that passes close to its own start
+ * partway round gets split there, and the piece past the split is missing from every lap, so the
+ * traced route comes up short by the same section every time. Hence the periods below.
+ */
+function lapsOf(run: TrailPoint[], close: number): TrailPoint[][] {
+  const flat = (a: TrailPoint, b: TrailPoint) => (a.x - b.x) ** 2 + (a.z - b.z) ** 2;
+  const out: TrailPoint[][] = [];
+  let from = 0;
+  let away = false;
+  for (let i = 1; i < run.length; i++) {
+    const d2 = flat(run[i], run[from]);
+    if (!away) away = d2 > (close * 3) ** 2;
+    else if (d2 < close * close) {
+      out.push(run.slice(from, i + 1));
+      from = i;
+      away = false;
+    }
+  }
+  return out.filter(lap => lap.length >= 4 && trailExtent(lap) >= close * 4);
+}
+
+/**
+ * Windows of one circuit each, found as the repeat period of a capture: the sample lag at which the
+ * mob is most often back where it was. This finds the whole circuit including any spur, which the
+ * laps above can miss, and it costs one pass per candidate lag.
+ *
+ * The median, not the mean, because one excursion would otherwise drag every lag's score alike.
+ */
+function periodWindows(run: TrailPoint[], close: number): TrailPoint[][] {
+  const n = run.length;
+  const maxLag = Math.min(800, Math.floor(n / 3));
+  if (maxLag < 10) return [];
+
+  const scored: { lag: number; offset: number; }[] = [];
+  for (let lag = 10; lag <= maxLag; lag++) {
+    const offsets: number[] = [];
+    const step = Math.max(1, Math.floor((n - lag) / 120));
+    for (let i = 0; i < n - lag; i += step) {
+      offsets.push(Math.hypot(run[i].x - run[i + lag].x, run[i].z - run[i + lag].z));
+    }
+    offsets.sort((a, b) => a - b);
+    scored.push({ lag, offset: offsets[offsets.length >> 1] });
+  }
+  scored.sort((a, b) => a.offset - b.offset);
+
+  const out: TrailPoint[][] = [];
+  for (const { lag } of scored.slice(0, 4)) {
+    for (const at of [0, 0.25, 0.5, 0.75]) {
+      const window = closedCircuit(run, Math.floor((n - lag - 1) * at), lag, close);
+      if (window) out.push(window);
+    }
   }
   return out;
 }
 
 /**
- * Traces a patrol route out of a mob's recorded trail. The samples are in capture order, so a
- * patroller walks its circuit over and over: take the first lap, meaning from the start until it
- * has gone well away and come back, and thin that down to a handful of legs.
- *
- * A mob that wanders instead of patrolling will produce a meaningless lap. That is visible on the
- * map immediately, which is the point of tracing it rather than guessing.
+ * The samples from a start index up to wherever the mob next comes back to that spot, give or take
+ * a quarter of the lag. A lag is only a rough period, so the window it cuts does not land back
+ * exactly where it started, and a route whose ends do not meet closes itself with a leg straight
+ * across open ground. Nothing near the start means the stretch is not a circuit and holds no route.
  */
-export function routeFromTrail(points: TrailPoint[], close = 8): Patrol | null {
-  if (points.length < 8) return null;
-  const flat = (a: TrailPoint, b: TrailPoint) => (a.x - b.x) ** 2 + (a.z - b.z) ** 2;
-  const extent = (run: TrailPoint[]) => {
-    const xs = run.map(p => p.x);
-    const zs = run.map(p => p.z);
-    return Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...zs) - Math.min(...zs));
-  };
-
-  // Every circuit in the trail, not just the first: a mob that pokes out and straight back near
-  // the start would otherwise pass for its whole route. The widest one is the real beat.
-  const laps: TrailPoint[][] = [];
-  let from = 0;
-  let away = false;
-  for (let i = 1; i < points.length; i++) {
-    if (flat(points[i - 1], points[i]) > 50 * 50) {
-      from = i; // gap in the capture, start looking again on the far side of it
-      away = false;
-      continue;
-    }
-    const d2 = flat(points[i], points[from]);
-    if (!away) away = d2 > (close * 3) ** 2;
-    else if (d2 < close * close) {
-      laps.push(points.slice(from, i));
-      from = i;
-      away = false;
+function closedCircuit(run: TrailPoint[], from: number, lag: number, close: number): TrailPoint[] | null {
+  let end = -1;
+  let nearest = (close * 2) ** 2;
+  for (let i = Math.floor(from + lag * 0.75); i <= Math.min(from + lag * 1.25, run.length - 1); i++) {
+    const d2 = (run[i].x - run[from].x) ** 2 + (run[i].z - run[from].z) ** 2;
+    if (d2 < nearest) {
+      nearest = d2;
+      end = i;
     }
   }
+  return end < 0 ? null : run.slice(from, end + 1);
+}
 
-  // A patroller repeats its circuit, so demand more than one lap of real size. A wanderer drifts
-  // back past its start now and then too, and inventing a route out of that is worse than none.
-  const real = laps.filter(lap => lap.length >= 4 && extent(lap) >= close * 4);
-  if (real.length < 2) return null;
+/**
+ * Traces a patrol route out of a mob's recorded trail: the samples are in capture order, so a route
+ * is the points joined up in that order and thinned only enough to be editable. Every candidate
+ * circuit is scored by how much of the whole trail lands on it and the best one wins, since a mob
+ * walking a beat stays on it while a wanderer leaves most of its trail off to one side. The score
+ * comes back with the route, so the caller can say how well it fits rather than implying that a
+ * traced route is necessarily a real one.
+ */
+export function routeFromTrail(points: TrailPoint[], close = 8): TracedRoute | null {
+  if (points.length < 30) return null;
 
-  const best = real.sort((a, b) => extent(b) - extent(a))[0];
-  const legs = simplifyLine(best.map(p => [p.x, p.y, p.z] as Vertex), 25, 12);
-  if (legs.length < 2) return null;
-
-  // The test that separates a patroller from a wanderer: does this one lap explain the rest of the
-  // trail? A mob walking a beat stays on it, so nearly every sample sits near the route. A wanderer
-  // crosses its own start often enough to fake a lap, but its samples are spread all over.
-  let on = 0;
-  let total = 0;
   const stride = Math.max(1, Math.floor(points.length / 400));
-  for (let i = 0; i < points.length; i += stride) {
-    total++;
-    if (distanceToRoute(legs, points[i]) <= close * 1.5) on++;
+  const sampled: TrailPoint[] = [];
+  for (let i = 0; i < points.length; i += stride) sampled.push(points[i]);
+
+  const coverageOf = (legs: Vertex[]) => sampled.filter(p => distanceToRoute(legs, p) <= close * 1.5).length / sampled.length;
+
+  // A route may only run where the mob was seen walking. A candidate that spans a break in the
+  // capture is fine when the mob picked its beat back up where it left off, and not fine when it
+  // came back somewhere else: the difference is whether the leg between them covers ground that has
+  // samples on it, which is what this checks, rather than whether a break is in the window at all.
+  const onGround = (legs: Vertex[]) =>
+    legs.every((v, i) => {
+      const next = legs[(i + 1) % legs.length];
+      return [0.25, 0.5, 0.75].every(t => {
+        const x = v[0] + (next[0] - v[0]) * t;
+        const z = v[2] + (next[2] - v[2]) * t;
+        return sampled.some(p => (p.x - x) ** 2 + (p.z - z) ** 2 <= (close * 2) ** 2);
+      });
+    });
+
+  const candidates: TrailPoint[][] = [];
+  for (const run of [...capturesOf(points), points]) {
+    // The capture itself, for when the mob got round once before anyone lost sight of it. Whether
+    // that is a circuit or one aimless walk is not decided here: coverage below settles it, since a
+    // beat the mob repeats explains the rest of the trail and a one-off walk does not.
+    const whole = closedCircuit(run, 0, run.length - 1, close);
+    if (whole) candidates.push(whole);
+    candidates.push(...lapsOf(run, close), ...periodWindows(run, close));
   }
-  return on / total >= 0.75 ? { legs } : null; // a lap returns to its start, so it loops
+
+  let best: TracedRoute | null = null;
+  for (const candidate of candidates) {
+    if (trailExtent(candidate) < close * 5) continue; // a mob milling about on the spot has no route
+    const legs = simplifyLine(candidate.map(p => [p.x, p.y, p.z] as Vertex), 2, 64);
+    if (legs.length < 3 || !onGround(legs)) continue;
+    const coverage = coverageOf(legs);
+    if (!best || coverage > best.coverage) best = { legs, coverage };
+  }
+  // Below this the trail is a blob the route happens to cross, not a beat the mob walks.
+  return best && best.coverage >= 0.6 ? best : null;
 }
 
 /** Shortest distance in x/z from a point to a closed route. */

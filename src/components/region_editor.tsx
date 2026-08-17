@@ -318,7 +318,7 @@ export default function RegionEditor(props: RegionEditorProps) {
       const [start, count] = range;
       for (let i = 0; i < count; i++) {
         const o = (start + i) * 3;
-        out.push({ x: data.positions[o], y: data.positions[o + 1], z: data.positions[o + 2] });
+        out.push({ x: data.positions[o], y: data.positions[o + 1], z: data.positions[o + 2], t: data.times[start + i] });
       }
     }
     return out;
@@ -388,6 +388,8 @@ export default function RegionEditor(props: RegionEditorProps) {
     });
   };
 
+  const fit = (coverage: number) => `${(coverage * 100).toFixed(0)}% of its trail is on it`;
+
   /**
    * Gives a mob a route, dropping whatever placed it before. Traced from its recorded trail when
    * there is one, since a patroller walks the same circuit over and over; otherwise you draw it.
@@ -400,26 +402,38 @@ export default function RegionEditor(props: RegionEditorProps) {
       delete next[spawn.id];
       return next;
     });
-    setPaths(all => ({ ...all, [spawn.id]: traced ?? { legs: all[spawn.id]?.legs ?? [] } }));
+    setPaths(all => ({ ...all, [spawn.id]: { legs: traced?.legs ?? all[spawn.id]?.legs ?? [] } }));
     setActiveName(null);
     editWalker(spawn.id);
     setMode(traced ? "select" : "draw");
     setTab("paths");
-    flash(traced ? `traced ${traced.legs.length} legs from the roam trail` : "no trail to trace, click the legs out");
+    flash(
+      traced
+        ? `traced ${traced.legs.length} legs, ${fit(traced.coverage)}`
+        : trailPoints([spawn.id]).length < 30
+        ? "no roam trail for that mob, click the legs out"
+        : "its trail is a blob, not a route, click the legs out",
+    );
   };
 
   /**
-   * Turns a region into a patrol its mobs all walk. The route is traced from whichever member has
-   * the richest trail, since tracing the members' trails end to end would just join up unrelated
-   * mobs, and the region itself goes away because nothing is left in it.
+   * Turns a region into a patrol its mobs all walk. The route is traced from one member's trail,
+   * the best fitting of the few with the most samples, since tracing their trails end to end would
+   * just join up unrelated mobs. The region itself goes away because nothing is left in it.
    */
   const convertToPatrol = (name: string) => {
     const members = props.spawns.filter(s => assign()[s.id] === name);
     if (!members.length) return flash(`${name} has no mobs to convert`);
-    const richest = members
+    const candidates = members
       .map(s => ({ s, samples: props.roam?.ranges[s.id]?.[1] ?? 0 }))
-      .sort((a, b) => b.samples - a.samples)[0];
-    const traced = richest.samples ? routeFromTrail(trailPoints([richest.s.id])) : null;
+      .filter(m => m.samples >= 30)
+      .sort((a, b) => b.samples - a.samples)
+      .slice(0, 3)
+      .map(m => ({ walker: m.s, route: routeFromTrail(trailPoints([m.s.id])) }))
+      .filter(m => m.route)
+      .sort((a, b) => b.route!.coverage - a.route!.coverage);
+    const traced = candidates[0]?.route ?? null;
+    const lead = candidates[0]?.walker ?? members[0];
     const legs = traced?.legs ?? [];
 
     checkpoint();
@@ -435,13 +449,13 @@ export default function RegionEditor(props: RegionEditorProps) {
     });
     setRegions(rs => rs.filter(r => r.name !== name));
     setActiveName(null);
-    setWalker(richest.s.id);
-    setMirror(members.map(m => m.id).filter(id => id !== richest.s.id));
+    setWalker(lead.id);
+    setMirror(members.map(m => m.id).filter(id => id !== lead.id));
     setMode(traced ? "select" : "draw");
     setTab("paths");
     flash(
       traced
-        ? `${name} became a ${traced.legs.length} leg route for ${members.length} mobs`
+        ? `${name} became a ${traced.legs.length} leg route for ${members.length} mobs, ${fit(traced.coverage)}`
         : `no repeating route in ${name}'s trails, click the legs out for all ${members.length}`,
     );
   };
@@ -459,10 +473,11 @@ export default function RegionEditor(props: RegionEditorProps) {
     checkpoint();
     editWalker(id);
     setPaths(all => {
-      const next = { ...all, [id]: traced };
-      for (const other of mirror()) if (next[other]) next[other] = { legs: traced.legs.map(v => [...v] as Vertex) };
+      const next = { ...all, [id]: { ...all[id], legs: traced.legs } };
+      for (const other of mirror()) if (next[other]) next[other] = { ...next[other], legs: traced.legs.map(v => [...v] as Vertex) };
       return next;
     });
+    flash(`retraced ${traced.legs.length} legs, ${fit(traced.coverage)}`);
   };
 
   const dropPath = (id: string) => {

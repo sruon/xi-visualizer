@@ -175,19 +175,44 @@ for (let round = 0; round < 3; round++) {
   }
 }
 const traced = routeFromTrail(lapPoints)!;
-assert.ok(traced.legs.length >= 4 && traced.legs.length <= 6, `one lap, a few legs, got ${traced.legs.length}`);
-assert.strictEqual(traced.loop, undefined, "it came back to the start, so it is a closed circuit");
+assert.ok(traced.legs.length >= 4, `a lap of corners keeps them all, got ${traced.legs.length}`);
+assert.ok(traced.coverage > 0.95, `the mob never leaves the circuit, got ${traced.coverage}`);
 assert.ok(traced.legs.every(v => Math.abs(v[1] + 50) < 0.01), "leg heights come from the samples");
 for (const [cx, cz] of corners) {
   assert.ok(traced.legs.some(v => Math.hypot(v[0] - cx, v[2] - cz) < 12), `kept the corner near ${cx},${cz}`);
 }
 
-// one pass down a corridor and back is not evidence of a patrol, so nothing is traced
+// A beat that passes near its own start partway round: cutting the circuit where the mob comes back
+// near the start would drop the spur, and drop it on every lap, so the route would be short by the
+// same piece every time. This is the shape that traced 0 legs and then 80% of a real Ronfaure patrol.
+const spurred: TrailPoint[] = [];
+for (let round = 0; round < 6; round++) {
+  for (let t = 0; t < 1; t += 0.05) spurred.push({ x: 100 * t, y: -20, z: 0 }); // out along the beat
+  for (let t = 0; t < 1; t += 0.05) spurred.push({ x: 100 - 96 * t, y: -20, z: 4 * t }); // back past the start
+  for (let t = 0; t < 1; t += 0.05) spurred.push({ x: 4 - 4 * t, y: -20, z: 4 + 56 * t }); // the spur it also walks
+  for (let t = 0; t < 1; t += 0.05) spurred.push({ x: 0, y: -20, z: 60 - 60 * t });
+}
+const withSpur = routeFromTrail(spurred)!;
+assert.ok(withSpur.coverage > 0.9, `the spur belongs to the route, got ${(withSpur.coverage * 100).toFixed(0)}%`);
+assert.ok(withSpur.legs.some(v => v[2] > 40), "the far end of the spur is a leg, not a piece left off the route");
+
+// A corridor walked out and back is a route: it is exactly where the mob went, and the legs lie
+// along it rather than cutting a shape out of the pair of passes.
 const outAndBack: TrailPoint[] = [];
 for (let x = 0; x <= 80; x += 4) outAndBack.push({ x, y: -30, z: 0 });
 for (let x = 80; x >= 0; x -= 4) outAndBack.push({ x, y: -30, z: 0 });
-assert.strictEqual(routeFromTrail(outAndBack), null, "a single lap is not a pattern");
+const corridor = routeFromTrail(outAndBack)!;
+assert.ok(corridor.legs.every(v => Math.abs(v[2]) < 1), "the corridor is a straight line, so no leg leaves it");
 assert.strictEqual(routeFromTrail([{ x: 0, y: 0, z: 0 }]), null, "not enough samples to trace anything");
+
+// A mob seen in two places with nothing recorded in between: joining them up would draw a leg
+// through ground nobody saw it cross, so there is no route to be had.
+const teleported: TrailPoint[] = [];
+for (let round = 0; round < 6; round++) {
+  for (let i = 0; i < 10; i++) teleported.push({ x: i * 4, y: -30, z: 0, t: round * 1000 + i * 4 });
+  for (let i = 0; i < 10; i++) teleported.push({ x: 400 + i * 4, y: -30, z: 0, t: round * 1000 + 500 + i * 4 });
+}
+assert.strictEqual(routeFromTrail(teleported), null, "no leg may cross ground the mob was never seen on");
 
 // jitter around the spawn point is not a route either, however many times it crosses its start
 const jitter: TrailPoint[] = [];
@@ -199,6 +224,13 @@ assert.deepStrictEqual(
   [[0, 0, 0], [10, 0, 0]],
   "an open line keeps its ends",
 );
+
+// Visvalingam ranks the tip of an out-and-back as the most disposable point on the line, because the
+// triangle there is degenerate. Dropping it collapses the excursion, which is how a patrol traced
+// legs that went nowhere near where the mob walks.
+const uTurn: Vertex[] = [[0, 0, 0], [20, 0, 0], [40, 0, 0], [60, 0, 0], [40, 0, 1], [20, 0, 1], [0, 0, 1]];
+const kept = simplifyLine(uTurn, 4);
+assert.ok(kept.some(v => v[0] === 60), "the turn is the whole point of the line, so it survives");
 
 // --- patrol routes ---
 const patrolled = patchMobsYaml(mobsYaml, {}, positions, {
