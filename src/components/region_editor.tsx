@@ -8,7 +8,7 @@ import { cleanupNode } from "../graphics/util";
 import { ColorKind, colorMesh, createZoneMesh, prepareMeshData } from "../graphics/ximesh";
 import type { RoamData } from "../pages/regions";
 import { containsXZ, regionAt, regionHue, regionsFromPoints, simplifyRing, validate } from "../regions";
-import type { Finding, Region, RegionSet, Spawn, TrailPoint, Vertex } from "../regions";
+import type { Finding, Patrol, Region, RegionSet, Spawn, TrailPoint, Vertex } from "../regions";
 import type { ZoneData } from "./zone_model";
 
 THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
@@ -31,11 +31,14 @@ interface RegionEditorProps {
   regions: RegionSet;
   /** Overrides the assignments carried on the spawns themselves, for restoring a draft. */
   assign?: Record<string, string>;
+  /** Same, for patrol routes. */
+  paths?: Record<string, Patrol>;
   roam?: RoamData;
-  onChange: (regions: RegionSet, assign: Record<string, string>) => void;
+  onChange: (regions: RegionSet, assign: Record<string, string>, paths: Record<string, Patrol>) => void;
 }
 
 const GOLDEN = 0.61803398875; // successive regions land far apart on the colour wheel
+const PATH_COLOR = 0xa78bfa; // routes are violet, clear of the region hues and the cyan trails
 
 // The chip is the input, the text says what it acts on — no glyph decoding required.
 const SHORTCUTS: { title: string; keys: [string, string][]; }[] = [
@@ -184,9 +187,14 @@ export default function RegionEditor(props: RegionEditorProps) {
   );
   const [activeName, setActiveName] = createSignal<string | null>(null);
   const [mode, setMode] = createSignal<"select" | "draw">("select");
+  // Patrol routes, keyed by the spawn that walks them. A spawn has a region or a route, never both.
+  const [paths, setPaths] = createSignal<Record<string, Patrol>>(
+    props.paths ?? Object.fromEntries(props.spawns.filter(s => s.path).map(s => [s.id, { legs: s.path!, loop: s.loop }])),
+  );
+  const [walker, setWalker] = createSignal<string | null>(null); // spawn whose route is being edited
   const [filter, setFilter] = createSignal("");
   const [hideAssigned, setHideAssigned] = createSignal(true);
-  const [tab, setTab] = createSignal<"regions" | "unassigned" | "review">("regions");
+  const [tab, setTab] = createSignal<"regions" | "paths" | "unassigned" | "review">("regions");
   const [terrainColors, setTerrainColors] = createSignal(true);
   const [hover, setHover] = createSignal<{ spawn: Spawn; x: number; y: number; } | null>(null);
   const [cursor, setCursor] = createSignal<THREE.Vector3 | undefined>();
@@ -225,11 +233,13 @@ export default function RegionEditor(props: RegionEditorProps) {
     regions().forEach((r, i) => (map[r.name] = (i * GOLDEN + 0.11) % 1));
     return map;
   });
-  const hueOf = (name: string) => hues()[name] ?? regionHue(name);
-  const colorOf = (name: string) => new THREE.Color().setHSL(hueOf(name), 0.9, 0.6);
-  const cssOf = (name: string) => `hsl(${(hueOf(name) * 360).toFixed(0)} 90% 60%)`;
+  // Tolerates a missing name: Solid re-runs a Show's children once before tearing them down, so
+  // these get called with the selection that just became null.
+  const hueOf = (name?: string | null) => (name ? hues()[name] ?? regionHue(name) : 0);
+  const colorOf = (name?: string | null) => new THREE.Color().setHSL(hueOf(name), 0.9, 0.6);
+  const cssOf = (name?: string | null) => `hsl(${(hueOf(name) * 360).toFixed(0)} 90% 60%)`;
 
-  createEffect(() => props.onChange(asSet(regions()), assign()));
+  createEffect(() => props.onChange(asSet(regions()), assign(), paths()));
 
   const spawnCounts = createMemo(() => {
     const counts: Record<string, number> = {};
@@ -310,14 +320,16 @@ export default function RegionEditor(props: RegionEditorProps) {
   interface Snapshot {
     regions: RegionEntry[];
     assign: Record<string, string>;
+    paths: Record<string, Patrol>;
     activeName: string | null;
   }
   const undoStack: Snapshot[] = [];
   const redoStack: Snapshot[] = [];
-  const snap = (): Snapshot => ({ regions: regions(), assign: assign(), activeName: activeName() });
+  const snap = (): Snapshot => ({ regions: regions(), assign: assign(), paths: paths(), activeName: activeName() });
   const restore = (s: Snapshot) => {
     setRegions(s.regions);
     setAssign(s.assign);
+    setPaths(s.paths);
     setActiveName(s.activeName);
   };
 
@@ -346,6 +358,49 @@ export default function RegionEditor(props: RegionEditorProps) {
         return copy;
       })
     );
+  };
+
+  /** The route being edited, if any. While one is selected it owns the handles instead of a region. */
+  const activePath = () => {
+    const id = walker();
+    return id ? paths()[id] : undefined;
+  };
+
+  const editPath = (fn: (legs: Vertex[]) => void) => {
+    const id = walker();
+    if (!id) return;
+    setPaths(all => {
+      const current = all[id];
+      if (!current) return all;
+      const legs = current.legs.map(v => [...v] as Vertex);
+      fn(legs);
+      return { ...all, [id]: { ...current, legs } };
+    });
+  };
+
+  /** Starts a fresh route for a mob, dropping whatever placed it before. */
+  const startPath = (spawn: Spawn) => {
+    checkpoint();
+    setAssign(a => {
+      const next = { ...a };
+      delete next[spawn.id];
+      return next;
+    });
+    setPaths(all => ({ ...all, [spawn.id]: { legs: all[spawn.id]?.legs ?? [] } }));
+    setActiveName(null);
+    setWalker(spawn.id);
+    setMode("draw");
+    setTab("paths");
+  };
+
+  const dropPath = (id: string) => {
+    checkpoint();
+    setPaths(all => {
+      const next = { ...all };
+      delete next[id];
+      return next;
+    });
+    if (walker() === id) setWalker(null);
   };
 
   const addRegion = () => {
@@ -674,7 +729,61 @@ export default function RegionEditor(props: RegionEditorProps) {
       }
     }
 
-    if (activeRegion) {
+    // Patrol routes: a line through the legs, closed when it loops, waypoints as dots.
+    for (const [id, patrol] of Object.entries(paths())) {
+      if (patrol.legs.length < 2) continue;
+      const editing = id === walker();
+      const points = patrol.legs.map(([x, y, z]) => new THREE.Vector3(x, y, z));
+      if (patrol.loop !== false) points.push(points[0].clone());
+      const geo = new THREE.BufferGeometry().setFromPoints(points);
+      const line = new THREE.Line(
+        geo,
+        new THREE.LineBasicMaterial({ color: PATH_COLOR, depthTest: false, transparent: true, opacity: editing ? 1 : 0.7 }),
+      );
+      line.renderOrder = 2;
+      overlay.add(line);
+
+      const dots = new THREE.BufferGeometry().setFromPoints(patrol.legs.map(([x, y, z]) => new THREE.Vector3(x, y, z)));
+      const marks = new THREE.Points(
+        dots,
+        new THREE.PointsMaterial({ color: PATH_COLOR, size: editing ? 7 : 5, sizeAttenuation: false, depthTest: false }),
+      );
+      marks.renderOrder = 3;
+      overlay.add(marks);
+    }
+
+    // A selected route owns the handles; only one thing is editable at a time.
+    const patrol = activePath();
+    if (patrol && patrol.legs.length) {
+      const color = new THREE.Color(PATH_COLOR);
+      const pos: number[] = [];
+      const col: number[] = [];
+      const mid: number[] = [];
+      patrol.legs.forEach(([x, y, z], i) => {
+        pos.push(x, y, z);
+        col.push(color.r, color.g, color.b);
+        mid.push(0);
+        handleMap.push({ ring: 0, idx: i, mid: false });
+      });
+      // Midpoints only between real legs; the closing leg of a loop is not a place to insert one.
+      for (let i = 0; i + 1 < patrol.legs.length; i++) {
+        const a = patrol.legs[i];
+        const b = patrol.legs[i + 1];
+        pos.push((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2);
+        col.push(color.r, color.g, color.b);
+        mid.push(1);
+        handleMap.push({ ring: 0, idx: i, mid: true });
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pos), 3));
+      geo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(col), 3));
+      geo.setAttribute("mid", new THREE.BufferAttribute(new Float32Array(mid), 1));
+      handlePoints = new THREE.Points(geo, handleMaterial());
+      handlePoints.renderOrder = 5;
+      overlay.add(handlePoints);
+    }
+
+    if (activeRegion && !patrol) {
       const outlineColor = colorOf(activeRegion.name);
       // Hole handles take the region's opposite hue, so it is obvious which ring you are dragging.
       const holeColor = new THREE.Color().setHSL((hueOf(activeRegion.name) + 0.5) % 1, 0.9, 0.6);
@@ -777,11 +886,13 @@ export default function RegionEditor(props: RegionEditorProps) {
       return hit ? scene().worldToLocal(hit.point.clone()) : undefined;
     };
 
-    const removeVertex = (handle: Handle) =>
+    const removeVertex = (handle: Handle) => {
+      if (activePath()) return editPath(legs => legs.splice(handle.idx, 1));
       editActive(r => {
         r.rings[handle.ring].splice(handle.idx, 1);
         if (handle.ring > 0 && r.rings[handle.ring].length < 3) r.rings.splice(handle.ring, 1);
       });
+    };
 
     const onContextMenu = (ev: MouseEvent) => {
       ev.preventDefault();
@@ -814,7 +925,15 @@ export default function RegionEditor(props: RegionEditorProps) {
       }
 
       checkpoint();
-      if (handle.mid) {
+      if (handle.mid && activePath()) {
+        const p = pickZonePoint(activePath()!.legs[handle.idx][1]);
+        editPath(legs => {
+          const a = legs[handle.idx];
+          const b = legs[handle.idx + 1];
+          legs.splice(handle.idx + 1, 0, p ? [p.x, p.y, p.z] : [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2]);
+        });
+        drag = { ring: 0, idx: handle.idx + 1 };
+      } else if (handle.mid) {
         const p = pickZonePoint(lastY(active()));
         editActive(r => {
           const ring = r.rings[handle.ring];
@@ -837,8 +956,10 @@ export default function RegionEditor(props: RegionEditorProps) {
       setCursor(groundPoint());
 
       if (drag) {
-        const p = pickZonePoint(lastY(active()));
-        if (p) editActive(r => (r.rings[drag!.ring][drag!.idx] = [p.x, p.y, p.z]));
+        const p = pickZonePoint(activePath()?.legs[drag.idx]?.[1] ?? lastY(active()));
+        if (!p) return;
+        if (activePath()) editPath(legs => (legs[drag!.idx] = [p.x, p.y, p.z]));
+        else editActive(r => (r.rings[drag!.ring][drag!.idx] = [p.x, p.y, p.z]));
         return;
       }
       if (spawnDrag) {
@@ -891,6 +1012,14 @@ export default function RegionEditor(props: RegionEditorProps) {
       }
       if (pickHandle()) return;
 
+      if (mode() === "draw" && activePath()) {
+        const p = pickZonePoint(activePath()!.legs.at(-1)?.[1] ?? 0);
+        if (!p) return;
+        checkpoint();
+        editPath(legs => legs.push([p.x, p.y, p.z]));
+        return;
+      }
+
       if (mode() === "draw") {
         const r = active();
         const p = pickZonePoint(lastY(r));
@@ -939,9 +1068,15 @@ export default function RegionEditor(props: RegionEditorProps) {
       }
       if (ev.key !== "Escape" && ev.key !== "Enter") return;
       if (mode() !== "draw") return;
-      editActive(r => {
-        if (r.rings.length > 1 && r.rings[r.rings.length - 1].length < 3) r.rings.pop();
-      });
+      const id = walker();
+      if (id) {
+        // A route of one leg is not a route; drop it rather than leaving a stub behind.
+        if ((paths()[id]?.legs.length ?? 0) < 2) dropPath(id);
+      } else {
+        editActive(r => {
+          if (r.rings.length > 1 && r.rings[r.rings.length - 1].length < 3) r.rings.pop();
+        });
+      }
       setMode("select");
     };
 
@@ -1026,7 +1161,9 @@ export default function RegionEditor(props: RegionEditorProps) {
               return (
                 <div
                   ref={el => labelRefs.set(r.name, el)}
-                  class="absolute top-0 left-0 hidden whitespace-nowrap text-xs font-bold px-1.5 py-0.5 rounded bg-slate-900/75 pointer-events-auto cursor-pointer hover:bg-slate-900 hover:ring-1 hover:ring-slate-500"
+                  class="absolute top-0 left-0 hidden whitespace-nowrap text-xs font-bold px-1.5 py-0.5 rounded bg-slate-900/75 cursor-pointer hover:bg-slate-900 hover:ring-1 hover:ring-slate-500"
+                  // while drawing, the map owns every click: a label here would silently eat one
+                  classList={{ "pointer-events-auto": mode() !== "draw", "pointer-events-none": mode() === "draw" }}
                   style={{ color: cssOf(r.name) }}
                   title={`Select ${r.name}`}
                   onClick={() => setActiveName(r.name)}
@@ -1126,6 +1263,13 @@ export default function RegionEditor(props: RegionEditorProps) {
           </button>
           <button
             class="flex-1 px-2 py-1 rounded"
+            classList={{ "bg-slate-600": tab() === "paths", "bg-slate-700 text-slate-400": tab() !== "paths" }}
+            onClick={() => setTab("paths")}
+          >
+            Routes ({Object.keys(paths()).length})
+          </button>
+          <button
+            class="flex-1 px-2 py-1 rounded"
             classList={{ "bg-slate-600": tab() === "unassigned", "bg-slate-700 text-slate-400": tab() !== "unassigned" }}
             onClick={() => setTab("unassigned")}
           >
@@ -1139,6 +1283,53 @@ export default function RegionEditor(props: RegionEditorProps) {
             Review ({findings().filter(f => f.level !== "info").length})
           </button>
         </div>
+
+        <Show when={tab() === "paths"}>
+          <div class="text-xs text-slate-400 mb-2">
+            <Show when={walker()} fallback={<>a route replaces a mob's spawn point, so it walks its legs instead</>}>
+              editing <b style={{ color: "#a78bfa" }}>{props.spawns.find(s => s.id === walker())?.name}</b>: click to add legs, Enter when done
+            </Show>
+          </div>
+          <div class="flex-1 overflow-y-auto">
+            <For each={Object.entries(paths())} fallback={<div class="text-slate-500 p-2">No patrol routes yet.</div>}>
+              {([id, patrol]) => {
+                const spawn = () => props.spawns.find(s => s.id === id);
+                return (
+                  <div
+                    class="flex items-center gap-2 py-0.5 px-1 rounded cursor-pointer hover:bg-slate-700 text-xs"
+                    classList={{ "bg-slate-700": id === walker() }}
+                    onClick={() => (setWalker(id), setActiveName(null))}
+                  >
+                    <span class="flex-1 truncate" title={spawn()?.name}>{spawn()?.name ?? "unknown"}</span>
+                    <span class="text-slate-500">{id}</span>
+                    <span class="text-slate-400">{patrol.legs.length} legs</span>
+                    <button
+                      class="px-1 text-slate-400 hover:text-white"
+                      title={patrol.loop === false ? "Walks back along the route" : "Closes into a loop"}
+                      onClick={e => {
+                        e.stopPropagation();
+                        checkpoint();
+                        setPaths(all => ({ ...all, [id]: { ...all[id], loop: all[id].loop === false ? undefined : false } }));
+                      }}
+                    >
+                      {patrol.loop === false ? "↔" : "↻"}
+                    </button>
+                    <button
+                      class="px-1 text-slate-400 hover:text-white"
+                      title="Add more legs"
+                      onClick={e => (e.stopPropagation(), setWalker(id), setActiveName(null), setMode("draw"))}
+                    >
+                      ✎
+                    </button>
+                    <button class="text-slate-400 hover:text-red-400" title="Remove the route" onClick={e => (e.stopPropagation(), dropPath(id))}>
+                      ✕
+                    </button>
+                  </div>
+                );
+              }}
+            </For>
+          </div>
+        </Show>
 
         <Show when={tab() === "unassigned"}>
           <input
@@ -1178,6 +1369,13 @@ export default function RegionEditor(props: RegionEditorProps) {
                 >
                   <span class="flex-1 truncate" title={s.name}>{s.name}</span>
                   <span class="text-slate-500">{s.id}</span>
+                  <button
+                    class="px-1 text-slate-400 hover:text-white"
+                    title="Give this mob a patrol route instead of a region"
+                    onClick={e => (e.stopPropagation(), startPath(s))}
+                  >
+                    ⤳
+                  </button>
                   <Show when={s.at} fallback={<span class="px-1 text-slate-600" title="No position in mobs.yaml">·</span>}>
                     <button class="px-1 text-slate-400 hover:text-white" title="Center" onClick={e => (e.stopPropagation(), flyTo(s.x, s.y, s.z))}>⌖</button>
                   </Show>

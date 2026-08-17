@@ -30,6 +30,22 @@ spawns:
     level:    [1, 1]
 ```
 
+A spawn that patrols a fixed route carries the legs inline instead:
+
+```yaml
+  17186830:
+    template: Orcish_Fodder
+    level:    [9, 9]
+    loop:     false          # omit for a closed loop; false walks back along the legs
+    path:
+      - [-317.406, -52.494, 308.691]
+      - [-290.112, -52.310, 283.010]
+      - [-285.310, -51.880, 279.846]
+```
+
+**A spawn is placed by exactly one of `at:`, `region:` or `path:`.** The mob spawns on the first
+leg, so a route replaces the fixed point the same way a region does.
+
 **`region:` and `at:` are mutually exclusive.** A region places the spawn, so assigning one removes
 the fixed point and unassigning restores it. That makes assignment destructive in one direction:
 once a zone is saved, an assigned spawn's original coordinates exist only in git history. The

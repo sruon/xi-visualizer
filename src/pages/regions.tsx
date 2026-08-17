@@ -5,7 +5,7 @@ import type { ZoneData } from "../components/zone_model";
 import zones from "../data/zones";
 import { propose } from "../github";
 import { emitRegionsBlock, parseMobsYaml, parseZoneYaml, patchMobsYaml, patchZoneYaml, zoneOfMobId } from "../regions";
-import type { RegionSet, Spawn } from "../regions";
+import type { Patrol, RegionSet, Spawn } from "../regions";
 import { decompress, fetchProgress } from "../util";
 
 const PATHDATA = import.meta.env.VITE_PATHDATA_URL || `${import.meta.env.BASE_URL}/pathdata_gz`;
@@ -30,6 +30,7 @@ interface Draft {
   at: number;
   regions: RegionSet;
   assign: Record<string, string>;
+  paths?: Record<string, Patrol>;
 }
 
 const DEFAULT_REPO = "sruon/lsb-roam-data-temp";
@@ -99,7 +100,7 @@ export default function RegionsPage() {
   const [editorKey, setEditorKey] = createSignal("");
 
   // Latest editor state, written back on save.
-  let pending: { regions: RegionSet; assign: Record<string, string>; } | undefined;
+  let pending: { regions: RegionSet; assign: Record<string, string>; paths: Record<string, Patrol>; } | undefined;
   let draftTimer: ReturnType<typeof setTimeout> | undefined;
   let edited = false;
 
@@ -149,7 +150,7 @@ export default function RegionsPage() {
   // region strips `at:`, so re-parsing after a save would lose every assigned spawn's coordinates.
   const [spawns, setSpawns] = createSignal<Spawn[] | undefined>();
   const [regions, setRegions] = createSignal<RegionSet>({});
-  const [baseline, setBaseline] = createSignal({ block: "", assign: {} as Record<string, string> });
+  const [baseline, setBaseline] = createSignal({ block: "", assign: {} as Record<string, string>, paths: "" });
 
   // Coordinates as the file had them, so unassigning can put `at:` back.
   const positions = () => Object.fromEntries((spawns() ?? []).filter(s => s.at).map(s => [s.id, s.at!]));
@@ -233,6 +234,7 @@ export default function RegionsPage() {
     setBaseline({
       block: emitRegionsBlock(regionSet),
       assign: Object.fromEntries(parsed.filter(s => s.region).map(s => [s.id, s.region!])),
+      paths: JSON.stringify(Object.fromEntries(parsed.filter(s => s.path).map(s => [s.id, { legs: s.path, loop: s.loop }]))),
     });
     setDirty(false);
     setError(undefined);
@@ -257,7 +259,7 @@ export default function RegionsPage() {
     if (!f || !pending) return undefined;
     return {
       zoneYaml: patchZoneYaml(f.zoneYaml, pending.regions),
-      mobsYaml: patchMobsYaml(f.mobsYaml, pending.assign, positions()),
+      mobsYaml: patchMobsYaml(f.mobsYaml, pending.assign, positions(), pending.paths),
     };
   };
 
@@ -273,7 +275,7 @@ export default function RegionsPage() {
         if (!res.ok) throw new Error(`${name} → HTTP ${res.status}`);
       }
       setFiles({ ...f, ...next });
-      setBaseline({ block: emitRegionsBlock(pending!.regions), assign: pending!.assign });
+      setBaseline({ block: emitRegionsBlock(pending!.regions), assign: pending!.assign, paths: JSON.stringify(pending!.paths) });
       setDirty(false);
       clearDraft(f.folder);
       setStatus(`Saved ${f.folder}`);
@@ -315,7 +317,7 @@ export default function RegionsPage() {
       if (!result.unchanged) {
         // It is on a branch now, so this is as safe as saving to disk.
         setFiles({ ...f, ...next });
-        setBaseline({ block: emitRegionsBlock(pending!.regions), assign: pending!.assign });
+        setBaseline({ block: emitRegionsBlock(pending!.regions), assign: pending!.assign, paths: JSON.stringify(pending!.paths) });
         setDirty(false);
         clearDraft(f.folder);
       }
@@ -493,15 +495,16 @@ export default function RegionsPage() {
                     spawns={spawns()!}
                     regions={restored()?.regions ?? regions()}
                     assign={restored()?.assign}
+                    paths={restored()?.paths}
                     roam={showRoam() && !roam.loading && !roam.error ? roam() : undefined}
-                    onChange={(r, a) => {
-                      pending = { regions: r, assign: a };
+                    onChange={(r, a, p) => {
+                      pending = { regions: r, assign: a, paths: p };
                       // Compared against the last saved state, not by re-patching: this runs on
                       // every mouse move during a vertex drag and mobs.yaml is thousands of lines.
                       const base = baseline();
                       const sameAssign = Object.keys(a).length === Object.keys(base.assign).length
                         && Object.entries(a).every(([id, n]) => base.assign[id] === n);
-                      const isDirty = !sameAssign || emitRegionsBlock(r) !== base.block;
+                      const isDirty = !sameAssign || emitRegionsBlock(r) !== base.block || JSON.stringify(p) !== base.paths;
                       setDirty(isDirty);
                       scheduleDraft(isDirty);
                     }}

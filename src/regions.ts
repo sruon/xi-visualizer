@@ -17,9 +17,19 @@ export interface Spawn {
   x: number;
   y: number;
   z: number;
-  /** Raw `at:` as written, [x, y, z, rot?]. Absent once a region took over placement. */
+  /** Raw `at:` as written, [x, y, z, rot?]. Absent once a region or a path took over placement. */
   at?: number[];
   region?: string;
+  /** Patrol route. The mob spawns on the first leg, so this replaces `at:` too. */
+  path?: Vertex[];
+  /** Whether the route closes back on itself. Absent means true. */
+  loop?: boolean;
+}
+
+/** A spawn is placed by exactly one of these: a fixed point, a region, or a patrol route. */
+export interface Patrol {
+  legs: Vertex[];
+  loop?: boolean;
 }
 
 // Zone ids run past 255 (Yorcia Weald is 263, Reisenjima 291), so masking to a byte aliases every
@@ -50,6 +60,8 @@ export function parseMobsYaml(text: string): Spawn[] {
     z: s?.at?.[2] ?? 0,
     at: Array.isArray(s?.at) ? s.at.map(Number) : undefined,
     region: s?.region ? String(s.region) : undefined,
+    path: Array.isArray(s?.path) ? s.path.map((p: any) => [Number(p[0]), Number(p[1]), Number(p[2])] as Vertex) : undefined,
+    loop: typeof s?.loop === "boolean" ? s.loop : undefined,
   }));
 }
 
@@ -118,12 +130,17 @@ export function patchZoneYaml(text: string, regions: RegionSet): string {
 }
 
 /**
- * Adds, updates or removes the `region:` key on each spawn entry in mobs.yaml. A region replaces the
- * fixed spawn point, so `at:` is dropped from an assigned spawn and put back from `positions` when
- * one is unassigned. Line surgery on purpose: the file is mostly a generated comment header plus
- * templates we must not reformat.
+ * Rewrites how each spawn in mobs.yaml is placed: a `region:`, a `path:` of legs, or the fixed
+ * `at:` point it came with. Exactly one of the three survives per entry, and `at:` is restored from
+ * `positions` when a spawn goes back to being placed by hand. Line surgery on purpose: the file is
+ * mostly a generated comment header plus templates we must not reformat.
  */
-export function patchMobsYaml(text: string, assign: Record<string, string>, positions: Record<string, number[]> = {}): string {
+export function patchMobsYaml(
+  text: string,
+  assign: Record<string, string>,
+  positions: Record<string, number[]> = {},
+  paths: Record<string, Patrol> = {},
+): string {
   const { lines, eol } = splitLines(text);
   const start = lines.findIndex(l => /^spawns:\s*$/.test(l));
   if (start < 0) throw new Error("no `spawns:` section in this file");
@@ -136,18 +153,41 @@ export function patchMobsYaml(text: string, assign: Record<string, string>, posi
   const flush = () => {
     if (id === null) return;
     const region = assign[id];
-    const keep = body.filter(l => !/^\s+region:/.test(l) && !(region && /^\s+at:/.test(l)));
+    const patrol = region ? undefined : paths[id];
+    const placed = !!region || !!patrol;
 
-    if (!region && !keep.some(l => /^\s+at:/.test(l)) && positions[id]) {
+    // Drop whatever placement the file had: the keys, plus the list items under `path:`.
+    const keep: string[] = [];
+    let inPath = false;
+    for (const line of body) {
+      if (/^\s+path:/.test(line)) {
+        inPath = true;
+        continue;
+      }
+      if (inPath) {
+        if (/^\s+-/.test(line)) continue;
+        inPath = false;
+      }
+      if (/^\s+(region|loop):/.test(line)) continue;
+      if (placed && /^\s+at:/.test(line)) continue;
+      keep.push(line);
+    }
+
+    if (!placed && !keep.some(l => /^\s+at:/.test(l)) && positions[id]) {
       const at = positions[id].map((n, i) => (i < 3 ? n.toFixed(3) : String(n))).join(", ");
-      let after = keep.findLastIndex(l => /^\s+(template|script):/.test(l));
+      const after = keep.findLastIndex(l => /^\s+(template|script):/.test(l));
       keep.splice(after + 1, 0, `    at:       [${at}]`);
     }
-    if (region) {
-      let last = keep.length;
-      while (last > 0 && keep[last - 1].trim() === "") last--;
-      keep.splice(last, 0, `    region:   ${region}`);
+
+    let last = keep.length;
+    while (last > 0 && keep[last - 1].trim() === "") last--;
+    if (region) keep.splice(last, 0, `    region:   ${region}`);
+    else if (patrol) {
+      const lines = [`    path:`, ...patrol.legs.map(v => `      - [${v.map(n => n.toFixed(3)).join(", ")}]`)];
+      if (patrol.loop === false) lines.unshift(`    loop:     false`);
+      keep.splice(last, 0, ...lines);
     }
+
     out.push(...keep);
     id = null;
     body = [];
@@ -537,6 +577,12 @@ export function validate(regions: RegionSet, spawns: Spawn[], assign: Record<str
   }
 
   for (const s of spawns) {
+    if (s.path && s.path.length < 2) {
+      findings.push({ level: "error", spawnId: s.id, text: `${s.name} has a patrol route with ${s.path.length} legs` });
+    }
+    if (s.path && assign[s.id]) {
+      findings.push({ level: "error", spawnId: s.id, text: `${s.name} has both a region and a patrol route` });
+    }
     const name = assign[s.id];
     if (!name) continue;
     if (!regions[name]) {
@@ -555,11 +601,11 @@ export function validate(regions: RegionSet, spawns: Spawn[], assign: Record<str
   const loose = spawns.filter(s => !assign[s.id]);
   if (loose.length) findings.push({ level: "info", text: `${loose.length} spawns unassigned` });
 
-  // A region replaces `at:`, so a spawn with neither has nowhere to be placed. Counted rather than
+  // A region or a route replaces `at:`, so a spawn with none has nowhere to be placed. Counted, not
   // listed: zones ship with entries that never had a position, and one line per spawn buries the
   // findings that need acting on.
-  const nowhere = loose.filter(s => !s.at).length;
-  if (nowhere) findings.push({ level: "warn", text: `${nowhere} spawns have neither a position nor a region` });
+  const nowhere = loose.filter(s => !s.at && !s.path).length;
+  if (nowhere) findings.push({ level: "warn", text: `${nowhere} spawns have no position, region or route` });
   return findings;
 }
 

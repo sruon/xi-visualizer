@@ -147,10 +147,60 @@ assert.strictEqual(patchMobsYaml(assigned, { "17186822": "f1_hall" }, positions)
 assert.strictEqual(patchMobsYaml(assigned, {}, positions), mobsYaml.replace("    region:   stale_region\n", ""), "at: restored on unassign");
 
 const spawns = parseMobsYaml(assigned);
-assert.deepStrictEqual(spawns[0], { id: "17186822", name: "Wild_Rabbit", x: 0, y: 0, z: 0, at: undefined, region: "f1_hall" });
+assert.deepStrictEqual(spawns[0], {
+  id: "17186822",
+  name: "Wild_Rabbit",
+  x: 0,
+  y: 0,
+  z: 0,
+  at: undefined,
+  region: "f1_hall",
+  path: undefined,
+  loop: undefined,
+});
 assert.deepStrictEqual(spawns[1].at, [1, 2, 3]);
 assert.strictEqual(spawns[1].region, undefined);
 assert.strictEqual(zoneOfMobId("17186822"), 100); // West Ronfaure
+
+// --- patrol routes ---
+const patrolled = patchMobsYaml(mobsYaml, {}, positions, {
+  "17186822": { legs: [[1, -50, 2], [3, -50, 4], [5, -50, 6]] },
+  "17186823": { legs: [[7, -50, 8], [9, -50, 10]], loop: false },
+});
+assert.match(
+  patrolled,
+  /template: Wild_Rabbit\n {4}level: {4}\[1, 1\]\n {4}path:\n {6}- \[1\.000, -50\.000, 2\.000\]\n {6}- \[3\.000, -50\.000, 4\.000\]\n {6}- \[5\.000, -50\.000, 6\.000\]\n/,
+  "legs replace the fixed spawn point",
+);
+assert.match(patrolled, / {4}loop: {5}false\n {4}path:\n/, "loop only written when it is not the default");
+assert.ok(!patrolled.includes("-317.406"), "at: removed once a route places it");
+
+const walkers = parseMobsYaml(patrolled);
+assert.deepStrictEqual(walkers[0].path, [[1, -50, 2], [3, -50, 4], [5, -50, 6]]);
+assert.strictEqual(walkers[0].loop, undefined, "absent loop means it closes");
+assert.strictEqual(walkers[0].at, undefined);
+assert.strictEqual(walkers[1].loop, false);
+assert.strictEqual(
+  patchMobsYaml(patrolled, {}, positions, {
+    "17186822": { legs: [[1, -50, 2], [3, -50, 4], [5, -50, 6]] },
+    "17186823": { legs: [[7, -50, 8], [9, -50, 10]], loop: false },
+  }),
+  patrolled,
+  "patching routes is idempotent",
+);
+assert.strictEqual(patchMobsYaml(patrolled, {}, positions), mobsYaml.replace("    region:   stale_region\n", ""), "dropping a route restores at:");
+assert.strictEqual(
+  patchMobsYaml(patrolled, { "17186822": "f1_hall" }, positions).match(/^ {4}(path|region):/gm)?.join(","),
+  "    region:",
+  "a region replaces a route, and only one placement survives",
+);
+
+const routeFindings = validate({}, [
+  { id: "1", name: "Guard", x: 0, y: 0, z: 0, path: [[0, 0, 0]] },
+  { id: "2", name: "Patrol", x: 0, y: 0, z: 0, path: [[0, 0, 0], [1, 0, 1]], region: "somewhere" },
+], { "2": "somewhere" });
+assert.ok(routeFindings.some(f => f.text.includes("patrol route with 1 legs")), "a one-leg route is not a route");
+assert.ok(routeFindings.some(f => f.text.includes("both a region and a patrol route")), "two placements at once");
 
 // --- diffing two versions of a zone ---
 const before: ZoneSide = {
@@ -211,6 +261,6 @@ assert.ok(has("nearer f2_hall's floor"), "wrong floor");
 assert.ok(has("stands outside"), "assigned but outside");
 assert.ok(has("undefined region ghost_region"), "dangling reference");
 assert.ok(has("2 spawns unassigned"), "unassigned tally");
-assert.ok(has("1 spawns have neither a position nor a region"), "spawn left with nowhere to go");
+assert.ok(has("1 spawns have no position, region or route"), "spawn left with nowhere to go");
 
 console.log("ok");
