@@ -31,6 +31,7 @@ interface MobListProps {
   onPin: (id: string) => void;
   onCentre: (spawn: Spawn) => void;
   onAssign: (spawn: Spawn) => void;
+  onMenu: (spawn: Spawn, x: number, y: number) => void;
   onBuildRegion: (spawns: Spawn[]) => void;
   canBuild: boolean;
 }
@@ -129,10 +130,11 @@ export default function MobList(props: MobListProps) {
                 classList={{ "bg-slate-700": props.pinnedId === s.id }}
                 title={`${s.name} ${s.id}${
                   props.samples(s.id) ? `, ${props.samples(s.id)} roam points` : ", no roam trail"
-                }, click to keep its trail on screen`}
+                }, click to keep its trail on screen, right-click for more`}
                 onMouseEnter={() => props.onHover(s.id)}
                 onMouseLeave={() => props.onHover(null)}
                 onClick={() => props.onPin(s.id)}
+                onContextMenu={e => (e.preventDefault(), props.onMenu(s, e.clientX, e.clientY))}
               >
                 <span
                   class="w-1.5 h-1.5 rounded-full shrink-0"

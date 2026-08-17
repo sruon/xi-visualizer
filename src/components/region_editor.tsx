@@ -667,6 +667,15 @@ export default function RegionEditor(props: RegionEditorProps) {
     return walked < 60 ? `${Math.round(walked)} seconds in` : `${spell(walked)} in`;
   });
 
+  // Picking a region or a route on the map is also picking it in the list, which is no use if the
+  // list is scrolled somewhere else or showing another tab entirely.
+  createEffect(() => {
+    const row = activeName() ?? walker();
+    if (!row) return;
+    setTab(activeName() ? "regions" : "paths");
+    requestAnimationFrame(() => rowRefs.get(row)?.scrollIntoView({ block: "nearest" }));
+  });
+
   // --- three.js ---
   const overlay = new THREE.Group();
 
@@ -681,6 +690,8 @@ export default function RegionEditor(props: RegionEditorProps) {
   const stalk = new Line2(stalkGeo, stalkMaterial);
   stalk.renderOrder = 8;
   stalk.visible = false;
+  let menuElement: HTMLDivElement | undefined;
+  const rowRefs = new Map<string, HTMLDivElement>();
   const labelRefs = new Map<string, HTMLDivElement>();
   const pathLabelRefs = new Map<string, HTMLDivElement>();
   const spawnLabelRefs = new Map<string, HTMLDivElement>();
@@ -1289,6 +1300,10 @@ export default function RegionEditor(props: RegionEditorProps) {
     canvasElement.addEventListener("mouseup", onMouseUp);
     canvasElement.addEventListener("click", onClick);
     canvasElement.addEventListener("contextmenu", onContextMenu);
+    const onAnyClick = (ev: MouseEvent) => {
+      if (!menuElement?.contains(ev.target as Node)) setMenu(null);
+    };
+    window.addEventListener("click", onAnyClick);
     window.addEventListener("keydown", onKeyDown);
 
     if (spawnPoints) fitCameraToContents(camera(), controls, fn => fn(spawnPoints!));
@@ -1448,6 +1463,7 @@ export default function RegionEditor(props: RegionEditorProps) {
 
     onCleanup(() => {
       window.removeEventListener("resize", resizeCanvas);
+      window.removeEventListener("click", onAnyClick);
       window.removeEventListener("keydown", onKeyDown);
       canvasElement.removeEventListener("mousedown", onMouseDown);
       canvasElement.removeEventListener("mousemove", onMouseMove);
@@ -1490,6 +1506,7 @@ export default function RegionEditor(props: RegionEditorProps) {
           checkpoint(`assign ${s.name} to ${activeName()}`);
           setAssign(a => ({ ...a, [s.id]: activeName()! }));
         }}
+        onMenu={(spawn, x, y) => setMenu({ kind: "spawn", spawn, x, y })}
         onBuildRegion={buildFrom}
         canBuild={!!props.roam}
       />
@@ -1615,6 +1632,7 @@ export default function RegionEditor(props: RegionEditorProps) {
         </Show>
         <Show when={menu()}>
           <div
+            ref={menuElement}
             class="fixed z-50 min-w-44 bg-slate-900 border border-slate-600 rounded shadow-lg py-1 text-xs"
             style={{ left: `${menu()!.x}px`, top: `${menu()!.y}px` }}
           >
@@ -1830,8 +1848,12 @@ export default function RegionEditor(props: RegionEditorProps) {
                 const spawn = () => props.spawns.find(s => s.id === id);
                 return (
                   <div
+                    ref={el => rowRefs.set(id, el)}
                     class="flex items-center gap-2 py-0.5 px-1 rounded cursor-pointer hover:bg-slate-700 text-xs"
                     classList={{ "bg-slate-700": id === walker() }}
+                    onContextMenu={e => (
+                      e.preventDefault(), setMenu({ kind: "route", lead: routeGroups().find(g => g.ids.includes(id))?.lead ?? id, x: e.clientX, y: e.clientY })
+                    )}
                     onClick={() => selectRoute(id)}
                   >
                     <span class="flex-1 truncate" title={spawn()?.name}>{spawn()?.name ?? "unknown"}</span>
@@ -1914,9 +1936,11 @@ export default function RegionEditor(props: RegionEditorProps) {
             <For each={regions()} fallback={<div class="text-slate-500 p-2">No regions yet.</div>}>
               {r => (
                 <div
+                  ref={el => rowRefs.set(r.name, el)}
                   class="flex items-center gap-2 py-1 px-1 rounded cursor-pointer hover:bg-slate-700"
                   classList={{ "bg-slate-700": r.name === activeName() }}
                   onClick={() => setActiveName(r.name)}
+                  onContextMenu={e => (e.preventDefault(), setMenu({ kind: "region", name: r.name, x: e.clientX, y: e.clientY }))}
                 >
                   <span class="w-3 h-3 rounded-full shrink-0" style={{ background: cssOf(r.name) }} />
                   <input
