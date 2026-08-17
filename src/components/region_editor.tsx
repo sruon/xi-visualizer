@@ -3,13 +3,14 @@ import * as THREE from "three";
 import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from "three-mesh-bvh";
 import { Line2, LineGeometry, LineMaterial, MapControls } from "three/examples/jsm/Addons.js";
 import { addMapControls, adjustCameraAspect, fitCameraToContents } from "../graphics/camera";
-import { cometMaterial, handleMaterial, roamMaterial, spawnMaterial } from "../graphics/region_points";
+import { beaconMaterial, cometMaterial, handleMaterial, roamMaterial, spawnMaterial } from "../graphics/region_points";
 import { setupBaseScene } from "../graphics/scene";
 import { cleanupNode } from "../graphics/util";
 import { ColorKind, colorMesh, createZoneMesh, prepareMeshData } from "../graphics/ximesh";
 import type { RoamData } from "../pages/regions";
 import { containsXZ, regionAt, regionHue, regionsFromPoints, repairRegion, routeFromTrail, selfIntersects, simplifyRing, validate } from "../regions";
 import type { Finding, Patrol, Region, RegionSet, Spawn, TrailPoint, Vertex } from "../regions";
+import MobList from "./region_mob_list";
 import ShortcutsCard from "./region_shortcuts";
 import type { ZoneData } from "./zone_model";
 
@@ -70,7 +71,7 @@ export default function RegionEditor(props: RegionEditorProps) {
   const [mirror, setMirror] = createSignal<string[]>([]); // mobs walking the same route as the walker
   const [filter, setFilter] = createSignal("");
   const [hideAssigned, setHideAssigned] = createSignal(true);
-  const [tab, setTab] = createSignal<"regions" | "paths" | "unassigned" | "review" | "history">("regions");
+  const [tab, setTab] = createSignal<"regions" | "paths" | "review" | "history">("regions");
   const [terrainColors, setTerrainColors] = createSignal(true);
   const [hover, setHover] = createSignal<{ spawn: Spawn; x: number; y: number; } | null>(null);
   const [cursor, setCursor] = createSignal<THREE.Vector3 | undefined>();
@@ -562,13 +563,6 @@ export default function RegionEditor(props: RegionEditorProps) {
     setActiveName(name);
   };
 
-  // Spawns with no region yet, template-grouped by sort so runs of the same mob read together.
-  const unassigned = createMemo(() =>
-    props.spawns
-      .filter(s => !assign()[s.id] && matches(s))
-      .sort((a, b) => a.name.localeCompare(b.name) || Number(a.id) - Number(b.id))
-  );
-
   const members = createMemo(() => {
     const name = activeName();
     if (!name) return [];
@@ -675,6 +669,18 @@ export default function RegionEditor(props: RegionEditorProps) {
 
   // --- three.js ---
   const overlay = new THREE.Group();
+
+  const beaconGeo = new THREE.BufferGeometry();
+  beaconGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(3), 3));
+  const beacon = new THREE.Points(beaconGeo, beaconMaterial());
+  beacon.renderOrder = 8;
+  beacon.visible = false;
+  const stalkGeo = new LineGeometry();
+  stalkGeo.setPositions([0, 0, 0, 0, 0, 0]);
+  const stalkMaterial = new LineMaterial({ color: 0xfff066, linewidth: 2, depthTest: false, transparent: true });
+  const stalk = new Line2(stalkGeo, stalkMaterial);
+  stalk.renderOrder = 8;
+  stalk.visible = false;
   const labelRefs = new Map<string, HTMLDivElement>();
   const pathLabelRefs = new Map<string, HTMLDivElement>();
   const spawnLabelRefs = new Map<string, HTMLDivElement>();
@@ -768,6 +774,32 @@ export default function RegionEditor(props: RegionEditorProps) {
     lastFocusRange = id ? data.ranges[id] : undefined;
     big.needsUpdate = true;
     (points.material as THREE.ShaderMaterial).uniforms.focused.value = lastFocusRange ? 1 : 0;
+  });
+
+  /**
+   * Where to point at the mob being hovered. Its own fixed point when it has one, the start of its
+   * route otherwise, and nothing at all for a mob a region places, which has no position to mark.
+   */
+  const focusPoint = createMemo<Vertex | null>(() => {
+    const id = focusId();
+    if (!id) return null;
+    const spawn = props.spawns.find(s => s.id === id);
+    if (spawn?.at) return [spawn.x, spawn.y, spawn.z];
+    const legs = paths()[id]?.legs;
+    return legs?.length ? [...legs[0]] : null;
+  });
+
+  // A ring and a stalk on the mob being pointed at. Highlighting its roam trail says nothing about
+  // a mob that has no trail, and those are exactly the ones whose single dot is hardest to find.
+  createEffect(() => {
+    const at = focusPoint();
+    beacon.visible = stalk.visible = !!at;
+    if (!at) return;
+    const pos = beacon.geometry.getAttribute("position") as THREE.BufferAttribute;
+    pos.setXYZ(0, at[0], at[1], at[2]);
+    pos.needsUpdate = true;
+    // Zone y counts downwards, so the top of the stalk is the smaller number.
+    stalk.geometry.setPositions([at[0], at[1] - 14, at[2], at[0], at[1], at[2]]);
   });
 
   // Rebuilt whenever what is drawn changes; drawnSpawns maps geometry index -> props.spawns index,
@@ -1322,7 +1354,8 @@ export default function RegionEditor(props: RegionEditorProps) {
     const comet = new THREE.Points(cometGeo, cometMaterial());
     comet.renderOrder = 6;
     comet.visible = false;
-    scene().add(comet);
+    scene().add(comet, beacon, stalk);
+    onCleanup(() => scene().remove(beacon, stalk));
     onCleanup(() => {
       scene().remove(comet);
       cometGeo.dispose();
@@ -1407,7 +1440,7 @@ export default function RegionEditor(props: RegionEditorProps) {
       controls?.update(dt);
       renderer.setSize(canvasElement.clientWidth, canvasElement.clientHeight, false);
       adjustCameraAspect(camera(), canvasElement);
-      for (const m of activeLineMaterials) m.resolution.set(canvasElement.clientWidth, canvasElement.clientHeight);
+      for (const m of [...activeLineMaterials, stalkMaterial]) m.resolution.set(canvasElement.clientWidth, canvasElement.clientHeight);
       stepReplay(dt);
       renderer.render(scene(), camera());
       placeLabels();
@@ -1442,6 +1475,24 @@ export default function RegionEditor(props: RegionEditorProps) {
 
   return (
     <div class="flex gap-4" style={{ height: "78vh" }}>
+      <MobList
+        spawns={props.spawns}
+        assign={assign()}
+        paths={paths()}
+        samples={id => props.roam?.ranges[id]?.[1] ?? 0}
+        colorOf={cssOf}
+        activeName={activeName()}
+        pinnedId={pinnedId()}
+        onHover={setRowFocus}
+        onPin={id => setPinnedId(current => (current === id ? null : id))}
+        onCentre={s => flyTo(s.x, s.y, s.z)}
+        onAssign={s => {
+          checkpoint(`assign ${s.name} to ${activeName()}`);
+          setAssign(a => ({ ...a, [s.id]: activeName()! }));
+        }}
+        onBuildRegion={buildFrom}
+        canBuild={!!props.roam}
+      />
       <div class="flex-1 relative">
         <canvas class="block w-full h-full outline-none" ref={canvasElement!} />
         <div class="absolute inset-0 overflow-hidden pointer-events-none">
@@ -1715,13 +1766,6 @@ export default function RegionEditor(props: RegionEditorProps) {
           </button>
           <button
             class="flex-1 px-2 py-1 rounded"
-            classList={{ "bg-slate-600": tab() === "unassigned", "bg-slate-700 text-slate-400": tab() !== "unassigned" }}
-            onClick={() => setTab("unassigned")}
-          >
-            Unmapped ({props.spawns.length - Object.keys(assign()).length})
-          </button>
-          <button
-            class="flex-1 px-2 py-1 rounded"
             classList={{ "bg-slate-600": tab() === "review", "bg-slate-700 text-slate-400": tab() !== "review" }}
             onClick={() => setTab("review")}
           >
@@ -1824,60 +1868,6 @@ export default function RegionEditor(props: RegionEditorProps) {
                   </div>
                 );
               }}
-            </For>
-          </div>
-        </Show>
-
-        <Show when={tab() === "unassigned"}>
-          <input
-            type="text"
-            placeholder="Filter (template or id)..."
-            class="w-full px-2 py-1 mb-2 bg-slate-700 rounded"
-            value={filter()}
-            onInput={e => setFilter(e.currentTarget.value)}
-          />
-          <button
-            class="w-full px-2 py-1 mb-2 bg-slate-600 hover:bg-slate-500 rounded text-xs disabled:opacity-40 disabled:text-slate-300"
-            disabled={!props.roam || !unassigned().length}
-            title="Rasterise these mobs' roam trails into a new region and assign them to it"
-            onClick={() => buildFrom(unassigned())}
-          >
-            Build a region around these {unassigned().length}
-          </button>
-          <div class="text-xs text-slate-400 mb-1">
-            <Show when={active()} fallback={<>select a region to assign these to it</>}>
-              click one to assign it to <span style={{ color: cssOf(activeName()!) }}>{activeName()}</span>
-            </Show>
-          </div>
-          <div class="flex-1 overflow-y-auto">
-            <For each={unassigned()} fallback={<div class="text-emerald-500 p-2">Every spawn is mapped.</div>}>
-              {s => (
-                <div
-                  class="flex items-center gap-2 py-0.5 px-1 rounded hover:bg-slate-700 text-xs"
-                  classList={{ "cursor-pointer": !!active() }}
-                  onMouseEnter={() => setRowFocus(s.id)}
-                  onMouseLeave={() => setRowFocus(null)}
-                  onClick={() => {
-                    const name = activeName();
-                    if (!name) return;
-                    checkpoint(`assign ${s.name} to ${name}`);
-                    setAssign(a => ({ ...a, [s.id]: name }));
-                  }}
-                >
-                  <span class="flex-1 truncate" title={s.name}>{s.name}</span>
-                  <span class="text-slate-500">{s.id}</span>
-                  <button
-                    class="px-1 text-slate-400 hover:text-white"
-                    title="Give this mob a patrol route instead of a region"
-                    onClick={e => (e.stopPropagation(), startPath(s))}
-                  >
-                    ⤳
-                  </button>
-                  <Show when={s.at} fallback={<span class="px-1 text-slate-600" title="No position in mobs.yaml">·</span>}>
-                    <button class="px-1 text-slate-400 hover:text-white" title="Center" onClick={e => (e.stopPropagation(), flyTo(s.x, s.y, s.z))}>⌖</button>
-                  </Show>
-                </div>
-              )}
             </For>
           </div>
         </Show>

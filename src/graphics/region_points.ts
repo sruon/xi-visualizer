@@ -131,3 +131,27 @@ export const handleMaterial = () =>
     vertexColors: true,
     depthTest: false,
   });
+
+// The beacon on whichever mob is being pointed at: a ring rather than a disc, so the dot it is
+// marking stays visible inside it. Drawn on top of everything, since finding the mob is the point.
+export const beaconMaterial = () =>
+  new THREE.ShaderMaterial({
+    uniforms: { pointSize: { value: 30 } },
+    vertexShader: `
+      uniform float pointSize;
+      void main() {
+        gl_PointSize = pointSize;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      void main() {
+        float d = length(gl_PointCoord - vec2(0.5));
+        if (abs(d - 0.38) > 0.07) discard;
+        gl_FragColor = vec4(1.0, 0.95, 0.4, 1.0);
+        #include <colorspace_fragment>
+      }
+    `,
+    depthTest: false,
+    transparent: true,
+  });
