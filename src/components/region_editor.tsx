@@ -68,6 +68,7 @@ const SHORTCUTS: { title: string; keys: [string, string][]; }[] = [
       ["click", "a spawn dot to assign it to the selected region"],
       ["drag", "a spawn dot into a polygon to assign it there"],
       ["hover", "a dot or a list row to show its roam trail"],
+      ["right-click", "a mob to replay its trail and see which way it walks"],
       ["click", "a list row to keep that trail on screen"],
     ],
   },
@@ -145,6 +146,38 @@ const roamMaterial = () =>
         } else {
           gl_FragColor = vec4(vColor, 0.6);
         }
+        #include <colorspace_fragment>
+      }
+    `,
+    vertexColors: true,
+    transparent: true,
+    depthTest: false,
+  });
+
+// The replay comet: an amber head with a dark rim, and a tail that fades along the way it came.
+// Amber because cyan is the trail, white the spawn points and violet the routes.
+const cometMaterial = () =>
+  new THREE.ShaderMaterial({
+    vertexShader: `
+      attribute float big;
+      varying vec3 vColor;
+      varying float vBig;
+      void main() {
+        vColor = color;
+        vBig = big;
+        gl_PointSize = big > 0.5 ? 15.0 : 6.0;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying vec3 vColor;
+      varying float vBig;
+      void main() {
+        float d = length(gl_PointCoord - vec2(0.5));
+        if (d > 0.5) discard;
+        gl_FragColor = vBig > 0.5
+          ? (d > 0.34 ? vec4(0.05, 0.03, 0.0, 1.0) : vec4(1.0, 0.78, 0.18, 1.0))
+          : vec4(vColor, 0.85);
         #include <colorspace_fragment>
       }
     `,
@@ -767,6 +800,46 @@ export default function RegionEditor(props: RegionEditorProps) {
     });
   };
 
+  // --- replaying a trail ---
+  /**
+   * Walks a mob's samples in the order they were captured, as a comet: a bright head where it is
+   * and a tail of where it just came from, which is the only way to see which way round it goes.
+   * A still trail cannot show direction, and direction is what tells a patrol from a wanderer.
+   */
+  const REPLAY_RATE = 12; // samples a second, slow enough to follow and quick enough to sit through
+  const REPLAY_TAIL = 40;
+  const [replayId, setReplayId] = createSignal<string | null>(null);
+  const [replayAt, setReplayAt] = createSignal(0);
+
+  const replayTrail = createMemo(() => {
+    const id = replayId();
+    return id ? trailPoints([id]) : [];
+  });
+
+  const replaySpawn = () => props.spawns.find(s => s.id === replayId());
+
+  /**
+   * How long the mob has been walking without anyone losing sight of it, and a word when the
+   * playhead crosses the moment they did. Counting from the first sample instead would report the
+   * span of the archive, which for these captures is months: watching a mob cross the zone is not
+   * "1500 hours in", and the jump you just saw is the part that needs explaining.
+   */
+  const BREAK = 120; // seconds without a sample before the mob may have gone anywhere
+  const replayClock = createMemo(() => {
+    const trail = replayTrail();
+    const at = Math.min(replayAt(), trail.length - 1);
+    if (at < 1 || trail[0].t === undefined) return "";
+
+    const since = (trail[at].t ?? 0) - (trail[at - 1].t ?? 0);
+    const spell = (s: number) => s > 86400 ? `${Math.round(s / 86400)} days` : s > 3600 ? `${Math.round(s / 3600)} hours` : `${Math.round(s / 60)} minutes`;
+    if (since > BREAK) return `jumped, ${spell(since)} unwatched`;
+
+    let from = at;
+    while (from > 0 && (trail[from].t ?? 0) - (trail[from - 1].t ?? 0) <= BREAK) from--;
+    const walked = (trail[at].t ?? 0) - (trail[from].t ?? 0);
+    return walked < 60 ? `${Math.round(walked)} seconds in` : `${spell(walked)} in`;
+  });
+
   // --- three.js ---
   const overlay = new THREE.Group();
   const labelRefs = new Map<string, HTMLDivElement>();
@@ -1324,7 +1397,10 @@ export default function RegionEditor(props: RegionEditorProps) {
       if (ev.key !== "Escape" && ev.key !== "Enter") return;
       if (mode() !== "draw") {
         // Not drawing, so there is nothing to finish: Escape backs out of whatever is selected.
-        if (ev.key === "Escape") walker() ? editWalker(null) : setActiveName(null);
+        if (ev.key !== "Escape") return;
+        if (replayId()) setReplayId(null);
+        else if (walker()) editWalker(null);
+        else setActiveName(null);
         return;
       }
       const id = walker();
@@ -1400,11 +1476,54 @@ export default function RegionEditor(props: RegionEditorProps) {
       }
     };
 
+    // The comet: one point per tail sample plus the head, its brightness fading back along the way
+    // it came. Positions are rewritten in place each frame rather than rebuilt.
+    const cometGeo = new THREE.BufferGeometry();
+    cometGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array((REPLAY_TAIL + 1) * 3), 3));
+    cometGeo.setAttribute("color", new THREE.BufferAttribute(new Float32Array((REPLAY_TAIL + 1) * 3), 3));
+    cometGeo.setAttribute("big", new THREE.BufferAttribute(new Float32Array(REPLAY_TAIL + 1), 1));
+    const comet = new THREE.Points(cometGeo, cometMaterial());
+    comet.renderOrder = 6;
+    comet.visible = false;
+    scene().add(comet);
+    onCleanup(() => {
+      scene().remove(comet);
+      cometGeo.dispose();
+      (comet.material as THREE.Material).dispose();
+    });
+
+    let playhead = 0;
+    const stepReplay = (dt: number) => {
+      const trail = replayTrail();
+      comet.visible = trail.length > 1;
+      if (!comet.visible) {
+        playhead = 0;
+        return;
+      }
+      playhead = (playhead + dt * REPLAY_RATE) % trail.length;
+      const head = Math.floor(playhead);
+      if (head !== replayAt()) setReplayAt(head);
+
+      const pos = cometGeo.getAttribute("position") as THREE.BufferAttribute;
+      const col = cometGeo.getAttribute("color") as THREE.BufferAttribute;
+      const big = cometGeo.getAttribute("big") as THREE.BufferAttribute;
+      for (let i = 0; i <= REPLAY_TAIL; i++) {
+        const p = trail[(head - i + trail.length) % trail.length];
+        pos.setXYZ(i, p.x, p.y, p.z);
+        const fade = 1 - i / (REPLAY_TAIL + 1);
+        col.setXYZ(i, 0.3 + fade * 0.7, fade * 0.6, 0.1); // cooling from amber to dark red behind it
+        big.setX(i, i === 0 ? 1 : 0);
+      }
+      pos.needsUpdate = col.needsUpdate = big.needsUpdate = true;
+    };
+
     renderer.setAnimationLoop(() => {
-      controls?.update(clock.getDelta());
+      const dt = clock.getDelta();
+      controls?.update(dt);
       renderer.setSize(canvasElement.clientWidth, canvasElement.clientHeight, false);
       adjustCameraAspect(camera(), canvasElement);
       for (const m of activeLineMaterials) m.resolution.set(canvasElement.clientWidth, canvasElement.clientHeight);
+      stepReplay(dt);
       renderer.render(scene(), camera());
       placeLabels();
     });
@@ -1501,7 +1620,7 @@ export default function RegionEditor(props: RegionEditorProps) {
           </For>
         </div>
         {/* What is being edited and how to stop — the full list of keys lives in the shortcuts card. */}
-        <Show when={walker() || activeName() || pinnedSpawn()}>
+        <Show when={walker() || activeName() || pinnedSpawn() || replayId()}>
           <div class="absolute top-2 left-1/2 -translate-x-1/2 text-xs text-slate-200 bg-slate-900/85 rounded px-3 py-1.5 pointer-events-none text-center">
             <Show when={walkerSpawn()}>
               {spawn => (
@@ -1526,6 +1645,16 @@ export default function RegionEditor(props: RegionEditorProps) {
               <div>
                 holding <b>{pinnedSpawn()!.name}</b> <span class="text-slate-400">{pinnedSpawn()!.id}</span>, click it again to release
               </div>
+            </Show>
+            <Show when={replaySpawn()}>
+              {spawn => (
+                <div>
+                  Replaying <b style={{ color: "#fbbf24" }}>{spawn().name}</b>{" "}
+                  <span class="text-slate-400">
+                    {replayAt()} of {replayTrail().length} points{replayClock() ? `, ${replayClock()}` : ""} · Esc to stop
+                  </span>
+                </div>
+              )}
             </Show>
           </div>
         </Show>
@@ -1606,6 +1735,17 @@ export default function RegionEditor(props: RegionEditorProps) {
                   >
                     Trace a patrol route
                   </button>
+                  <button
+                    class="block w-full text-left px-3 py-1 hover:bg-slate-700"
+                    onClick={() => {
+                      setMenu(null);
+                      if (replayId() === spawn().id) return setReplayId(null);
+                      if (trailPoints([spawn().id]).length < 2) return flash(`no roam trail for ${spawn().name}`);
+                      setReplayId(spawn().id);
+                    }}
+                  >
+                    {replayId() === spawn().id ? "Stop the replay" : "Replay its trail"}
+                  </button>
                   <Show when={activeName()}>
                     <button
                       class="block w-full text-left px-3 py-1 hover:bg-slate-700"
@@ -1636,6 +1776,12 @@ export default function RegionEditor(props: RegionEditorProps) {
                   </button>
                   <button class="block w-full text-left px-3 py-1 hover:bg-slate-700" onClick={() => (retrace(group().lead), setMenu(null))}>
                     Re-trace from the roam trail
+                  </button>
+                  <button
+                    class="block w-full text-left px-3 py-1 hover:bg-slate-700"
+                    onClick={() => (setReplayId(replayId() === group().lead ? null : group().lead), setMenu(null))}
+                  >
+                    {replayId() === group().lead ? "Stop the replay" : "Replay the trail it came from"}
                   </button>
                   <button
                     class="block w-full text-left px-3 py-1 hover:bg-slate-700 text-red-400"
