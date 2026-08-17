@@ -288,6 +288,17 @@ export default function RegionEditor(props: RegionEditorProps) {
     return [...groups.values()];
   });
 
+  /**
+   * Mobs still placed by a fixed point, which are the ones left to do something about. They keep
+   * their dot; this is the name beside it, so you can tell what you are looking at without hovering
+   * every one.
+   */
+  const labelledSpawns = createMemo(() => {
+    const a = assign();
+    const p = paths();
+    return props.spawns.filter(s => s.at && !a[s.id] && !p[s.id]);
+  });
+
   /** Picks up a route for editing, with the mobs that share it, so one edit moves all of them. */
   const selectRoute = (id: string) => {
     const group = routeGroups().find(g => g.ids.includes(id));
@@ -760,6 +771,7 @@ export default function RegionEditor(props: RegionEditorProps) {
   const overlay = new THREE.Group();
   const labelRefs = new Map<string, HTMLDivElement>();
   const pathLabelRefs = new Map<string, HTMLDivElement>();
+  const spawnLabelRefs = new Map<string, HTMLDivElement>();
   const handleMap: Handle[] = [];
   const activeLineMaterials: LineMaterial[] = [];
   const drawnSpawns: number[] = [];
@@ -1345,7 +1357,11 @@ export default function RegionEditor(props: RegionEditorProps) {
         return;
       }
       projected.set(at[0], -at[1], -at[2]).project(camera());
-      el.style.display = projected.z < 1 ? "block" : "none";
+      // Behind the camera or off the side of it: no reason to place it, and with a label per mob
+      // that is most of them most of the time.
+      const onScreen = projected.z < 1 && Math.abs(projected.x) < 1.1 && Math.abs(projected.y) < 1.1;
+      el.style.display = onScreen ? "block" : "none";
+      if (!onScreen) return;
       el.style.transform = `translate(-50%, -50%) translate(${(projected.x * 0.5 + 0.5) * canvasElement.clientWidth}px, ${
         (-projected.y * 0.5 + 0.5) * canvasElement.clientHeight
       }px)`;
@@ -1369,6 +1385,18 @@ export default function RegionEditor(props: RegionEditorProps) {
       for (const route of routeGroups()) {
         const el = pathLabelRefs.get(route.lead);
         if (el) place(el, !only && route.legs.length >= 2 ? middle(route.legs) : null);
+      }
+
+      // A few hundred mob names at once are unreadable on top of each other and cost a style write
+      // each per frame, so they only appear once the view is close enough for them to be worth
+      // reading. A region being edited hides them too, the way it hides everything else.
+      const cam = camera();
+      const perPixel = (2 * Math.tan((cam.fov * Math.PI) / 360) * cam.position.distanceTo(controls!.target))
+        / canvasElement.clientHeight;
+      const readable = !only && !walker() && perPixel < 0.5;
+      for (const s of labelledSpawns()) {
+        const el = spawnLabelRefs.get(s.id);
+        if (el) place(el, readable ? [s.x, s.y, s.z] : null);
       }
     };
 
@@ -1452,6 +1480,21 @@ export default function RegionEditor(props: RegionEditorProps) {
                   <span class="text-slate-400 font-normal">
                     {group.ids.length > 1 ? ` x${group.ids.length}` : ""} {group.legs.length} legs
                   </span>
+                </div>
+              );
+            }}
+          </For>
+          <For each={labelledSpawns()}>
+            {s => {
+              onCleanup(() => spawnLabelRefs.delete(s.id));
+              // Not clickable: the dot underneath already is, and a few hundred click targets over
+              // the map would be in the way of dragging it.
+              return (
+                <div
+                  ref={el => spawnLabelRefs.set(s.id, el)}
+                  class="absolute top-0 left-0 mt-3 hidden whitespace-nowrap text-[10px] leading-none text-slate-300 bg-slate-900/60 rounded px-1 py-px pointer-events-none"
+                >
+                  {s.name}
                 </div>
               );
             }}
