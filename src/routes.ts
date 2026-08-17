@@ -2,51 +2,38 @@ import type { RouteDefinition } from "@solidjs/router";
 import { lazy } from "solid-js";
 
 import HomePage from "./pages/home";
-import NavMeshPage from "./pages/navmesh";
-import NavMeshDiffPage from "./pages/navmesh_diff";
-import PacketPage from "./pages/packet";
-import PathPage from "./pages/path";
-import RegionsPage from "./pages/regions";
-import RegionsDiffPage from "./pages/regions_diff";
-import RoamPage from "./pages/roam";
-import ZonesPage from "./pages/zones";
 
+// Every page but the landing one is loaded when it is first opened. They do not share much: the
+// regions editor has no use for the packet tables, chart.js or the local database, and shipping all
+// of it in one file made the first load carry six pages nobody asked for.
 export const routes: RouteDefinition[] = [
   {
     path: "/",
     component: HomePage,
   },
   {
-    path: "/packet",
-    component: PacketPage,
-  },
-  {
-    path: "/path",
-    component: PathPage,
-  },
-  {
     path: "/roam/:id?",
-    component: RoamPage,
+    component: lazy(() => import("./pages/roam")),
   },
   {
     path: "/zone/:id?",
-    component: ZonesPage,
+    component: lazy(() => import("./pages/zones")),
   },
   {
     path: "/navmesh",
-    component: NavMeshPage,
+    component: lazy(() => import("./pages/navmesh")),
   },
   {
     path: "/navmesh-diff",
-    component: NavMeshDiffPage,
+    component: lazy(() => import("./pages/navmesh_diff")),
   },
   {
     path: "/regions/:zone?",
-    component: RegionsPage,
+    component: lazy(() => import("./pages/regions")),
   },
   {
     path: "/regions-diff",
-    component: RegionsDiffPage,
+    component: lazy(() => import("./pages/regions_diff")),
   },
   {
     path: "**",
