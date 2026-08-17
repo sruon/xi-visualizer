@@ -205,7 +205,7 @@ export default function RegionEditor(props: RegionEditorProps) {
   const [mirror, setMirror] = createSignal<string[]>([]); // mobs walking the same route as the walker
   const [filter, setFilter] = createSignal("");
   const [hideAssigned, setHideAssigned] = createSignal(true);
-  const [tab, setTab] = createSignal<"regions" | "paths" | "unassigned" | "review">("regions");
+  const [tab, setTab] = createSignal<"regions" | "paths" | "unassigned" | "review" | "history">("regions");
   const [terrainColors, setTerrainColors] = createSignal(true);
   const [hover, setHover] = createSignal<{ spawn: Spawn; x: number; y: number; } | null>(null);
   const [cursor, setCursor] = createSignal<THREE.Vector3 | undefined>();
@@ -381,8 +381,13 @@ export default function RegionEditor(props: RegionEditorProps) {
     mirror: string[];
     mode: "select" | "draw";
   }
-  const undoStack: Snapshot[] = [];
-  const redoStack: Snapshot[] = [];
+  interface Step {
+    label: string;
+    /** The state as it was before this step, which is what undoing it goes back to. */
+    before: Snapshot;
+  }
+  const [undoStack, setUndoStack] = createSignal<Step[]>([]);
+  const [redoStack, setRedoStack] = createSignal<Step[]>([]);
   const snap = (): Snapshot => ({
     regions: regions(),
     assign: assign(),
@@ -405,18 +410,33 @@ export default function RegionEditor(props: RegionEditorProps) {
   };
 
   // Snapshots are taken at operation boundaries, so a whole vertex drag collapses into one step.
-  const checkpoint = () => {
-    undoStack.push(snap());
-    if (undoStack.length > 100) undoStack.shift();
-    redoStack.length = 0;
+  // The label is what the step is called in the history list, so it names the change, not the click.
+  const checkpoint = (label: string) => {
+    setUndoStack(steps => [...steps, { label, before: snap() }].slice(-100));
+    setRedoStack([]);
   };
+
   const undo = () => {
-    const prev = undoStack.pop();
-    if (prev) (redoStack.push(snap()), restore(prev));
+    const steps = undoStack();
+    const step = steps[steps.length - 1];
+    if (!step) return;
+    setUndoStack(steps.slice(0, -1));
+    setRedoStack(r => [...r, { label: step.label, before: snap() }]);
+    restore(step.before);
   };
+
   const redo = () => {
-    const next = redoStack.pop();
-    if (next) (undoStack.push(snap()), restore(next));
+    const steps = redoStack();
+    const step = steps[steps.length - 1];
+    if (!step) return;
+    setRedoStack(steps.slice(0, -1));
+    setUndoStack(u => [...u, { label: step.label, before: snap() }]);
+    restore(step.before);
+  };
+
+  /** Steps back to just before the numbered step, so the history list is clickable. */
+  const rewindTo = (index: number) => {
+    for (let i = undoStack().length; i > index; i--) undo();
   };
 
   const editActive = (fn: (r: RegionEntry) => void) => {
@@ -460,7 +480,7 @@ export default function RegionEditor(props: RegionEditorProps) {
    */
   const startPath = (spawn: Spawn) => {
     const traced = routeFromTrail(trailPoints([spawn.id]));
-    checkpoint();
+    checkpoint(`route for ${spawn.name}`);
     setAssign(a => {
       const next = { ...a };
       delete next[spawn.id];
@@ -500,7 +520,7 @@ export default function RegionEditor(props: RegionEditorProps) {
     const lead = candidates[0]?.walker ?? members[0];
     const legs = traced?.legs ?? [];
 
-    checkpoint();
+    checkpoint(`${name} to a patrol`);
     setPaths(all => {
       const next = { ...all };
       for (const m of members) next[m.id] = { legs: legs.map(v => [...v] as Vertex) };
@@ -534,7 +554,7 @@ export default function RegionEditor(props: RegionEditorProps) {
   const retrace = (id: string) => {
     const traced = routeFromTrail(trailPoints([id]));
     if (!traced) return flash("no roam trail for that mob");
-    checkpoint();
+    checkpoint(`re-trace ${props.spawns.find(s => s.id === id)?.name ?? id}`);
     // Everyone who was walking the old line walks the new one: they were given it together.
     const sharing = routeGroups().find(g => g.ids.includes(id))?.ids ?? [id];
     selectRoute(id);
@@ -547,7 +567,7 @@ export default function RegionEditor(props: RegionEditorProps) {
   };
 
   const dropPath = (id: string) => {
-    checkpoint();
+    checkpoint(`drop the route for ${props.spawns.find(s => s.id === id)?.name ?? id}`);
     setPaths(all => {
       const next = { ...all };
       delete next[id];
@@ -557,7 +577,7 @@ export default function RegionEditor(props: RegionEditorProps) {
   };
 
   const addRegion = () => {
-    checkpoint();
+    checkpoint("add a region");
     let n = regions().length + 1;
     while (regions().some(r => r.name === `region_${n}`)) n++;
     const name = `region_${n}`;
@@ -571,7 +591,7 @@ export default function RegionEditor(props: RegionEditorProps) {
     const to = raw.trim().replace(/[^A-Za-z0-9_]/g, "_");
     if (!to || regions().some(r => r.name === to && r.name !== from)) return false;
     if (to === from) return true;
-    checkpoint();
+    checkpoint(`rename ${from} to ${to}`);
     setRegions(rs => rs.map(r => (r.name === from ? { ...r, name: to } : r)));
     setAssign(a => Object.fromEntries(Object.entries(a).map(([id, n]) => [id, n === from ? to : n])));
     if (activeName() === from) setActiveName(to);
@@ -579,7 +599,7 @@ export default function RegionEditor(props: RegionEditorProps) {
   };
 
   const deleteRegion = (name: string) => {
-    checkpoint();
+    checkpoint(`delete ${name}`);
     setRegions(rs => rs.filter(r => r.name !== name));
     setAssign(a => Object.fromEntries(Object.entries(a).filter(([, n]) => n !== name)));
     if (activeName() === name) setActiveName(null);
@@ -588,7 +608,7 @@ export default function RegionEditor(props: RegionEditorProps) {
   const assignInside = (remove: boolean) => {
     const r = active();
     if (!r) return;
-    checkpoint();
+    checkpoint(`assign what ${name} covers`);
     const set = asSet(regions());
     setAssign(a => {
       const next = { ...a };
@@ -640,7 +660,7 @@ export default function RegionEditor(props: RegionEditorProps) {
     if (!r) return;
     const built = regionsFromPoints(trailPoints(Object.keys(assign()).filter(id => assign()[id] === r.name)));
     if (!built.length) return flash("no roam trails for that region's mobs");
-    checkpoint();
+    checkpoint(`refit ${r.name}`);
     setRegions(rs => rs.map(x => (x.name === r.name ? { name: r.name, rings: built[0].rings } : x)));
     if (built.length > 1) flash(`those trails form ${built.length} clusters, fitted the biggest`);
   };
@@ -661,7 +681,7 @@ export default function RegionEditor(props: RegionEditorProps) {
       return { name, rings: region.rings };
     });
 
-    checkpoint();
+    checkpoint("build regions from the trails");
     setRegions(rs => [...rs, ...named]);
     setAssign(a => {
       const next = { ...a };
@@ -682,7 +702,7 @@ export default function RegionEditor(props: RegionEditorProps) {
   };
 
   const unassign = (id: string) => {
-    checkpoint();
+    checkpoint(`unassign ${name}`);
     setAssign(a => {
       const next = { ...a };
       delete next[id];
@@ -1061,7 +1081,7 @@ export default function RegionEditor(props: RegionEditorProps) {
       aim(ev);
       const handle = pickHandle();
       if (handle && !handle.mid) {
-        checkpoint();
+        checkpoint("remove a vertex");
         return removeVertex(handle); // midpoints are not stored, so there is nothing to remove
       }
 
@@ -1093,7 +1113,7 @@ export default function RegionEditor(props: RegionEditorProps) {
         return;
       }
 
-      checkpoint();
+      checkpoint("add a vertex");
       if (handle.mid && activePath()) {
         const p = pickZonePoint(activePath()!.legs[handle.idx][1]);
         editPath(legs => {
@@ -1160,7 +1180,7 @@ export default function RegionEditor(props: RegionEditorProps) {
       // Only regions you can see can be dropped onto.
       const target = !p ? null : act ? (containsXZ(act, p.x, p.z) ? act.name : null) : regionAt(asSet(regions()), p.x, p.z, spawn.y);
       if (!target) return;
-      checkpoint();
+      checkpoint(`assign ${spawn.name} to ${target}`);
       setAssign(a => ({ ...a, [spawn.id]: target }));
     };
 
@@ -1185,7 +1205,7 @@ export default function RegionEditor(props: RegionEditorProps) {
       if (mode() === "draw" && activePath()) {
         const p = pickZonePoint(activePath()!.legs.at(-1)?.[1] ?? 0);
         if (!p) return;
-        checkpoint();
+        checkpoint("add a leg");
         editPath(legs => legs.push([p.x, p.y, p.z]));
         return;
       }
@@ -1194,7 +1214,7 @@ export default function RegionEditor(props: RegionEditorProps) {
         const r = active();
         const p = pickZonePoint(lastY(r));
         if (!p || !r) return;
-        checkpoint();
+        checkpoint("add a vertex");
         editActive(c => c.rings[c.rings.length - 1].push([p.x, p.y, p.z]));
         return;
       }
@@ -1204,7 +1224,7 @@ export default function RegionEditor(props: RegionEditorProps) {
       const spawn = pickSpawn();
       const name = activeName();
       if (spawn && name) {
-        checkpoint();
+        checkpoint(`assign ${spawn.name}`);
         setAssign(a => {
           const next = { ...a };
           if (next[spawn.id] === name) delete next[spawn.id];
@@ -1498,7 +1518,7 @@ export default function RegionEditor(props: RegionEditorProps) {
                     <button
                       class="block w-full text-left px-3 py-1 hover:bg-slate-700"
                       onClick={() => {
-                        checkpoint();
+                        checkpoint(`assign ${spawn().name} to ${activeName()}`);
                         setAssign(a => ({ ...a, [spawn().id]: activeName()! }));
                         setMenu(null);
                       }}
@@ -1531,7 +1551,7 @@ export default function RegionEditor(props: RegionEditorProps) {
                       // Read the group before dropping it: the accessor is gone the moment the
                       // routes it was built from are, and reading it then throws.
                       const ids = [...group().ids];
-                      checkpoint();
+                      checkpoint(`drop the route for ${mobs(ids.length)}`);
                       setPaths(all => {
                         const next = { ...all };
                         for (const id of ids) delete next[id];
@@ -1604,7 +1624,53 @@ export default function RegionEditor(props: RegionEditorProps) {
           >
             Review ({findings().filter(f => f.level !== "info").length})
           </button>
+          <button
+            class="flex-1 px-2 py-1 rounded"
+            classList={{ "bg-slate-600": tab() === "history", "bg-slate-700 text-slate-400": tab() !== "history" }}
+            onClick={() => setTab("history")}
+          >
+            History ({undoStack().length})
+          </button>
         </div>
+
+        <Show when={tab() === "history"}>
+          <div class="flex gap-2 mb-2">
+            <button
+              class="flex-1 px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-40 disabled:hover:bg-slate-700"
+              disabled={!undoStack().length}
+              onClick={undo}
+            >
+              Undo
+            </button>
+            <button
+              class="flex-1 px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-40 disabled:hover:bg-slate-700"
+              disabled={!redoStack().length}
+              onClick={redo}
+            >
+              Redo
+            </button>
+          </div>
+          <div class="flex-1 overflow-y-auto text-xs">
+            {/* Newest first, and clicking one takes the zone back to just before it ran. */}
+            <For each={[...redoStack()].reverse()}>
+              {step => <div class="py-0.5 px-1 text-slate-600 italic">{step.label}</div>}
+            </For>
+            <For
+              each={[...undoStack()].reverse()}
+              fallback={<div class="text-slate-500 p-2">Nothing changed yet.</div>}
+            >
+              {(step, i) => (
+                <div
+                  class="py-0.5 px-1 rounded cursor-pointer hover:bg-slate-700 text-slate-300"
+                  title="Take the zone back to just before this"
+                  onClick={() => rewindTo(undoStack().length - 1 - i())}
+                >
+                  {step.label}
+                </div>
+              )}
+            </For>
+          </div>
+        </Show>
 
         <Show when={tab() === "paths"}>
           <div class="text-xs text-slate-400 mb-2">
@@ -1629,7 +1695,7 @@ export default function RegionEditor(props: RegionEditorProps) {
                       title={patrol.loop === false ? "Walks back along the route" : "Closes into a loop"}
                       onClick={e => {
                         e.stopPropagation();
-                        checkpoint();
+                        checkpoint(`${props.spawns.find(s => s.id === id)?.name ?? id} walks back and forth`);
                         setPaths(all => ({ ...all, [id]: { ...all[id], loop: all[id].loop === false ? undefined : false } }));
                       }}
                     >
@@ -1691,7 +1757,7 @@ export default function RegionEditor(props: RegionEditorProps) {
                   onClick={() => {
                     const name = activeName();
                     if (!name) return;
-                    checkpoint();
+                    checkpoint(`assign ${s.name} to ${name}`);
                     setAssign(a => ({ ...a, [s.id]: name }));
                   }}
                 >
@@ -1724,7 +1790,7 @@ export default function RegionEditor(props: RegionEditorProps) {
               class="px-2 py-1 bg-slate-600 hover:bg-slate-500 rounded disabled:opacity-40 disabled:text-slate-300"
               disabled={!active()}
               onClick={() => {
-                checkpoint();
+                checkpoint("start a hole");
                 editActive(r => r.rings.push([]));
                 setMode("draw");
               }}
@@ -1815,7 +1881,7 @@ export default function RegionEditor(props: RegionEditorProps) {
                   class="px-2 py-1 bg-slate-600 hover:bg-slate-500 rounded text-xs"
                   title="Drop the least important quarter of the vertices"
                   onClick={() => {
-                    checkpoint();
+                    checkpoint(`simplify ${activeName()}`);
                     editActive(r => (r.rings = r.rings.map(ring => simplifyRing(ring, Infinity, Math.ceil(ring.length * 0.75)))));
                   }}
                 >
