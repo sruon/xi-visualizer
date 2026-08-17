@@ -32,6 +32,8 @@ interface MobListProps {
   onCentre: (spawn: Spawn) => void;
   onAssign: (spawn: Spawn) => void;
   onMenu: (spawn: Spawn, x: number, y: number) => void;
+  /** Narrows the list to a floor when one is picked, so the counts answer what is left on it. */
+  visible: (spawn: Spawn) => boolean;
   onBuildRegion: (spawns: Spawn[]) => void;
   canBuild: boolean;
 }
@@ -48,16 +50,18 @@ export default function MobList(props: MobListProps) {
 
   const statusOfSpawn = (s: Spawn) => statusOf(s, props.assign[s.id], props.paths[s.id]);
 
+  const inScope = createMemo(() => props.spawns.filter(props.visible));
+
   const counts = createMemo(() => {
-    const tally: Record<string, number> = { all: props.spawns.length, region: 0, route: 0, fixed: 0, nowhere: 0 };
-    for (const s of props.spawns) tally[statusOfSpawn(s)]++;
+    const tally: Record<string, number> = { all: inScope().length, region: 0, route: 0, fixed: 0, nowhere: 0 };
+    for (const s of inScope()) tally[statusOfSpawn(s)]++;
     return tally;
   });
 
   const shown = createMemo(() => {
     const needle = filter().toLowerCase();
     const want = status();
-    return props.spawns.filter(s =>
+    return inScope().filter(s =>
       (want === "all" || statusOfSpawn(s) === want)
       && (!needle || s.name.toLowerCase().includes(needle) || s.id.includes(needle))
     );
@@ -84,7 +88,7 @@ export default function MobList(props: MobListProps) {
         title={open() ? "Hide the mob list" : "Show the mob list"}
         onClick={() => setOpen(o => !o)}
       >
-        <span class="text-xs uppercase tracking-wide">{open() ? `Mobs (${props.spawns.length})` : ""}</span>
+        <span class="text-xs uppercase tracking-wide">{open() ? `Mobs (${inScope().length})` : ""}</span>
         <span>{open() ? "‹" : "›"}</span>
       </button>
 

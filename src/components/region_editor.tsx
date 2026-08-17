@@ -6,7 +6,7 @@ import { addMapControls, adjustCameraAspect, fitCameraToContents } from "../grap
 import { beaconMaterial, cometMaterial, handleMaterial, roamMaterial, spawnMaterial } from "../graphics/region_points";
 import { setupBaseScene } from "../graphics/scene";
 import { cleanupNode } from "../graphics/util";
-import { ColorKind, colorMesh, createZoneMesh, prepareMeshData } from "../graphics/ximesh";
+import { ColorKind, colorMesh, createZoneMesh, mapIdPerVertex, prepareMeshData } from "../graphics/ximesh";
 import type { RoamData } from "../pages/regions";
 import { containsXZ, regionAt, regionHue, regionsFromPoints, repairRegion, routeFromTrail, selfIntersects, simplifyRing, validate } from "../regions";
 import type { Finding, Patrol, Region, RegionSet, Spawn, TrailPoint, Vertex } from "../regions";
@@ -73,6 +73,10 @@ export default function RegionEditor(props: RegionEditorProps) {
   const [hideAssigned, setHideAssigned] = createSignal(true);
   const [tab, setTab] = createSignal<"regions" | "paths" | "review" | "history">("regions");
   const [terrainColors, setTerrainColors] = createSignal(true);
+  // The floor being worked on, as a map sheet id. Null is the whole zone, which is all an outdoor
+  // zone ever has.
+  const [floors, setFloors] = createSignal<number[]>([]);
+  const [floor, setFloor] = createSignal<number | null>(null);
   const [hover, setHover] = createSignal<{ spawn: Spawn; x: number; y: number; } | null>(null);
   const [cursor, setCursor] = createSignal<THREE.Vector3 | undefined>();
   const [toast, setToast] = createSignal<string | undefined>();
@@ -703,9 +707,65 @@ export default function RegionEditor(props: RegionEditorProps) {
   let roamPoints: THREE.Points | undefined;
   let lastFocusRange: [number, number] | undefined;
   let zoneMesh: THREE.Mesh | undefined;
+  let floorIndex: FloorIndex | undefined;
   let meshPrep: ReturnType<typeof prepareMeshData> | undefined;
   let drag: { ring: number; idx: number; } | null = null;
   let spawnDrag: { spawn: Spawn; line: THREE.Line; } | null = null;
+
+  /**
+   * Which floor everything is on, looked up by position. Buckets every triangle of the zone mesh by
+   * its footprint, so a point picks the piece of ground under it rather than the one a few floors
+   * up, which is the whole difficulty with a tower drawn from above.
+   */
+  interface FloorIndex {
+    /** Map sheets with real geometry on them, in order. One entry means the zone has no floors. */
+    floors: number[];
+    at: (x: number, y: number, z: number) => number | null;
+    perVertex: Uint8Array;
+  }
+  const CELL = 12;
+  const buildFloorIndex = (mesh: THREE.Mesh, prep: ReturnType<typeof prepareMeshData>): FloorIndex => {
+    const perVertex = mapIdPerVertex(mesh, prep);
+    const pos = mesh.geometry.getAttribute("position");
+    const buckets = new Map<string, { y: number; map: number; }[]>();
+    const counts = new Map<number, number>();
+
+    for (let t = 0; t < pos.count; t += 3) {
+      const map = perVertex[t];
+      counts.set(map, (counts.get(map) ?? 0) + 1);
+      // Scene coordinates are the zone's with y and z negated, so undo that on the way back out.
+      const x = (pos.getX(t) + pos.getX(t + 1) + pos.getX(t + 2)) / 3;
+      const y = -(pos.getY(t) + pos.getY(t + 1) + pos.getY(t + 2)) / 3;
+      const z = -(pos.getZ(t) + pos.getZ(t + 1) + pos.getZ(t + 2)) / 3;
+      const key = `${Math.round(x / CELL)},${Math.round(z / CELL)}`;
+      const cell = buckets.get(key);
+      if (cell) cell.push({ y, map });
+      else buckets.set(key, [{ y, map }]);
+    }
+
+    // Sheets carrying a handful of triangles are stray scenery, not somewhere anyone stands.
+    const floors = [...counts].filter(([, n]) => n > 50).map(([map]) => map).sort((a, b) => a - b);
+
+    return {
+      floors,
+      perVertex,
+      at: (x, y, z) => {
+        let best: number | null = null;
+        let nearest = Infinity;
+        const cx = Math.round(x / CELL);
+        const cz = Math.round(z / CELL);
+        for (let dx = -1; dx <= 1; dx++) {
+          for (let dz = -1; dz <= 1; dz++) {
+            for (const entry of buckets.get(`${cx + dx},${cz + dz}`) ?? []) {
+              const gap = Math.abs(entry.y - y);
+              if (gap < nearest) (nearest = gap, best = entry.map);
+            }
+          }
+        }
+        return best;
+      },
+    };
+  };
 
   createMemo(() => {
     const prep = prepareMeshData(props.zoneData.mesh);
@@ -716,6 +776,9 @@ export default function RegionEditor(props: RegionEditorProps) {
     (mesh.material as THREE.MeshBasicMaterial).color.setScalar(0.75);
     zoneMesh = mesh;
     meshPrep = prep;
+    floorIndex = buildFloorIndex(mesh, prep);
+    setFloors(floorIndex.floors);
+    setFloor(null);
     scene().add(mesh);
     scene().add(overlay);
     onCleanup(() => {
@@ -728,6 +791,57 @@ export default function RegionEditor(props: RegionEditorProps) {
     const kind = terrainColors() ? ColorKind.Materials : ColorKind.None;
     if (zoneMesh && meshPrep) colorMesh(zoneMesh, meshPrep, kind);
   });
+
+  /**
+   * Draws one floor by indexing the mesh down to its triangles. Dimming the rest would not help:
+   * seen from above, the thing in the way is the floor above the one being edited, and it has to go
+   * rather than merely darken. Indexing takes the terrain out of the raycast with it, so clicks land
+   * on the floor on screen, and the bounds tree is rebuilt because it describes what is indexed.
+   */
+  createEffect(() => {
+    const only = floor();
+    const mesh = zoneMesh;
+    const index = floorIndex;
+    if (!mesh || !index) return;
+
+    if (only === null) {
+      mesh.geometry.setIndex(null);
+    } else {
+      const keep: number[] = [];
+      for (let t = 0; t < index.perVertex.length; t += 3) {
+        if (index.perVertex[t] === only) keep.push(t, t + 1, t + 2);
+      }
+      mesh.geometry.setIndex(keep);
+    }
+    mesh.geometry.disposeBoundsTree();
+    mesh.geometry.computeBoundsTree();
+  });
+
+  // Worked out once each rather than per frame: the answer only moves when the shapes do, and this
+  // is read for every region and every mob on the way to placing their labels.
+  const regionFloors = createMemo(() => {
+    const out: Record<string, number | null> = {};
+    if (!floorIndex) return out;
+    for (const r of regions()) {
+      const ring = r.rings[0];
+      if (!ring?.length) continue;
+      let x = 0, y = 0, z = 0;
+      for (const v of ring) (x += v[0], y += v[1], z += v[2]);
+      out[r.name] = floorIndex.at(x / ring.length, y / ring.length, z / ring.length);
+    }
+    return out;
+  });
+
+  const spawnFloors = createMemo(() => {
+    const out: Record<string, number | null> = {};
+    if (!floorIndex) return out;
+    for (const s of props.spawns) if (s.at) out[s.id] = floorIndex.at(s.x, s.y, s.z);
+    return out;
+  });
+
+  const onRegionFloor = (r: RegionEntry) => floor() === null || regionFloors()[r.name] === floor();
+  const onFloor = (x: number, y: number, z: number) => floor() === null || !floorIndex || floorIndex.at(x, y, z) === floor();
+  const spawnOnFloor = (s: Spawn) => floor() === null || spawnFloors()[s.id] === floor();
 
   // Recorded roam trails, drawn under everything so a polygon can be checked against where the
   // mobs actually went.
@@ -827,6 +941,7 @@ export default function RegionEditor(props: RegionEditorProps) {
       const name = a[s.id];
       if (!s.at) return; // its region places it now, there is no dot to draw
       if (name && hide) return;
+      if (!spawnOnFloor(s)) return;
       drawnSpawns.push(i);
       pos.push(s.x, s.y, s.z);
       const c = name ? colorOf(name) : gray;
@@ -862,6 +977,7 @@ export default function RegionEditor(props: RegionEditorProps) {
     handlePoints = undefined;
 
     for (const r of list) {
+      if (!onRegionFloor(r)) continue;
       const isActive = r.name === activeRegion?.name;
       // Editing one polygon means the others are only in the way, and so do all of them while a
       // route is being worked on.
@@ -1339,7 +1455,7 @@ export default function RegionEditor(props: RegionEditorProps) {
         const el = labelRefs.get(r.name);
         if (!el) continue;
         const ring = r.rings[0] ?? [];
-        place(el, ring.length >= 3 && !(only && r.name !== only) ? middle(ring) : null);
+        place(el, ring.length >= 3 && !(only && r.name !== only) && onRegionFloor(r) ? middle(ring) : null);
       }
       // Routes label the mob that walks them, and hide with everything else while a region is picked.
       for (const route of routeGroups()) {
@@ -1356,7 +1472,7 @@ export default function RegionEditor(props: RegionEditorProps) {
       const readable = !only && !walker() && perPixel < 0.5;
       for (const s of labelledSpawns()) {
         const el = spawnLabelRefs.get(s.id);
-        if (el) place(el, readable ? [s.x, s.y, s.z] : null);
+        if (el) place(el, readable && spawnOnFloor(s) ? [s.x, s.y, s.z] : null);
       }
     };
 
@@ -1507,6 +1623,7 @@ export default function RegionEditor(props: RegionEditorProps) {
           setAssign(a => ({ ...a, [s.id]: activeName()! }));
         }}
         onMenu={(spawn, x, y) => setMenu({ kind: "spawn", spawn, x, y })}
+        visible={spawnOnFloor}
         onBuildRegion={buildFrom}
         canBuild={!!props.roam}
       />
@@ -1923,6 +2040,32 @@ export default function RegionEditor(props: RegionEditorProps) {
             </button>
           </div>
 
+          {/* Only somewhere with floors to choose between: an outdoor zone is one map sheet. */}
+          <Show when={floors().length > 1}>
+            <div class="flex flex-wrap items-center gap-1 mb-2 text-xs">
+              <span class="text-slate-400 mr-1">Floor</span>
+              <button
+                class="px-1.5 py-0.5 rounded"
+                classList={{ "bg-slate-600 text-white": floor() === null, "bg-slate-700 text-slate-400": floor() !== null }}
+                onClick={() => setFloor(null)}
+              >
+                All
+              </button>
+              <For each={floors()}>
+                {id => (
+                  <button
+                    class="px-1.5 py-0.5 rounded"
+                    classList={{ "bg-slate-600 text-white": floor() === id, "bg-slate-700 text-slate-400": floor() !== id }}
+                    title={`Show only map ${id}, hiding the floors above and below it`}
+                    onClick={() => setFloor(floor() === id ? null : id)}
+                  >
+                    {id}
+                  </button>
+                )}
+              </For>
+            </div>
+          </Show>
+
           <label class="flex items-center gap-2 mb-1 text-xs text-slate-400 cursor-pointer">
             <input type="checkbox" checked={hideAssigned()} onChange={e => setHideAssigned(e.currentTarget.checked)} />
             hide assigned spawns ({props.spawns.length - Object.keys(assign()).length} left)
@@ -1933,7 +2076,7 @@ export default function RegionEditor(props: RegionEditorProps) {
           </label>
 
           <div class="flex-1 overflow-y-auto">
-            <For each={regions()} fallback={<div class="text-slate-500 p-2">No regions yet.</div>}>
+            <For each={regions().filter(onRegionFloor)} fallback={<div class="text-slate-500 p-2">No regions yet.</div>}>
               {r => (
                 <div
                   ref={el => rowRefs.set(r.name, el)}
