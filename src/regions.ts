@@ -1,4 +1,6 @@
 import { load } from "js-yaml";
+import { difference, union } from "polyclip-ts";
+import type { Geom } from "polyclip-ts";
 
 // A vertex is [x, y, z]: earcut triangulates on x/z and carries y through, so the polygon
 // describes the floor surface itself. Stacked floors are told apart by whose floor is nearer.
@@ -692,6 +694,49 @@ export function regionsFromPoints(points: TrailPoint[], cell = 6, close = 2): Re
   return outlines.map(outline => ({
     rings: [smooth(outline), ...holes.filter(h => inRingXZ(outline, h[0][0], h[0][2])).map(smooth)],
   }));
+}
+
+/**
+ * Rewrites a region as shapes that are actually valid: an outline that crosses itself becomes the
+ * pieces it really describes, and the holes are cut out of it rather than merely listed after it.
+ * A bowtie is two triangles and not one region, so this returns a list.
+ *
+ * Dragging a vertex across an edge is all it takes to make a ring that crosses itself, and the
+ * review tab could only ever point at one. Clipping is the one piece of geometry here worth handing
+ * to a library: the sweep line handling every way edges can meet is not something to hand roll.
+ *
+ * Heights come back from the nearest original vertex, since the corners the clipper invents where
+ * edges cross are new points that no sample ever stood on.
+ */
+export function repairRegion(r: Region): Region[] {
+  const outline = r.rings[0] ?? [];
+  if (outline.length < 3) return [];
+  const flat = (ring: Ring): Geom => [ring.map(v => [v[0], v[2]] as [number, number])];
+
+  let shape = union(flat(outline));
+  const holes = r.rings.slice(1).filter(hole => hole.length >= 3);
+  if (holes.length) shape = difference(shape, ...holes.map(flat));
+
+  const known = r.rings.flat();
+  const heightAt = (x: number, z: number) => {
+    let best = known[0]?.[1] ?? 0;
+    let nearest = Infinity;
+    for (const v of known) {
+      const d = (v[0] - x) ** 2 + (v[2] - z) ** 2;
+      if (d < nearest) (nearest = d, best = v[1]);
+    }
+    return best;
+  };
+
+  return shape.map(polygon => ({
+    rings: polygon.map(ring => {
+      // The clipper repeats the first vertex to close a ring; ours are closed by being rings.
+      const open = ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]
+        ? ring.slice(0, -1)
+        : ring;
+      return open.map(([x, z]) => [x, heightAt(x, z), z] as Vertex);
+    }),
+  })).filter(out => (out.rings[0]?.length ?? 0) >= 3);
 }
 
 // ponytail: O(n^2) edge pairs, fine for the few dozen vertices a simplified region carries.

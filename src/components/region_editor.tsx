@@ -7,7 +7,7 @@ import { setupBaseScene } from "../graphics/scene";
 import { cleanupNode } from "../graphics/util";
 import { ColorKind, colorMesh, createZoneMesh, prepareMeshData } from "../graphics/ximesh";
 import type { RoamData } from "../pages/regions";
-import { containsXZ, regionAt, regionHue, regionsFromPoints, routeFromTrail, simplifyRing, validate } from "../regions";
+import { containsXZ, regionAt, regionHue, regionsFromPoints, repairRegion, routeFromTrail, selfIntersects, simplifyRing, validate } from "../regions";
 import type { Finding, Patrol, Region, RegionSet, Spawn, TrailPoint, Vertex } from "../regions";
 import type { ZoneData } from "./zone_model";
 
@@ -574,6 +574,52 @@ export default function RegionEditor(props: RegionEditorProps) {
       return next;
     });
     if (walker() === id) editWalker(null);
+  };
+
+  /**
+   * Rewrites a region as valid shapes. An outline that crosses itself describes two areas rather
+   * than one, so repairing it can split the region, and the mobs follow whichever piece they stand
+   * in. Their trails say where that is: a mob its region places has no coordinates of its own.
+   */
+  const repairShape = (name: string) => {
+    const entry = regions().find(r => r.name === name);
+    if (!entry) return;
+    const pieces = repairRegion(entry);
+    if (!pieces.length) return flash(`${name} has no shape left to repair`);
+    if (pieces.length === 1 && !entry.rings.some(ring => selfIntersects(ring))) {
+      return flash(`${name} is already a clean shape`);
+    }
+
+    const taken = new Set(regions().map(r => r.name));
+    const named = pieces.map((piece, i) => {
+      if (i === 0) return { name, rings: piece.rings };
+      let n = 2;
+      while (taken.has(`${name}_${n}`)) n++;
+      taken.add(`${name}_${n}`);
+      return { name: `${name}_${n}`, rings: piece.rings };
+    });
+
+    checkpoint(`repair ${name}`);
+    setRegions(rs => rs.flatMap(r => (r.name === name ? named : [r])));
+    if (named.length > 1) {
+      setAssign(a => {
+        const next = { ...a };
+        for (const s of props.spawns) {
+          if (next[s.id] !== name) continue;
+          const trail = trailPoints([s.id]);
+          const at = trail.length
+            ? { x: trail.reduce((t, p) => t + p.x, 0) / trail.length, z: trail.reduce((t, p) => t + p.z, 0) / trail.length }
+            : s.at
+            ? { x: s.x, z: s.z }
+            : null;
+          const piece = at && named.find(p => containsXZ(p, at.x, at.z));
+          if (piece) next[s.id] = piece.name;
+        }
+        return next;
+      });
+    }
+    setActiveName(name);
+    flash(named.length > 1 ? `${name} was ${named.length} shapes, split them` : `repaired ${name}`);
   };
 
   const addRegion = () => {
@@ -1495,6 +1541,9 @@ export default function RegionEditor(props: RegionEditorProps) {
                   >
                     Convert to patrol ({mobs(props.spawns.filter(s => assign()[s.id] === name()).length)})
                   </button>
+                  <button class="block w-full text-left px-3 py-1 hover:bg-slate-700" onClick={() => (repairShape(name()), setMenu(null))}>
+                    Repair the shape
+                  </button>
                   <button class="block w-full text-left px-3 py-1 hover:bg-slate-700" onClick={() => (centerOn(name()), setMenu(null))}>
                     Centre on it
                   </button>
@@ -1780,7 +1829,7 @@ export default function RegionEditor(props: RegionEditorProps) {
         </Show>
 
         <Show when={tab() === "review"}>
-          <ReviewList findings={findings()} onJump={jumpTo} />
+          <ReviewList findings={findings()} onJump={jumpTo} onRepair={repairShape} />
         </Show>
 
         <Show when={tab() === "regions"}>
@@ -1928,16 +1977,29 @@ export default function RegionEditor(props: RegionEditorProps) {
   );
 }
 
-function ReviewList(props: { findings: Finding[]; onJump: (f: Finding) => void; }) {
+function ReviewList(props: { findings: Finding[]; onJump: (f: Finding) => void; onRepair: (region: string) => void; }) {
   const color = { error: "text-red-400", warn: "text-amber-400", info: "text-slate-400" };
   return (
     <div class="flex-1 overflow-y-auto">
       <For each={props.findings} fallback={<div class="text-emerald-500 p-2">Nothing to flag.</div>}>
         {f => (
-          <div class="py-1 px-1 rounded hover:bg-slate-700 cursor-pointer text-xs" onClick={() => props.onJump(f)}>
-            <span class={color[f.level]}>●</span> <span class="text-slate-300">{f.text}</span>
-            <Show when={f.region && !f.spawnId}>
-              <span class="text-slate-500">in {f.region}</span>
+          <div class="flex items-center gap-1 py-1 px-1 rounded hover:bg-slate-700 cursor-pointer text-xs" onClick={() => props.onJump(f)}>
+            <span class={color[f.level]}>●</span>
+            <span class="flex-1 text-slate-300">
+              {f.text}
+              <Show when={f.region && !f.spawnId}>
+                <span class="text-slate-500">{" "}in {f.region}</span>
+              </Show>
+            </span>
+            {/* A crossing ring is the one finding here with a mechanical answer. */}
+            <Show when={f.region && /crosses itself/.test(f.text)}>
+              <button
+                class="px-1.5 rounded bg-slate-600 hover:bg-slate-500 text-slate-100"
+                title="Rebuild it as valid shapes"
+                onClick={e => (e.stopPropagation(), props.onRepair(f.region!))}
+              >
+                Repair
+              </button>
             </Show>
           </div>
         )}

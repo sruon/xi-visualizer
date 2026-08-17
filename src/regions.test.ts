@@ -12,6 +12,7 @@ import {
   regionArea,
   regionAt,
   regionsFromPoints,
+  repairRegion,
   routeFromTrail,
   selfIntersects,
   simplifyLine,
@@ -19,7 +20,7 @@ import {
   validate,
   zoneOfMobId,
 } from "./regions.ts";
-import type { RegionSet, Ring, TrailPoint, ZoneSide } from "./regions.ts";
+import type { Region, RegionSet, Ring, TrailPoint, ZoneSide } from "./regions.ts";
 
 // Two stacked floors sharing the same footprint, ground floor has a hole.
 const regions: RegionSet = {
@@ -224,6 +225,25 @@ assert.deepStrictEqual(
   [[0, 0, 0], [10, 0, 0]],
   "an open line keeps its ends",
 );
+
+// --- repairing a shape ---
+// A bowtie is two areas wearing one outline, which is what dragging a vertex across an edge makes.
+const bowtie: Region = { rings: [[[0, -50, 0], [10, -50, 10], [10, -50, 0], [0, -50, 10]]] };
+assert.ok(selfIntersects(bowtie.rings[0]), "the bowtie is the broken case this repairs");
+const untied = repairRegion(bowtie);
+assert.strictEqual(untied.length, 2, "two areas come back as two regions");
+assert.ok(!untied.some(r => selfIntersects(r.rings[0])), "and neither of them crosses itself");
+assert.ok(untied.every(r => r.rings[0].every(v => v[1] === -50)), "heights survive, including on the invented corner");
+
+// A shape that is already valid keeps its hole, and its area, rather than being flattened into one ring.
+const walled: Region = {
+  rings: [[[0, -5, 0], [20, -5, 0], [20, -5, 20], [0, -5, 20]], [[5, -5, 5], [15, -5, 5], [15, -5, 15], [5, -5, 15]]],
+};
+const repaired = repairRegion(walled);
+assert.strictEqual(repaired.length, 1, "one shape in, one shape out");
+assert.strictEqual(repaired[0].rings.length, 2, "the hole is still a hole");
+assert.ok(Math.abs(regionArea(repaired[0]) - regionArea(walled)) < 0.01, "and it still takes the same area out");
+assert.deepStrictEqual(repairRegion({ rings: [[[0, 0, 0], [1, 0, 1]]] }), [], "a line is not a shape");
 
 // Visvalingam ranks the tip of an out-and-back as the most disposable point on the line, because the
 // triangle there is degenerate. Dropping it collapses the excursion, which is how a patrol traced
