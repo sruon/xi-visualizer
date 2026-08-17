@@ -1042,6 +1042,8 @@ export default function RegionEditor(props: RegionEditorProps) {
 
     const onContextMenu = (ev: MouseEvent) => {
       ev.preventDefault();
+      // The menu opens where the cursor is, which is where the tooltip already is.
+      setHover(null);
       aim(ev);
       const handle = pickHandle();
       if (handle && !handle.mid) {
@@ -1124,7 +1126,9 @@ export default function RegionEditor(props: RegionEditorProps) {
         }
         return;
       }
-      const spawn = pickSpawn();
+      // And it stays gone until the menu does: nudging the mouse on the way to it would otherwise
+      // bring the tooltip straight back on top of it.
+      const spawn = menu() ? null : pickSpawn();
       setHover(spawn ? { spawn, x: ev.clientX, y: ev.clientY } : null);
     };
 
