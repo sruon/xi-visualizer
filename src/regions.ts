@@ -308,6 +308,105 @@ export interface TrailPoint {
   z: number;
 }
 
+/**
+ * Visvalingam for an open line: the ends are fixed, only the middle thins out. Stops once every
+ * remaining point matters more than `minArea`, or earlier if `max` points is already few enough.
+ */
+export function simplifyLine(points: Vertex[], minArea = 25, max = Infinity): Vertex[] {
+  const out = points.slice();
+  while (out.length > 2) {
+    let worst = 1;
+    let worstArea = Infinity;
+    for (let i = 1; i < out.length - 1; i++) {
+      const [ax, , az] = out[i - 1];
+      const [bx, , bz] = out[i];
+      const [cx, , cz] = out[i + 1];
+      const area = Math.abs((bx - ax) * (cz - az) - (bz - az) * (cx - ax)) / 2;
+      if (area < worstArea) {
+        worstArea = area;
+        worst = i;
+      }
+    }
+    if (out.length <= max && worstArea > minArea) break;
+    out.splice(worst, 1);
+  }
+  return out;
+}
+
+/**
+ * Traces a patrol route out of a mob's recorded trail. The samples are in capture order, so a
+ * patroller walks its circuit over and over: take the first lap, meaning from the start until it
+ * has gone well away and come back, and thin that down to a handful of legs.
+ *
+ * A mob that wanders instead of patrolling will produce a meaningless lap. That is visible on the
+ * map immediately, which is the point of tracing it rather than guessing.
+ */
+export function routeFromTrail(points: TrailPoint[], close = 8): Patrol | null {
+  if (points.length < 8) return null;
+  const flat = (a: TrailPoint, b: TrailPoint) => (a.x - b.x) ** 2 + (a.z - b.z) ** 2;
+  const extent = (run: TrailPoint[]) => {
+    const xs = run.map(p => p.x);
+    const zs = run.map(p => p.z);
+    return Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...zs) - Math.min(...zs));
+  };
+
+  // Every circuit in the trail, not just the first: a mob that pokes out and straight back near
+  // the start would otherwise pass for its whole route. The widest one is the real beat.
+  const laps: TrailPoint[][] = [];
+  let from = 0;
+  let away = false;
+  for (let i = 1; i < points.length; i++) {
+    if (flat(points[i - 1], points[i]) > 50 * 50) {
+      from = i; // gap in the capture, start looking again on the far side of it
+      away = false;
+      continue;
+    }
+    const d2 = flat(points[i], points[from]);
+    if (!away) away = d2 > (close * 3) ** 2;
+    else if (d2 < close * close) {
+      laps.push(points.slice(from, i));
+      from = i;
+      away = false;
+    }
+  }
+
+  // A patroller repeats its circuit, so demand more than one lap of real size. A wanderer drifts
+  // back past its start now and then too, and inventing a route out of that is worse than none.
+  const real = laps.filter(lap => lap.length >= 4 && extent(lap) >= close * 4);
+  if (real.length < 2) return null;
+
+  const best = real.sort((a, b) => extent(b) - extent(a))[0];
+  const legs = simplifyLine(best.map(p => [p.x, p.y, p.z] as Vertex), 25, 12);
+  if (legs.length < 2) return null;
+
+  // The test that separates a patroller from a wanderer: does this one lap explain the rest of the
+  // trail? A mob walking a beat stays on it, so nearly every sample sits near the route. A wanderer
+  // crosses its own start often enough to fake a lap, but its samples are spread all over.
+  let on = 0;
+  let total = 0;
+  const stride = Math.max(1, Math.floor(points.length / 400));
+  for (let i = 0; i < points.length; i += stride) {
+    total++;
+    if (distanceToRoute(legs, points[i]) <= close * 1.5) on++;
+  }
+  return on / total >= 0.75 ? { legs } : null; // a lap returns to its start, so it loops
+}
+
+/** Shortest distance in x/z from a point to a closed route. */
+function distanceToRoute(legs: Vertex[], p: TrailPoint): number {
+  let best = Infinity;
+  for (let i = 0; i < legs.length; i++) {
+    const [ax, , az] = legs[i];
+    const [bx, , bz] = legs[(i + 1) % legs.length];
+    const dx = bx - ax;
+    const dz = bz - az;
+    const len2 = dx * dx + dz * dz;
+    const t = len2 ? Math.max(0, Math.min(1, ((p.x - ax) * dx + (p.z - az) * dz) / len2)) : 0;
+    best = Math.min(best, Math.hypot(p.x - (ax + t * dx), p.z - (az + t * dz)));
+  }
+  return best;
+}
+
 // Positive for an outline, negative for a hole, given the edge order emitted below.
 const signedArea = (ring: Ring) => {
   let sum = 0;

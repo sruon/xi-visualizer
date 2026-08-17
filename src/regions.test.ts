@@ -12,7 +12,9 @@ import {
   regionArea,
   regionAt,
   regionsFromPoints,
+  routeFromTrail,
   selfIntersects,
+  simplifyLine,
   simplifyRing,
   validate,
   zoneOfMobId,
@@ -161,6 +163,42 @@ assert.deepStrictEqual(spawns[0], {
 assert.deepStrictEqual(spawns[1].at, [1, 2, 3]);
 assert.strictEqual(spawns[1].region, undefined);
 assert.strictEqual(zoneOfMobId("17186822"), 100); // West Ronfaure
+
+// --- tracing a route out of a trail ---
+const lapPoints: TrailPoint[] = [];
+const corners = [[0, 0], [60, 0], [60, 60], [0, 60]];
+for (let round = 0; round < 3; round++) {
+  for (let c = 0; c < 4; c++) {
+    const [ax, az] = corners[c];
+    const [bx, bz] = corners[(c + 1) % 4];
+    for (let t = 0; t < 1; t += 0.1) lapPoints.push({ x: ax + (bx - ax) * t, y: -50, z: az + (bz - az) * t });
+  }
+}
+const traced = routeFromTrail(lapPoints)!;
+assert.ok(traced.legs.length >= 4 && traced.legs.length <= 6, `one lap, a few legs, got ${traced.legs.length}`);
+assert.strictEqual(traced.loop, undefined, "it came back to the start, so it is a closed circuit");
+assert.ok(traced.legs.every(v => Math.abs(v[1] + 50) < 0.01), "leg heights come from the samples");
+for (const [cx, cz] of corners) {
+  assert.ok(traced.legs.some(v => Math.hypot(v[0] - cx, v[2] - cz) < 12), `kept the corner near ${cx},${cz}`);
+}
+
+// one pass down a corridor and back is not evidence of a patrol, so nothing is traced
+const outAndBack: TrailPoint[] = [];
+for (let x = 0; x <= 80; x += 4) outAndBack.push({ x, y: -30, z: 0 });
+for (let x = 80; x >= 0; x -= 4) outAndBack.push({ x, y: -30, z: 0 });
+assert.strictEqual(routeFromTrail(outAndBack), null, "a single lap is not a pattern");
+assert.strictEqual(routeFromTrail([{ x: 0, y: 0, z: 0 }]), null, "not enough samples to trace anything");
+
+// jitter around the spawn point is not a route either, however many times it crosses its start
+const jitter: TrailPoint[] = [];
+for (let i = 0; i < 200; i++) jitter.push({ x: Math.sin(i) * 3, y: -10, z: Math.cos(i * 1.3) * 3 });
+assert.strictEqual(routeFromTrail(jitter), null, "never went anywhere, so there is no beat to trace");
+
+assert.deepStrictEqual(
+  simplifyLine([[0, 0, 0], [5, 0, 0.1], [10, 0, 0]], 25),
+  [[0, 0, 0], [10, 0, 0]],
+  "an open line keeps its ends",
+);
 
 // --- patrol routes ---
 const patrolled = patchMobsYaml(mobsYaml, {}, positions, {

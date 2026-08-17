@@ -7,7 +7,7 @@ import { setupBaseScene } from "../graphics/scene";
 import { cleanupNode } from "../graphics/util";
 import { ColorKind, colorMesh, createZoneMesh, prepareMeshData } from "../graphics/ximesh";
 import type { RoamData } from "../pages/regions";
-import { containsXZ, regionAt, regionHue, regionsFromPoints, simplifyRing, validate } from "../regions";
+import { containsXZ, regionAt, regionHue, regionsFromPoints, routeFromTrail, simplifyRing, validate } from "../regions";
 import type { Finding, Patrol, Region, RegionSet, Spawn, TrailPoint, Vertex } from "../regions";
 import type { ZoneData } from "./zone_model";
 
@@ -192,6 +192,7 @@ export default function RegionEditor(props: RegionEditorProps) {
     props.paths ?? Object.fromEntries(props.spawns.filter(s => s.path).map(s => [s.id, { legs: s.path!, loop: s.loop }])),
   );
   const [walker, setWalker] = createSignal<string | null>(null); // spawn whose route is being edited
+  const [mirror, setMirror] = createSignal<string[]>([]); // mobs walking the same route as the walker
   const [filter, setFilter] = createSignal("");
   const [hideAssigned, setHideAssigned] = createSignal(true);
   const [tab, setTab] = createSignal<"regions" | "paths" | "unassigned" | "review">("regions");
@@ -199,9 +200,12 @@ export default function RegionEditor(props: RegionEditorProps) {
   const [hover, setHover] = createSignal<{ spawn: Spawn; x: number; y: number; } | null>(null);
   const [cursor, setCursor] = createSignal<THREE.Vector3 | undefined>();
   const [toast, setToast] = createSignal<string | undefined>();
-  const [showKeys, setShowKeys] = createSignal(true);
+  const [showKeys, setShowKeys] = createSignal(false);
   const [rowFocus, setRowFocus] = createSignal<string | null>(null);
   const [pinnedId, setPinnedId] = createSignal<string | null>(null);
+  const [menu, setMenu] = createSignal<
+    { x: number; y: number; } & ({ kind: "region"; name: string; } | { kind: "spawn"; spawn: Spawn; }) | null
+  >(null);
 
   // Hovering a dot on the map or a row in the member list picks out that mob's roam trail; clicking
   // the row pins it, so the trail stays put while you reshape the polygon around it.
@@ -211,11 +215,15 @@ export default function RegionEditor(props: RegionEditorProps) {
   const xyz = (p: THREE.Vector3) => [p.x, p.y, p.z].map(n => n.toFixed(3)).join(" ");
 
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
-  const copy = (text: string) => {
-    navigator.clipboard.writeText(text);
+  /** A note in the corner of the map that clears itself. */
+  const flash = (text: string) => {
     setToast(text);
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => setToast(undefined), 1600);
+    toastTimer = setTimeout(() => setToast(undefined), 2400);
+  };
+  const copy = (text: string) => {
+    navigator.clipboard.writeText(text);
+    flash(`copied ${text}`);
   };
   onCleanup(() => clearTimeout(toastTimer));
 
@@ -374,23 +382,87 @@ export default function RegionEditor(props: RegionEditorProps) {
       if (!current) return all;
       const legs = current.legs.map(v => [...v] as Vertex);
       fn(legs);
-      return { ...all, [id]: { ...current, legs } };
+      const next = { ...all, [id]: { ...current, legs } };
+      for (const other of mirror()) if (next[other]) next[other] = { ...next[other], legs: legs.map(v => [...v] as Vertex) };
+      return next;
     });
   };
 
-  /** Starts a fresh route for a mob, dropping whatever placed it before. */
+  /**
+   * Gives a mob a route, dropping whatever placed it before. Traced from its recorded trail when
+   * there is one, since a patroller walks the same circuit over and over; otherwise you draw it.
+   */
   const startPath = (spawn: Spawn) => {
+    const traced = routeFromTrail(trailPoints([spawn.id]));
     checkpoint();
     setAssign(a => {
       const next = { ...a };
       delete next[spawn.id];
       return next;
     });
-    setPaths(all => ({ ...all, [spawn.id]: { legs: all[spawn.id]?.legs ?? [] } }));
+    setPaths(all => ({ ...all, [spawn.id]: traced ?? { legs: all[spawn.id]?.legs ?? [] } }));
     setActiveName(null);
-    setWalker(spawn.id);
-    setMode("draw");
+    editWalker(spawn.id);
+    setMode(traced ? "select" : "draw");
     setTab("paths");
+    flash(traced ? `traced ${traced.legs.length} legs from the roam trail` : "no trail to trace, click the legs out");
+  };
+
+  /**
+   * Turns a region into a patrol its mobs all walk. The route is traced from whichever member has
+   * the richest trail, since tracing the members' trails end to end would just join up unrelated
+   * mobs, and the region itself goes away because nothing is left in it.
+   */
+  const convertToPatrol = (name: string) => {
+    const members = props.spawns.filter(s => assign()[s.id] === name);
+    if (!members.length) return flash(`${name} has no mobs to convert`);
+    const richest = members
+      .map(s => ({ s, samples: props.roam?.ranges[s.id]?.[1] ?? 0 }))
+      .sort((a, b) => b.samples - a.samples)[0];
+    const traced = richest.samples ? routeFromTrail(trailPoints([richest.s.id])) : null;
+    const legs = traced?.legs ?? [];
+
+    checkpoint();
+    setPaths(all => {
+      const next = { ...all };
+      for (const m of members) next[m.id] = { legs: legs.map(v => [...v] as Vertex) };
+      return next;
+    });
+    setAssign(a => {
+      const next = { ...a };
+      for (const m of members) delete next[m.id];
+      return next;
+    });
+    setRegions(rs => rs.filter(r => r.name !== name));
+    setActiveName(null);
+    setWalker(richest.s.id);
+    setMirror(members.map(m => m.id).filter(id => id !== richest.s.id));
+    setMode(traced ? "select" : "draw");
+    setTab("paths");
+    flash(
+      traced
+        ? `${name} became a ${traced.legs.length} leg route for ${members.length} mobs`
+        : `no repeating route in ${name}'s trails, click the legs out for all ${members.length}`,
+    );
+  };
+
+  /** Selecting another mob's route ends any sharing the previous one had. */
+  const editWalker = (id: string | null) => {
+    if (id !== walker()) setMirror([]);
+    setWalker(id);
+  };
+
+  /** Re-traces an existing route from the mob's trail, throwing away hand edits. */
+  const retrace = (id: string) => {
+    const traced = routeFromTrail(trailPoints([id]));
+    if (!traced) return flash("no roam trail for that mob");
+    checkpoint();
+    editWalker(id);
+    setPaths(all => {
+      const next = { ...all, [id]: traced };
+      for (const other of mirror()) if (next[other]) next[other] = { legs: traced.legs.map(v => [...v] as Vertex) };
+      return next;
+    });
   };
 
   const dropPath = (id: string) => {
@@ -400,7 +472,7 @@ export default function RegionEditor(props: RegionEditorProps) {
       delete next[id];
       return next;
     });
-    if (walker() === id) setWalker(null);
+    if (walker() === id) editWalker(null);
   };
 
   const addRegion = () => {
@@ -486,16 +558,16 @@ export default function RegionEditor(props: RegionEditorProps) {
     const r = active();
     if (!r) return;
     const built = regionsFromPoints(trailPoints(Object.keys(assign()).filter(id => assign()[id] === r.name)));
-    if (!built.length) return setToast("no roam trails for that region's mobs");
+    if (!built.length) return flash("no roam trails for that region's mobs");
     checkpoint();
     setRegions(rs => rs.map(x => (x.name === r.name ? { name: r.name, rings: built[0].rings } : x)));
-    if (built.length > 1) setToast(`those trails form ${built.length} clusters, fitted the biggest`);
+    if (built.length > 1) flash(`those trails form ${built.length} clusters, fitted the biggest`);
   };
 
   /** Builds a new region around a set of mobs' trails and assigns them (plus anything inside it). */
   const buildFrom = (spawns: Spawn[]) => {
     const built = regionsFromPoints(trailPoints(spawns.map(s => s.id)));
-    if (!built.length) return setToast("no roam trails for those mobs");
+    if (!built.length) return flash("no roam trails for those mobs");
 
     // Named after whichever template dominates the selection, since that is what it will hold.
     const common = spawns.map(s => s.name).sort((a, b) => spawns.filter(s => s.name === b).length - spawns.filter(s => s.name === a).length)[0] ?? "region";
@@ -525,7 +597,7 @@ export default function RegionEditor(props: RegionEditorProps) {
       return next;
     });
     setActiveName(named[0].name);
-    if (named.length > 1) setToast(`built ${named.length} regions, one per cluster`);
+    if (named.length > 1) flash(`built ${named.length} regions, one per cluster`);
   };
 
   const unassign = (id: string) => {
@@ -682,8 +754,10 @@ export default function RegionEditor(props: RegionEditorProps) {
 
     for (const r of list) {
       const isActive = r.name === activeRegion?.name;
-      // Editing one polygon means the others are only in the way.
+      // Editing one polygon means the others are only in the way, and so do all of them while a
+      // route is being worked on.
       if (activeRegion && !isActive) continue;
+      if (walker()) continue;
       const color = colorOf(r.name);
 
       // Fill follows the floor: triangulate on x/z (as earcut does) and keep each vertex's own y.
@@ -735,13 +809,19 @@ export default function RegionEditor(props: RegionEditorProps) {
       const editing = id === walker();
       const points = patrol.legs.map(([x, y, z]) => new THREE.Vector3(x, y, z));
       if (patrol.loop !== false) points.push(points[0].clone());
-      const geo = new THREE.BufferGeometry().setFromPoints(points);
-      const line = new THREE.Line(
-        geo,
-        new THREE.LineBasicMaterial({ color: PATH_COLOR, depthTest: false, transparent: true, opacity: editing ? 1 : 0.7 }),
-      );
-      line.renderOrder = 2;
-      overlay.add(line);
+      // Drawn twice, dark and wide under bright and narrow, the way a road is cased on a map.
+      // A single violet line disappears the moment it crosses a region of a similar hue.
+      const flat = points.flatMap(v => [v.x, v.y, v.z]);
+      for (const [color, width, order] of [[0x0b0b12, 7, 2], [PATH_COLOR, 3.5, 3]] as const) {
+        const geo = new LineGeometry();
+        geo.setPositions(flat);
+        const mat = new LineMaterial({ color, linewidth: width, depthTest: false, transparent: true, opacity: editing ? 1 : 0.75 });
+        mat.resolution.set(canvasElement.clientWidth, canvasElement.clientHeight);
+        activeLineMaterials.push(mat);
+        const line = new Line2(geo, mat);
+        line.renderOrder = order;
+        overlay.add(line);
+      }
 
       const dots = new THREE.BufferGeometry().setFromPoints(patrol.legs.map(([x, y, z]) => new THREE.Vector3(x, y, z)));
       const marks = new THREE.Points(
@@ -898,9 +978,16 @@ export default function RegionEditor(props: RegionEditorProps) {
       ev.preventDefault();
       aim(ev);
       const handle = pickHandle();
-      if (!handle || handle.mid) return; // midpoints are not stored, so there is nothing to remove
-      checkpoint();
-      removeVertex(handle);
+      if (handle && !handle.mid) {
+        checkpoint();
+        return removeVertex(handle); // midpoints are not stored, so there is nothing to remove
+      }
+
+      const spawn = pickSpawn();
+      if (spawn) return setMenu({ kind: "spawn", spawn, x: ev.clientX, y: ev.clientY });
+      const p = pickZonePoint();
+      const name = p && regionAt(asSet(regions()), p.x, p.z, p.y);
+      setMenu(name ? { kind: "region", name, x: ev.clientX, y: ev.clientY } : null);
     };
 
     const onMouseDown = (ev: MouseEvent) => {
@@ -1002,6 +1089,7 @@ export default function RegionEditor(props: RegionEditorProps) {
     };
 
     const onClick = (ev: MouseEvent) => {
+      setMenu(null);
       if (!downAt || Math.hypot(ev.clientX - downAt.x, ev.clientY - downAt.y) > 3) return;
       aim(ev);
 
@@ -1165,8 +1253,9 @@ export default function RegionEditor(props: RegionEditorProps) {
                   // while drawing, the map owns every click: a label here would silently eat one
                   classList={{ "pointer-events-auto": mode() !== "draw", "pointer-events-none": mode() === "draw" }}
                   style={{ color: cssOf(r.name) }}
-                  title={`Select ${r.name}`}
+                  title={`Select ${r.name}, right-click for more`}
                   onClick={() => setActiveName(r.name)}
+                  onContextMenu={e => (e.preventDefault(), setMenu({ kind: "region", name: r.name, x: e.clientX, y: e.clientY }))}
                 >
                   {r.name} <span class="text-slate-400 font-normal">{spawnCounts()[r.name] ?? 0}</span>
                 </div>
@@ -1227,9 +1316,63 @@ export default function RegionEditor(props: RegionEditorProps) {
             {xyz(cursor()!)}
           </div>
         </Show>
+        <Show when={menu()}>
+          <div
+            class="fixed z-50 min-w-44 bg-slate-900 border border-slate-600 rounded shadow-lg py-1 text-xs"
+            style={{ left: `${menu()!.x}px`, top: `${menu()!.y}px` }}
+          >
+            <Show when={menu()!.kind === "region" ? (menu() as any).name : null}>
+              {name => (
+                <>
+                  <div class="px-3 py-1 text-slate-500">{name()}</div>
+                  <button
+                    class="block w-full text-left px-3 py-1 hover:bg-slate-700"
+                    onClick={() => (convertToPatrol(name()), setMenu(null))}
+                  >
+                    Convert to patrol ({props.spawns.filter(s => assign()[s.id] === name()).length} mobs)
+                  </button>
+                  <button class="block w-full text-left px-3 py-1 hover:bg-slate-700" onClick={() => (centerOn(name()), setMenu(null))}>
+                    Centre on it
+                  </button>
+                  <button class="block w-full text-left px-3 py-1 hover:bg-slate-700 text-red-400" onClick={() => (deleteRegion(name()), setMenu(null))}>
+                    Delete region
+                  </button>
+                </>
+              )}
+            </Show>
+            <Show when={menu()!.kind === "spawn" ? (menu() as any).spawn as Spawn : null}>
+              {spawn => (
+                <>
+                  <div class="px-3 py-1 text-slate-500">{spawn().name} {spawn().id}</div>
+                  <button
+                    class="block w-full text-left px-3 py-1 hover:bg-slate-700"
+                    onClick={() => (startPath(spawn()), setMenu(null))}
+                  >
+                    Trace a patrol route
+                  </button>
+                  <Show when={activeName()}>
+                    <button
+                      class="block w-full text-left px-3 py-1 hover:bg-slate-700"
+                      onClick={() => {
+                        checkpoint();
+                        setAssign(a => ({ ...a, [spawn().id]: activeName()! }));
+                        setMenu(null);
+                      }}
+                    >
+                      Assign to {activeName()}
+                    </button>
+                  </Show>
+                  <button class="block w-full text-left px-3 py-1 hover:bg-slate-700" onClick={() => (flyTo(spawn().x, spawn().y, spawn().z), setMenu(null))}>
+                    Centre on it
+                  </button>
+                </>
+              )}
+            </Show>
+          </div>
+        </Show>
         <Show when={toast()}>
           <div class="absolute bottom-2 left-1/2 -translate-x-1/2 bg-emerald-600 text-white text-xs font-mono rounded px-3 py-1 pointer-events-none">
-            copied {toast()}
+            {toast()}
           </div>
         </Show>
         <Show when={hover()}>
@@ -1287,7 +1430,9 @@ export default function RegionEditor(props: RegionEditorProps) {
         <Show when={tab() === "paths"}>
           <div class="text-xs text-slate-400 mb-2">
             <Show when={walker()} fallback={<>a route replaces a mob's spawn point, so it walks its legs instead</>}>
-              editing <b style={{ color: "#a78bfa" }}>{props.spawns.find(s => s.id === walker())?.name}</b>: click to add legs, Enter when done
+              editing <b style={{ color: "#a78bfa" }}>{props.spawns.find(s => s.id === walker())?.name}</b>
+              {mirror().length ? ` and ${mirror().length} others` : ""}
+              {mode() === "draw" ? ": click to add legs, Enter when done" : ": drag the waypoints, or re-trace with ⟳"}
             </Show>
           </div>
           <div class="flex-1 overflow-y-auto">
@@ -1298,7 +1443,7 @@ export default function RegionEditor(props: RegionEditorProps) {
                   <div
                     class="flex items-center gap-2 py-0.5 px-1 rounded cursor-pointer hover:bg-slate-700 text-xs"
                     classList={{ "bg-slate-700": id === walker() }}
-                    onClick={() => (setWalker(id), setActiveName(null))}
+                    onClick={() => (editWalker(id), setActiveName(null))}
                   >
                     <span class="flex-1 truncate" title={spawn()?.name}>{spawn()?.name ?? "unknown"}</span>
                     <span class="text-slate-500">{id}</span>
@@ -1316,8 +1461,15 @@ export default function RegionEditor(props: RegionEditorProps) {
                     </button>
                     <button
                       class="px-1 text-slate-400 hover:text-white"
+                      title="Re-trace from the mob's roam trail"
+                      onClick={e => (e.stopPropagation(), retrace(id))}
+                    >
+                      ⟳
+                    </button>
+                    <button
+                      class="px-1 text-slate-400 hover:text-white"
                       title="Add more legs"
-                      onClick={e => (e.stopPropagation(), setWalker(id), setActiveName(null), setMode("draw"))}
+                      onClick={e => (e.stopPropagation(), editWalker(id), setActiveName(null), setMode("draw"))}
                     >
                       ✎
                     </button>
