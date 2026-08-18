@@ -5,6 +5,7 @@ import YamlView from "../components/yaml_view";
 import type { ZoneData } from "../components/zone_model";
 import zones from "../data/zones";
 import { propose } from "../github";
+import { canSignIn, type DeviceCode, requestCode, signOut, storedToken, waitForToken } from "../github_auth";
 import { emitRegionsBlock, parseMobsYaml, parseZoneYaml, patchMobsYaml, patchZoneYaml, zoneOfMobId } from "../regions";
 import type { Patrol, RegionSet, Spawn } from "../regions";
 import { decompress, fetchProgress } from "../util";
@@ -86,7 +87,31 @@ export default function RegionsPage() {
   const navigate = useNavigate();
   const repo = () => query.repo || DEFAULT_REPO;
   const ref = () => query.ref || "HEAD";
+  // A signed-in token wins over a pasted one, but both end up in the same place: a bearer token
+  // for api.github.com, which is CORS-enabled and needs no help from anybody.
+  const [account, setAccount] = createSignal(storedToken());
+  const [device, setDevice] = createSignal<DeviceCode | undefined>();
+  const [signingIn, setSigningIn] = createSignal(false);
   const [token, setToken] = createSignal(localStorage.getItem(TOKEN_KEY) ?? "");
+  const authToken = () => account()?.token || token();
+
+  const startSignIn = async () => {
+    setError(undefined);
+    setSigningIn(true);
+    try {
+      const code = await requestCode();
+      setDevice(code);
+      window.open(code.verificationUri, "_blank", "noopener");
+      setAccount(await waitForToken(code));
+      setDevice(undefined);
+      setAskToken(false);
+    } catch (e) {
+      setError(`${e}`);
+      setDevice(undefined);
+    } finally {
+      setSigningIn(false);
+    }
+  };
   const [askToken, setAskToken] = createSignal(false);
   const [pr, setPr] = createSignal<{ url: string; note: string; } | undefined>();
   const [local, setLocal] = createSignal(false);
@@ -307,13 +332,13 @@ export default function RegionsPage() {
     const f = files();
     const next = patched();
     if (!f || !next) return;
-    if (!token()) return setAskToken(true);
+    if (!authToken()) return setAskToken(true);
 
     setStatus(`Pushing ${f.folder}…`);
     setPr(undefined);
     try {
       const result = await propose({
-        token: token(),
+        token: authToken(),
         repo: repo(),
         branch: `regions/${f.folder}`,
         base: ref() === "HEAD" ? undefined : ref(),
@@ -325,7 +350,12 @@ export default function RegionsPage() {
           { path: `${ZONES}/${f.folder}/mobs.yaml`, content: next.mobsYaml },
         ],
       });
-      setPr({ url: result.url, note: result.unchanged ? "no changes to push" : result.updated ? "updated" : "opened" });
+      // Where it went matters: without push access the commits land on the user's own fork.
+      const via = result.wrote === repo() ? "" : ` via ${result.wrote}`;
+      setPr({
+        url: result.url,
+        note: (result.unchanged ? "no changes to push" : result.updated ? "updated" : "opened") + via,
+      });
       setStatus(undefined);
       if (!result.unchanged) {
         // It is on a branch now, so this is as safe as saving to disk.
@@ -455,10 +485,53 @@ export default function RegionsPage() {
         <Show when={error()}>
           <span class="text-red-500">{error()}</span>
         </Show>
+        <Show when={account()}>
+          {who => (
+            <span class="text-slate-400">
+              {who().login}
+              <button
+                class="ml-2 px-1.5 py-0.5 bg-slate-700 hover:bg-slate-600 rounded text-xs"
+                onClick={() => (signOut(), setAccount(null))}
+              >
+                sign out
+              </button>
+            </span>
+          )}
+        </Show>
       </div>
 
       <Show when={askToken()}>
         <div class="mt-3 flex flex-wrap items-center gap-2 text-sm bg-slate-800 border border-slate-600 rounded px-3 py-2">
+          <Show when={canSignIn()}>
+            <Show
+              when={device()}
+              fallback={
+                <>
+                  <button
+                    class="px-2 py-1 bg-emerald-600 hover:bg-emerald-500 rounded disabled:opacity-50"
+                    disabled={signingIn()}
+                    onClick={startSignIn}
+                  >
+                    Sign in with GitHub
+                  </button>
+                  <span class="text-slate-400">
+                    Opens github.com to confirm a code. No push access needed: without it the change goes to a fork and the pull request comes back here.
+                  </span>
+                </>
+              }
+            >
+              {code => (
+                <>
+                  <span>
+                    Type <b class="font-mono text-lg tracking-widest text-emerald-400">{code().userCode}</b> at{" "}
+                    <a class="underline" href={code().verificationUri} target="_blank" rel="noreferrer">{code().verificationUri}</a>
+                  </span>
+                  <span class="text-slate-400">Waiting for you to confirm…</span>
+                </>
+              )}
+            </Show>
+            <span class="text-slate-600">or</span>
+          </Show>
           <span>
             GitHub token: a fine-grained one limited to <b>{repo()}</b> with Contents and Pull requests set to read/write.
           </span>

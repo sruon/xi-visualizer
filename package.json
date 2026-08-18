@@ -9,7 +9,7 @@
     "build": "vite build",
     "serve": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "node src/regions.test.ts && node src/regions_files.test.ts",
+    "test": "node src/regions.test.ts && node src/regions_files.test.ts && node src/github_auth.test.ts",
     "smoke": "node scripts/smoke.mjs"
   },
   "license": "MIT",
