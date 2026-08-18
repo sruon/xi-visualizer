@@ -1,6 +1,7 @@
 import { useNavigate, useParams, useSearchParams } from "@solidjs/router";
-import { createEffect, createResource, createSignal, For, Match, onCleanup, onMount, Show, Switch, untrack } from "solid-js";
+import { createEffect, createMemo, createResource, createSignal, For, Match, onCleanup, onMount, Show, Switch, untrack } from "solid-js";
 import RegionEditor from "../components/region_editor";
+import YamlView from "../components/yaml_view";
 import type { ZoneData } from "../components/zone_model";
 import zones from "../data/zones";
 import { propose } from "../github";
@@ -94,6 +95,10 @@ export default function RegionsPage() {
   const [error, setError] = createSignal<string | undefined>();
   const [status, setStatus] = createSignal<string | undefined>();
   const [dirty, setDirty] = createSignal(false);
+  const [showYaml, setShowYaml] = createSignal(false);
+  // Bumped on every edit so the yaml panel can follow along. Patching is a few milliseconds, and
+  // this only runs while the panel is open.
+  const [edits, setEdits] = createSignal(0);
   const [draft, setDraft] = createSignal<Draft | undefined>();
   const [restored, setRestored] = createSignal<Draft | undefined>();
   // Fingerprint of the files currently open, so a draft belongs to the version it was taken from.
@@ -255,6 +260,13 @@ export default function RegionsPage() {
     setDraft(undefined);
   };
 
+  const yamlFiles = createMemo(() => {
+    if (!showYaml()) return undefined;
+    edits();
+    const out = patched();
+    return out && [{ name: "zone.yaml", text: out.zoneYaml }, { name: "mobs.yaml", text: out.mobsYaml }];
+  });
+
   const patched = () => {
     const f = files();
     if (!f || !pending) return undefined;
@@ -414,6 +426,14 @@ export default function RegionsPage() {
             {local() ? (dirty() ? "Save" : "Saved") : dirty() ? "Propose PR" : "Pushed"}
           </button>
           <button class="px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded" onClick={copyPatched}>Copy YAML</button>
+          <button
+            class="px-2 py-1 rounded"
+            classList={{ "bg-slate-600 text-white": showYaml(), "bg-slate-700 hover:bg-slate-600": !showYaml() }}
+            title="Show the files as they would be written"
+            onClick={() => setShowYaml(v => !v)}
+          >
+            {showYaml() ? "Hide YAML" : "View YAML"}
+          </button>
         </Show>
         <Show when={files()}>
           <label class="flex items-center gap-2 text-slate-400 cursor-pointer" title="Overlay the recorded roam trails for this zone">
@@ -493,29 +513,39 @@ export default function RegionsPage() {
           </Match>
           <Match when={zoneMesh() && spawns()}>
             <div class="mt-4">
-              <Show when={editorKey()} keyed>
-                {_key => (
-                  <RegionEditor
-                    zoneData={zoneMesh()!}
-                    spawns={spawns()!}
-                    regions={restored()?.regions ?? regions()}
-                    assign={restored()?.assign}
-                    paths={restored()?.paths}
-                    roam={showRoam() && !roam.loading && !roam.error ? roam() : undefined}
-                    onChange={(r, a, p) => {
-                      pending = { regions: r, assign: a, paths: p };
-                      // Compared against the last saved state, not by re-patching: this runs on
-                      // every mouse move during a vertex drag and mobs.yaml is thousands of lines.
-                      const base = baseline();
-                      const sameAssign = Object.keys(a).length === Object.keys(base.assign).length
-                        && Object.entries(a).every(([id, n]) => base.assign[id] === n);
-                      const isDirty = !sameAssign || emitRegionsBlock(r) !== base.block || JSON.stringify(p) !== base.paths;
-                      setDirty(isDirty);
-                      scheduleDraft(isDirty);
-                    }}
-                  />
-                )}
+              <Show when={yamlFiles()}>
+                {files => <YamlView files={files()} onClose={() => setShowYaml(false)} />}
               </Show>
+              {
+                /* Hidden rather than unmounted: taking the editor down would drop the webgl context
+                  and reload the zone on the way back. */
+              }
+              <div style={{ display: showYaml() ? "none" : "block" }}>
+                <Show when={editorKey()} keyed>
+                  {_key => (
+                    <RegionEditor
+                      zoneData={zoneMesh()!}
+                      spawns={spawns()!}
+                      regions={restored()?.regions ?? regions()}
+                      assign={restored()?.assign}
+                      paths={restored()?.paths}
+                      roam={showRoam() && !roam.loading && !roam.error ? roam() : undefined}
+                      onChange={(r, a, p) => {
+                        pending = { regions: r, assign: a, paths: p };
+                        // Compared against the last saved state, not by re-patching: this runs on
+                        // every mouse move during a vertex drag and mobs.yaml is thousands of lines.
+                        const base = baseline();
+                        const sameAssign = Object.keys(a).length === Object.keys(base.assign).length
+                          && Object.entries(a).every(([id, n]) => base.assign[id] === n);
+                        const isDirty = !sameAssign || emitRegionsBlock(r) !== base.block || JSON.stringify(p) !== base.paths;
+                        setDirty(isDirty);
+                        setEdits(n => n + 1);
+                        scheduleDraft(isDirty);
+                      }}
+                    />
+                  )}
+                </Show>
+              </div>
             </div>
           </Match>
         </Switch>

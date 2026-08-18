@@ -32,6 +32,9 @@ importers:
       fuse.js:
         specifier: ^7.0.0
         version: 7.0.0
+      highlight.js:
+        specifier: ^11.12.0
+        version: 11.12.0
       hold-event:
         specifier: ^1.1.0
         version: 1.1.0
@@ -1050,6 +1053,10 @@ packages:
   hasown@2.0.2:
     resolution: {integrity: sha512-0hJU9SCPvmMzIBdZFqNPXWa6dqh7WdH0cII9y+CyS8rG3nL48Bclra9HmKhVVUHyPWNH5Y7xDwAB7bfgSjkUMQ==}
     engines: {node: '>= 0.4'}
+
+  highlight.js@11.12.0:
+    resolution: {integrity: sha512-nbfWpyRMcMrPMmDwJB+dhX/eiaPKtc2RB+0QZskqJ3WjRA/FDS0e9hZrx8EC/lbEv8gXy98FcDbNa/dspAaJMg==}
+    engines: {node: '>=12.0.0'}
 
   hold-event@1.1.0:
     resolution: {integrity: sha512-dBziMRU5X/wT6Wc8mRnvqtrkCzUtzCYKK1l/lnhy1o1SIvhh2juuNL1pCgVq9JsL60LVyDNjQ8axI6UkWNI+Tw==}
@@ -2441,6 +2448,8 @@ snapshots:
   hasown@2.0.2:
     dependencies:
       function-bind: 1.1.2
+
+  highlight.js@11.12.0: {}
 
   hold-event@1.1.0: {}
 
