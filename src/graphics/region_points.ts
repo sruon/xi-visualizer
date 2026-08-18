@@ -44,11 +44,14 @@ export const roamMaterial = () =>
     vertexShader: `
       uniform float focused;
       attribute float big;
+      attribute float shown;
       varying vec3 vColor;
       varying float vBig;
+      varying float vShown;
       void main() {
         vColor = color;
         vBig = big;
+        vShown = shown;
         gl_PointSize = big > 0.5 ? 9.0 : 2.0;
         gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
       }
@@ -57,7 +60,11 @@ export const roamMaterial = () =>
       uniform float focused;
       varying vec3 vColor;
       varying float vBig;
+      varying float vShown;
       void main() {
+        // Trails belonging to another floor are not just dimmed: the point of picking a floor is
+        // that what is left on screen is on it.
+        if (vShown < 0.5) discard;
         if (focused > 0.5 && vBig < 0.5) discard;
         float d = length(gl_PointCoord - vec2(0.5));
         if (d > 0.5) discard;

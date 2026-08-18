@@ -733,10 +733,11 @@ export default function RegionEditor(props: RegionEditorProps) {
     for (let t = 0; t < pos.count; t += 3) {
       const map = perVertex[t];
       counts.set(map, (counts.get(map) ?? 0) + 1);
-      // Scene coordinates are the zone's with y and z negated, so undo that on the way back out.
+      // Geometry in this scene is in zone coordinates: the flip to world space lives on the
+      // scene's scale, not in the buffers, and the regions drawn over it are stored the same way.
       const x = (pos.getX(t) + pos.getX(t + 1) + pos.getX(t + 2)) / 3;
-      const y = -(pos.getY(t) + pos.getY(t + 1) + pos.getY(t + 2)) / 3;
-      const z = -(pos.getZ(t) + pos.getZ(t + 1) + pos.getZ(t + 2)) / 3;
+      const y = (pos.getY(t) + pos.getY(t + 1) + pos.getY(t + 2)) / 3;
+      const z = (pos.getZ(t) + pos.getZ(t + 1) + pos.getZ(t + 2)) / 3;
       const key = `${Math.round(x / CELL)},${Math.round(z / CELL)}`;
       const cell = buckets.get(key);
       if (cell) cell.push({ y, map });
@@ -750,19 +751,23 @@ export default function RegionEditor(props: RegionEditorProps) {
       floors,
       perVertex,
       at: (x, y, z) => {
-        let best: number | null = null;
-        let nearest = Infinity;
         const cx = Math.round(x / CELL);
         const cz = Math.round(z / CELL);
-        for (let dx = -1; dx <= 1; dx++) {
-          for (let dz = -1; dz <= 1; dz++) {
-            for (const entry of buckets.get(`${cx + dx},${cz + dz}`) ?? []) {
-              const gap = Math.abs(entry.y - y);
-              if (gap < nearest) (nearest = gap, best = entry.map);
+        // Widening, because the middle of a region can be a courtyard with no floor under it at all.
+        for (let ring = 1; ring <= 4; ring++) {
+          let best: number | null = null;
+          let nearest = Infinity;
+          for (let dx = -ring; dx <= ring; dx++) {
+            for (let dz = -ring; dz <= ring; dz++) {
+              for (const entry of buckets.get(`${cx + dx},${cz + dz}`) ?? []) {
+                const gap = Math.abs(entry.y - y);
+                if (gap < nearest) (nearest = gap, best = entry.map);
+              }
             }
           }
+          if (best !== null) return best;
         }
-        return best;
+        return null;
       },
     };
   };
@@ -817,6 +822,18 @@ export default function RegionEditor(props: RegionEditorProps) {
     mesh.geometry.computeBoundsTree();
   });
 
+  const trailFloors = createMemo(() => {
+    const data = props.roam;
+    const out: Record<string, number | null> = {};
+    if (!data || !floorIndex) return out;
+    for (const [id, [start, count]] of Object.entries(data.ranges)) {
+      if (!count) continue;
+      const o = (start + (count >> 1)) * 3;
+      out[id] = floorIndex.at(data.positions[o], data.positions[o + 1], data.positions[o + 2]);
+    }
+    return out;
+  });
+
   // Worked out once each rather than per frame: the answer only moves when the shapes do, and this
   // is read for every region and every mob on the way to placing their labels.
   const regionFloors = createMemo(() => {
@@ -825,23 +842,68 @@ export default function RegionEditor(props: RegionEditorProps) {
     for (const r of regions()) {
       const ring = r.rings[0];
       if (!ring?.length) continue;
-      let x = 0, y = 0, z = 0;
-      for (const v of ring) (x += v[0], y += v[1], z += v[2]);
-      out[r.name] = floorIndex.at(x / ring.length, y / ring.length, z / ring.length);
+      const votes = new Map<number, number>();
+      for (const v of ring) {
+        const on = floorIndex.at(v[0], v[1], v[2]);
+        if (on !== null) votes.set(on, (votes.get(on) ?? 0) + 1);
+      }
+      out[r.name] = [...votes].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+    }
+
+    return out;
+  });
+
+  /**
+   * Which floor a mob is on, by whatever places it. A mob its region places carries no coordinates,
+   * so asking its own position would put every one of them nowhere the moment a floor is picked.
+   */
+  const spawnFloors = createMemo(() => {
+    const out: Record<string, number | null> = {};
+    if (!floorIndex) return out;
+    const byRegion = regionFloors();
+    const byTrail = trailFloors();
+    const a = assign();
+    const p = paths();
+    for (const s of props.spawns) {
+      const legs = p[s.id]?.legs;
+      out[s.id] = a[s.id]
+        ? byRegion[a[s.id]] ?? null
+        : legs?.length
+        ? floorIndex.at(legs[0][0], legs[0][1], legs[0][2])
+        : s.at
+        ? floorIndex.at(s.x, s.y, s.z)
+        : byTrail[s.id] ?? null;
     }
     return out;
   });
 
-  const spawnFloors = createMemo(() => {
-    const out: Record<string, number | null> = {};
-    if (!floorIndex) return out;
-    for (const s of props.spawns) if (s.at) out[s.id] = floorIndex.at(s.x, s.y, s.z);
-    return out;
+  // A trail is hidden or shown whole. A mob that walks a ramp between two floors belongs to both,
+  // and half a trail appearing out of nowhere reads worse than one that is simply there.
+  createEffect(() => {
+    const data = props.roam;
+    const points = roamPoints;
+    const only = floor();
+    if (!data || !points) return;
+    const shown = points.geometry.getAttribute("shown") as THREE.BufferAttribute;
+    const floors = trailFloors();
+    for (const [id, [start, count]] of Object.entries(data.ranges)) {
+      const visible = only === null || floors[id] === only ? 1 : 0;
+      for (let i = start; i < start + count; i++) shown.setX(i, visible);
+    }
+    shown.needsUpdate = true;
   });
 
-  const onRegionFloor = (r: RegionEntry) => floor() === null || regionFloors()[r.name] === floor();
+  // Fail open: something the mesh could not place shows on every floor rather than on none, or it
+  // could never be selected again.
+  const onRegionFloor = (r: RegionEntry) => {
+    const on = regionFloors()[r.name];
+    return floor() === null || on === undefined || on === null || on === floor();
+  };
   const onFloor = (x: number, y: number, z: number) => floor() === null || !floorIndex || floorIndex.at(x, y, z) === floor();
-  const spawnOnFloor = (s: Spawn) => floor() === null || spawnFloors()[s.id] === floor();
+  const spawnOnFloor = (s: Spawn) => {
+    const on = spawnFloors()[s.id];
+    return floor() === null || on === undefined || on === null || on === floor();
+  };
 
   // Recorded roam trails, drawn under everything so a polygon can be checked against where the
   // mobs actually went.
@@ -853,6 +915,8 @@ export default function RegionEditor(props: RegionEditorProps) {
     geo.setAttribute("position", new THREE.BufferAttribute(data.positions, 3));
     geo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(data.positions.length), 3));
     geo.setAttribute("big", new THREE.BufferAttribute(new Float32Array(data.count), 1));
+    // Everything is on screen until a floor says otherwise.
+    geo.setAttribute("shown", new THREE.BufferAttribute(new Float32Array(data.count).fill(1), 1));
     const points = new THREE.Points(geo, roamMaterial());
     points.renderOrder = 0;
     roamPoints = points;
