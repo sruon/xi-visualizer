@@ -789,6 +789,21 @@ export default function RegionsPage() {
             <button class={BTN_QUIET} onClick={locateFork}>Done, check again</button>
           </Show>
 
+          {/* Installed, but on terms that cannot commit. GitHub keeps an installation on the
+              permissions it was created with until its owner accepts a newer set, so this looks
+              exactly like a working setup right up to the first commit. */}
+          <Show when={fork()?.state === "needs_permission"}>
+            <span>
+              The app is installed on <b>{forkRepo()}</b> but was only granted{" "}
+              <b>{(fork() as { granted?: string; })?.granted}</b>, and committing needs <b>contents: write</b>. Accept the
+              updated permissions and it will work.
+            </span>
+            <a class={BTN_GO} href="https://github.com/settings/installations" target="_blank" rel="noreferrer">
+              Review permissions
+            </a>
+            <button class={BTN_QUIET} onClick={locateFork}>Done, check again</button>
+          </Show>
+
           {/* Signing in authorises the app; it does not install it, and only an installation can
               write. The token reads the fork perfectly either way, so this has to be asked about
               rather than waited for. */}

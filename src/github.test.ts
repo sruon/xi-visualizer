@@ -44,8 +44,8 @@ const FORK = "someone/server";
 const NETWORK = "LandSandBoat/server";
 const upstreamIs = { "/repos/sruon/server": { full_name: UPSTREAM, source: { full_name: NETWORK } } };
 const forkExists = { ...upstreamIs, "/repos/someone/server": { fork: true, source: { full_name: NETWORK } } };
-const installedFor = (full_name: string) => ({
-  "/user/installations?per_page=100&page=1": { installations: [{ id: 7 }] },
+const installedFor = (full_name: string, permissions: Record<string, string> = { contents: "write" }) => ({
+  "/user/installations?per_page=100&page=1": { installations: [{ id: 7, permissions }] },
   "/user/installations/7/repositories?per_page=100&page=1": { repositories: [{ full_name }] },
 });
 const installedHere = installedFor(FORK);
@@ -69,7 +69,7 @@ assert.deepStrictEqual(await findFork("t", UPSTREAM, "someone"), { state: "not_i
 // Installed, but on some other repository of theirs.
 fakeGitHub({
   ...forkExists,
-  "/user/installations?per_page=100&page=1": { installations: [{ id: 7 }] },
+  "/user/installations?per_page=100&page=1": { installations: [{ id: 7, permissions: { contents: "write" } }] },
   "/user/installations/7/repositories?per_page=100&page=1": { repositories: [{ full_name: "someone/notes" }] },
 });
 assert.deepStrictEqual(await findFork("t", UPSTREAM, "someone"), { state: "not_installed", repo: FORK });
@@ -250,13 +250,27 @@ await assert.rejects(
 fakeGitHub({
   ...upstreamIs,
   "/repos/someone/server": { fork: true, source: { full_name: NETWORK } },
-  "/user/installations?per_page=100&page=1": { installations: [{ id: 7 }] },
+  "/user/installations?per_page=100&page=1": { installations: [{ id: 7, permissions: { contents: "write" } }] },
   "/user/installations/7/repositories?per_page=100&page=1": {
     repositories: Array.from({ length: 100 }, (_, i) => ({ full_name: `someone/filler-${i}` })),
   },
   "/user/installations/7/repositories?per_page=100&page=2": { repositories: [{ full_name: FORK }] },
 });
 assert.deepStrictEqual(await findFork("t", UPSTREAM, "someone"), { state: "ready", repo: FORK }, "found on the second page");
+
+// Installed, but on an older permission set. This is what "Resource not accessible by integration"
+// means at the first commit, and it is worth catching before an hour of drawing rather than after:
+// an installation keeps what it was created with until its owner accepts a newer set.
+fakeGitHub({ ...forkExists, ...installedFor(FORK, { contents: "read", metadata: "read" }) });
+assert.deepStrictEqual(await findFork("t", UPSTREAM, "someone"), {
+  state: "needs_permission",
+  repo: FORK,
+  granted: "contents: read",
+});
+
+// An installation granting nothing at all reads the same way rather than throwing.
+fakeGitHub({ ...forkExists, ...installedFor(FORK, {}) });
+assert.strictEqual((await findFork("t", UPSTREAM, "someone")).state, "needs_permission");
 
 // An expired token is a signed-out session, not a number to look up.
 fakeGitHub({ "/user": { $status: 401, $body: '{"message":"Bad credentials"}' } });

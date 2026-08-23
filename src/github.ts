@@ -54,35 +54,45 @@ export type ForkState =
   /** No fork yet, so there is nothing to install onto either. */
   | { state: "missing"; }
   /** The fork is there and the app is authorized, but it was never installed on the repository. */
-  | { state: "not_installed"; repo: string; };
+  | { state: "not_installed"; repo: string; }
+  /** Installed, but granting less than writing needs -- an installation keeps the permissions it
+   * was created with until the account owner accepts a newer set. */
+  | { state: "needs_permission"; repo: string; granted: string; };
 
 /** Where the app gets installed on a repository. Signing in does not do this and cannot. */
 export const installUrl = (slug: string) => `https://github.com/apps/${slug}/installations/new`;
 
 /**
- * Whether this app is installed on `repo` for the signed-in user.
+ * The installation covering `repo`, and what it was actually granted.
  *
  * Asked because reading proves nothing: a user access token may read any public repository whether
  * or not the app was ever installed on it, so a fork reads back perfectly and then refuses the
- * first write. This is the question the write path actually depends on.
+ * first write. What it grants matters just as much -- an installation keeps the permissions it was
+ * created with until its owner accepts a newer set, so one made before the app asked for write
+ * access is installed, looks right, and cannot commit.
  */
-async function installedOn(token: string, repo: string): Promise<boolean> {
+async function installationFor(
+  token: string,
+  repo: string,
+): Promise<{ found: boolean; permissions?: Record<string, string>; }> {
   // Both lists page, and both can genuinely run long: somebody in a few organisations has several
   // installations, and one installed on "all repositories" lists every repository they own. Reading
   // only the first page reports "not installed" and sends them to a link that is already done.
   for (let page = 1;; page++) {
     const { installations } = await gh(token, `/user/installations?per_page=100&page=${page}`);
-    if (!installations?.length) return false;
+    if (!installations?.length) return { found: false };
 
     for (const installation of installations) {
       for (let inner = 1;; inner++) {
         const { repositories } = await gh(token, `/user/installations/${installation.id}/repositories?per_page=100&page=${inner}`);
         if (!repositories?.length) break;
-        if (repositories.some((r: any) => r.full_name === repo)) return true;
+        if (repositories.some((r: any) => r.full_name === repo)) {
+          return { found: true, permissions: installation.permissions ?? {} };
+        }
         if (repositories.length < 100) break;
       }
     }
-    if (installations.length < 100) return false;
+    if (installations.length < 100) return { found: false };
   }
 }
 
@@ -106,7 +116,14 @@ export async function findFork(token: string, upstream: string, login: string): 
   const sameNetwork = mine && (mine.source?.full_name ?? mine.full_name) === network;
   if (!sameNetwork) return { state: "missing" };
 
-  return (await installedOn(token, repo)) ? { state: "ready", repo } : { state: "not_installed", repo };
+  // Asked before any drawing happens, because all three of these fail at the first commit and
+  // "Resource not accessible by integration" an hour later is not something anyone can act on.
+  const installation = await installationFor(token, repo);
+  if (!installation.found) return { state: "not_installed", repo };
+  if (installation.permissions?.contents !== "write") {
+    return { state: "needs_permission", repo, granted: `contents: ${installation.permissions?.contents ?? "none"}` };
+  }
+  return { state: "ready", repo };
 }
 
 /** github.com's own fork page. One click, and it is the only way an app can get a fork made. */
