@@ -272,6 +272,39 @@ assert.deepStrictEqual(await findFork("t", UPSTREAM, "someone"), {
 fakeGitHub({ ...forkExists, ...installedFor(FORK, {}) });
 assert.strictEqual((await findFork("t", UPSTREAM, "someone")).state, "needs_permission");
 
+// Writable, but the fork has fallen far enough behind that the first branch would carry workflow
+// changes into it. "Create a reference" takes Contents (write) alone only when it does not; with
+// workflow files in the way it wants Workflows (write) too, and refuses with a bare 403 on the ref
+// after the trees and commits it also wrote have already succeeded.
+const workflowTrees = (fork: string, staging: string) => ({
+  "/repos/someone/server": { full_name: FORK, source: { full_name: NETWORK }, fork: true, default_branch: "base" },
+  "/repos/someone/server/git/trees/base:.github/workflows": { sha: fork },
+  "/repos/sruon/server/git/trees/regions-master:.github/workflows": { sha: staging },
+});
+
+fakeGitHub({ ...forkExists, ...installedFor(FORK), ...workflowTrees("stale-tree", "current-tree") });
+assert.deepStrictEqual(
+  await findFork("t", UPSTREAM, "someone", "regions-master"),
+  { state: "needs_sync", repo: FORK },
+  "a fork whose workflows differ cannot be branched into without the extra permission",
+);
+
+// The same fork, once synced, is ready -- no new permission needed.
+fakeGitHub({ ...forkExists, ...installedFor(FORK), ...workflowTrees("same-tree", "same-tree") });
+assert.deepStrictEqual(await findFork("t", UPSTREAM, "someone", "regions-master"), { state: "ready", repo: FORK });
+
+// And an installation that does hold Workflows (write) never has to care.
+fakeGitHub({
+  ...forkExists,
+  ...installedFor(FORK, { contents: "write", workflows: "write" }),
+  ...workflowTrees("stale-tree", "current-tree"),
+});
+assert.deepStrictEqual(await findFork("t", UPSTREAM, "someone", "regions-master"), { state: "ready", repo: FORK });
+
+// Without a base to compare against, the question cannot be asked and is not guessed at.
+fakeGitHub({ ...forkExists, ...installedFor(FORK) });
+assert.deepStrictEqual(await findFork("t", UPSTREAM, "someone"), { state: "ready", repo: FORK });
+
 // An expired token is a signed-out session, not a number to look up.
 fakeGitHub({ "/user": { $status: 401, $body: '{"message":"Bad credentials"}' } });
 await assert.rejects(whoAmI("stale"), /session expired, sign in again/);

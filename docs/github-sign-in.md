@@ -52,8 +52,18 @@ rather than counted.
    - **Callback URL**: one per origin the editor is served from, and they must match exactly —
      `https://sruon.github.io/xi-visualizer/` and `http://localhost:5199/xi-visualizer/`.
    - Untick Webhook.
-   - Repository permissions: **Contents: Read and write**. That is all it needs; it never opens the
-     pull request, so it does not need Pull requests.
+   - Repository permissions: **Contents: Read and write** and **Workflows: Read and write**. It
+     never opens the pull request, so it does not need Pull requests.
+
+     Workflows looks like more than an editor of yaml data should want, and it is asked for a
+     specific reason. "Create a reference" takes Contents (write) alone only when the new ref
+     carries no changes under `.github/workflows`. A contributor's fork is usually hundreds of
+     commits behind, so the first branch cut from the staging tip carries all of them, workflow
+     files included, and GitHub refuses that to an app without Workflows (write). The refusal is a
+     bare 403 on the ref, after the trees and commits have already been written.
+
+     A contributor who keeps their fork synced never needs it. The editor checks which case applies
+     and offers "sync your fork" rather than the permission where that is enough.
    - Where can this app be installed: **Any account**.
    - Copy the client id (`Iv23li…`), and **generate a client secret**.
 

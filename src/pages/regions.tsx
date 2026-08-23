@@ -138,7 +138,7 @@ export default function RegionsPage() {
     const t = authToken();
     if (!t) return setFork(undefined);
     try {
-      const found = await findFork(t, repo(), await whoAmI(t));
+      const found = await findFork(t, repo(), await whoAmI(t), ref());
       setFork(found);
       if (found.state !== "ready") return;
 
@@ -791,6 +791,20 @@ export default function RegionsPage() {
             </span>
             <a class={BTN_GO} href={forkUrl(repo())} target="_blank" rel="noreferrer">
               Fork it on GitHub
+            </a>
+            <button class={BTN_QUIET} onClick={locateFork}>Done, check again</button>
+          </Show>
+
+          {/* Writable, but the first branch would carry a thousand unrelated commits into the fork,
+              some of them touching .github/workflows, which an app may not do without Workflows
+              (write). Syncing the fork removes the difference and needs no extra permission. */}
+          <Show when={fork()?.state === "needs_sync"}>
+            <span>
+              Your fork <b>{forkRepo()}</b> is behind <b>{repo()}</b>, far enough that the first commit would carry workflow
+              changes into it. GitHub does not let an app do that. Sync your fork and it will work.
+            </span>
+            <a class={BTN_GO} href={`https://github.com/${forkRepo()}`} target="_blank" rel="noreferrer">
+              Sync fork on GitHub
             </a>
             <button class={BTN_QUIET} onClick={locateFork}>Done, check again</button>
           </Show>

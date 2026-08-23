@@ -57,7 +57,10 @@ export type ForkState =
   | { state: "not_installed"; repo: string; }
   /** Installed, but granting less than writing needs -- an installation keeps the permissions it
    * was created with until the account owner accepts a newer set. */
-  | { state: "needs_permission"; repo: string; granted: string; };
+  | { state: "needs_permission"; repo: string; granted: string; }
+  /** Writable, but a branch cut from the staging tip would carry workflow changes into this fork,
+   * which an app may not do without `workflows: write`. */
+  | { state: "needs_sync"; repo: string; };
 
 /** Where the app gets installed on a repository. Signing in does not do this and cannot. */
 export const installUrl = (slug: string) => `https://github.com/apps/${slug}/installations/new`;
@@ -121,7 +124,7 @@ export async function grantedOn(token: string, repo: string): Promise<string> {
   }
 }
 
-export async function findFork(token: string, upstream: string, login: string): Promise<ForkState> {
+export async function findFork(token: string, upstream: string, login: string, base?: string): Promise<ForkState> {
   // Membership is of the fork *network*, not of one parent. Contributors fork LandSandBoat/server
   // while pull requests target a fork of it, so an immediate-parent test would reject every
   // legitimate fork. Everything in one network shares an object store, which is also what lets a
@@ -138,10 +141,38 @@ export async function findFork(token: string, upstream: string, login: string): 
   // "Resource not accessible by integration" an hour later is not something anyone can act on.
   const installation = await installationFor(token, repo);
   if (!installation.found) return { state: "not_installed", repo };
+  // "Create a reference" takes Contents (write), or Contents (write) *and* Workflows (write) when
+  // the ref carries workflow changes -- which a branch cut from staging does for any fork that has
+  // fallen behind. Contents is the floor; Workflows decides which of the next two answers applies.
   if (installation.permissions?.contents !== "write") {
     return { state: "needs_permission", repo, granted: `contents: ${installation.permissions?.contents ?? "none"}` };
   }
+  // Needs both: an installation may hold contents: write and still be refused the ref.
+  const canTouchWorkflows = installation.permissions?.workflows === "write";
+  if (base && !canTouchWorkflows && await wouldCarryWorkflows(token, repo, upstream, base)) {
+    return { state: "needs_sync", repo };
+  }
   return { state: "ready", repo };
+}
+
+/**
+ * Whether cutting a branch from `baseRepo@base` would introduce workflow changes into `fork`.
+ *
+ * Creating that ref makes every commit between the fork and the staging tip reachable, and GitHub
+ * refuses to let an app introduce commits that touch .github/workflows without `workflows: write`.
+ * It is refused as a bare 403 on the ref, long after the trees and commits it also wrote succeeded,
+ * so it is worth knowing before anybody draws anything. Comparing the two workflow directories is
+ * exactly the question, and costs two reads.
+ */
+async function wouldCarryWorkflows(token: string, fork: string, baseRepo: string, base: string): Promise<boolean> {
+  const treeOf = async (repo: string, ref: string) =>
+    (await ghMaybe(token, `/repos/${repo}/git/trees/${ref}:.github/workflows`))?.sha as string | undefined;
+  const [mine, theirs] = await Promise.all([
+    treeOf(fork, (await gh(token, `/repos/${fork}`)).default_branch),
+    treeOf(baseRepo, base),
+  ]);
+  // Unreadable either side is not evidence of a problem; let the save speak for itself.
+  return !!mine && !!theirs && mine !== theirs;
 }
 
 /** github.com's own fork page. One click, and it is the only way an app can get a fork made. */
