@@ -4,6 +4,8 @@ import {
   containsXZ,
   diffRegions,
   emitRegionsBlock,
+  mergeZone,
+  placementsOf,
   floorYAt,
   parseMobsYaml,
   parseRegionsYaml,
@@ -20,7 +22,7 @@ import {
   validate,
   zoneOfMobId,
 } from "./regions.ts";
-import type { Region, RegionSet, Ring, TrailPoint, Vertex, ZoneSide } from "./regions.ts";
+import type { Region, RegionSet, Ring, TrailPoint, Vertex, ZoneSide, ZoneState } from "./regions.ts";
 
 // Two stacked floors sharing the same footprint, ground floor has a hole.
 const regions: RegionSet = {
@@ -370,5 +372,69 @@ assert.ok(has("stands outside"), "assigned but outside");
 assert.ok(has("undefined region ghost_region"), "dangling reference");
 assert.ok(has("2 spawns on a fixed point"), "tally of the ones no region or route places");
 assert.ok(has("1 spawns have no position, region or route"), "spawn left with nowhere to go");
+
+/** Two regions are the same shape when the canonical emitter cannot tell them apart. */
+const sameShape = (a: Region, b: Region) => emitRegionsBlock({ x: a }) === emitRegionsBlock({ x: b });
+
+// --- merging two people's work on one zone ---
+
+const box = (x: number): Region => ({ rings: [[[x, -50, 0], [x + 5, -50, 0], [x + 5, -50, 5], [x, -50, 5]]] });
+const state = (regions: RegionSet, placements = {}): ZoneState => ({ regions, placements });
+
+// The ordinary case: two people in the same zone, nowhere near each other. Nobody should be asked
+// anything, and neither should lose work.
+let merged = mergeZone(
+  state({ shared: box(0) }),
+  state({ shared: box(0), theirs: box(50) }),
+  state({ shared: box(0), ours: box(100) }),
+);
+assert.deepStrictEqual(merged.conflicts, [], "separate regions are not a disagreement");
+assert.deepStrictEqual(Object.keys(merged.regions).sort(), ["ours", "shared", "theirs"], "and both survive");
+
+// One side moved a region the other never touched: the one who moved it wins, silently.
+merged = mergeZone(state({ a: box(0) }), state({ a: box(9) }), state({ a: box(0) }));
+assert.ok(sameShape(merged.regions.a, box(9)), "their edit stands where we made none");
+merged = mergeZone(state({ a: box(0) }), state({ a: box(0) }), state({ a: box(9) }));
+assert.ok(sameShape(merged.regions.a, box(9)), "and ours where they made none");
+
+// Both moved it, differently. That is a real disagreement and has to be named.
+merged = mergeZone(state({ a: box(0) }), state({ a: box(9) }), state({ a: box(20) }));
+assert.deepStrictEqual(merged.conflicts, ["region a"], "named, not counted");
+
+// A region one side deleted and the other left alone goes.
+merged = mergeZone(state({ a: box(0), b: box(9) }), state({ a: box(0) }), state({ a: box(0), b: box(9) }));
+assert.deepStrictEqual(Object.keys(merged.regions), ["a"], "their deletion stands");
+
+// Placement: two people assigning different mobs is not a disagreement.
+merged = mergeZone(
+  state({}, { "1": {}, "2": {} }),
+  state({}, { "1": { region: "north" }, "2": {} }),
+  state({}, { "1": {}, "2": { region: "south" } }),
+);
+assert.deepStrictEqual(merged.conflicts, []);
+assert.deepStrictEqual(merged.placements, { "1": { region: "north" }, "2": { region: "south" } }, "both assignments kept");
+
+// The same mob sent to two different regions is.
+merged = mergeZone(
+  state({}, { "1": {} }),
+  state({}, { "1": { region: "north" } }),
+  state({}, { "1": { region: "south" } }),
+);
+assert.deepStrictEqual(merged.conflicts, ["spawn 1"]);
+assert.deepStrictEqual(merged.placements["1"], { region: "south" }, "ours is kept so the editor still shows what it had");
+
+// Both doing the same thing is agreement, not conflict.
+merged = mergeZone(state({ a: box(0) }), state({ a: box(9) }), state({ a: box(9) }));
+assert.deepStrictEqual(merged.conflicts, []);
+
+// placementsOf reads all three ways a spawn can be placed
+const placed = placementsOf([
+  { id: "1", name: "a", x: 0, y: 0, z: 0, region: "north" },
+  { id: "2", name: "b", x: 0, y: 0, z: 0, path: [[0, 0, 0], [1, 0, 1]], loop: false },
+  { id: "3", name: "c", x: 1, y: 2, z: 3, at: [1, 2, 3] },
+]);
+assert.deepStrictEqual(placed["1"], { region: "north" });
+assert.deepStrictEqual(placed["2"], { patrol: { legs: [[0, 0, 0], [1, 0, 1]], loop: false } });
+assert.deepStrictEqual(placed["3"], {}, "a fixed point is the absence of a placement, not a placement");
 
 console.log("ok");

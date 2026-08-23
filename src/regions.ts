@@ -143,6 +143,89 @@ function alignKeys(body: string[]): string[] {
   return out;
 }
 
+// --- merging two people's work on one zone ---
+
+/** How a spawn is placed, as the editor holds it: a region, a route, or its own fixed point. */
+export interface Placement {
+  region?: string;
+  patrol?: Patrol;
+}
+
+export type Placements = Record<string, Placement>;
+
+/** Everything about a zone that two people can disagree about. */
+export interface ZoneState {
+  regions: RegionSet;
+  placements: Placements;
+}
+
+export interface MergeResult extends ZoneState {
+  /** Named things both sides changed differently. Empty means the merge stands on its own. */
+  conflicts: string[];
+}
+
+export const placementsOf = (spawns: Spawn[]): Placements =>
+  Object.fromEntries(spawns.map(s => [
+    s.id,
+    s.region ? { region: s.region } : s.path ? { patrol: { legs: s.path, loop: s.loop } } : {},
+  ]));
+
+// Compared through the canonical emitter rather than field by field, so a ring that was rotated or
+// re-ordered without moving is recognised as unchanged instead of read as somebody's edit.
+const sameRegion = (a?: Region, b?: Region) =>
+  (a ? emitRegionsBlock({ r: a }) : "") === (b ? emitRegionsBlock({ r: b }) : "");
+
+const samePlacement = (a?: Placement, b?: Placement) => JSON.stringify(a ?? {}) === JSON.stringify(b ?? {});
+
+/**
+ * Three-way merge of one zone.
+ *
+ * Two people editing the same zone is the ordinary case once more than one person is drawing, and
+ * the thing that must never happen is one of them quietly reverting the other. Both sides are
+ * structured -- regions by name, placement by spawn id -- so most of it merges without anybody
+ * being asked: whoever changed a name is the one whose version of it survives. Only a name both
+ * sides moved differently is a real disagreement, and those are returned by name rather than as a
+ * count, since "someone changed something" is not something anybody can act on.
+ */
+export function mergeZone(base: ZoneState, theirs: ZoneState, ours: ZoneState): MergeResult {
+  const conflicts: string[] = [];
+
+  const regions: RegionSet = {};
+  for (const name of new Set([...Object.keys(theirs.regions), ...Object.keys(ours.regions)])) {
+    const wasThere = base.regions[name];
+    const mine = ours.regions[name];
+    const other = theirs.regions[name];
+
+    if (sameRegion(mine, other)) {
+      if (mine) regions[name] = mine; // both did the same thing, including both deleting it
+    } else if (sameRegion(mine, wasThere)) {
+      if (other) regions[name] = other; // untouched here, so theirs is the newer of the two
+    } else if (sameRegion(other, wasThere)) {
+      if (mine) regions[name] = mine;
+    } else {
+      conflicts.push(`region ${name}`);
+      if (mine) regions[name] = mine;
+    }
+  }
+
+  const placements: Placements = {};
+  for (const id of new Set([...Object.keys(theirs.placements), ...Object.keys(ours.placements)])) {
+    const wasThere = base.placements[id];
+    const mine = ours.placements[id];
+    const other = theirs.placements[id];
+
+    if (samePlacement(mine, other)) placements[id] = mine ?? other ?? {};
+    else if (samePlacement(mine, wasThere)) placements[id] = other ?? {};
+    else if (samePlacement(other, wasThere)) placements[id] = mine ?? {};
+    else {
+      conflicts.push(`spawn ${id}`);
+      placements[id] = mine ?? {};
+    }
+  }
+
+  return { regions, placements, conflicts };
+}
+
 function splitLines(text: string) {
   return { lines: text.split(/\r?\n/), eol: text.includes("\r\n") ? "\r\n" : "\n" };
 }

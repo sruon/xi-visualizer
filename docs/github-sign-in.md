@@ -15,29 +15,40 @@ straight from the page. `github.com/login/oauth/access_token` does not, and it r
 secret — GitHub demands it even when PKCE is used. A static page can hold neither, so a static site
 needs something in the middle. `workers/github-relay.js` is that, and nothing else.
 
-**The install flow, not the device flow.** A GitHub App has two separate grants and this needs both:
-*authorization* says who you are, *installation* is what lets a token write to a repository. The
-device flow only ever does the first, so it produces a token that reads your fork perfectly and
-refuses every commit — which is exactly the wall we hit. Ticking **"Request user authorization
-(OAuth) during installation"** collapses both into one redirect.
+**Two grants, asked for separately.** A GitHub App has two and this needs both: *authorization* says
+who you are, *installation* is what lets a token write to a repository. They are asked for one at a
+time, because asking together only works once — `apps/<slug>/installations/new` completes and
+redirects on a *first* install, but somebody who already installed the app just lands on the
+configure page and no code ever comes back. So sign-in drives `/login/oauth/authorize`, which answers
+the same way either way, and the install page is offered only when the app turns out to be missing
+from the repository being written to.
 
-PKCE is not accepted on the installation entry point, so `state` is what ties the redirect back to
-the tab that began it. GitHub persists `state` across the install, and the page also uses it to
-remember which zone to return to.
+(The device flow does neither well: it authorizes but can never install, so it hands back a token
+that reads a fork perfectly and refuses every commit.)
+
+That endpoint accepts **PKCE**, so the code is bound to a verifier that never leaves the tab, with
+`state` on top. `state` also carries the route to come back to, since the callback lands on the site
+root with no hash of its own.
 
 **A GitHub App, not an OAuth app**, so the consent screen reads "access to `you/server`" instead of
 "write to every public repository you own", and can be revoked for that one repo.
 
 **Two steps the app cannot do**: creating the fork and opening the pull request. Both require the
-app to be installed on the account owning the *upstream* repo — LandSandBoat's, not ours. So both
-are links the user clicks on github.com. This is a small loss and one real gain: the pull request
-form arrives with a description we wrote, carrying a link to the visual diff of the branch.
+app to be installed on the account owning the target repository, which is not ours to install on. So
+both are links the user clicks on github.com. This is a small loss and one real gain: the pull
+request form arrives with a title and description we wrote, carrying a link to the visual diff.
+
+**Two people on one zone merge rather than collide.** A pull request can be merged into the staging
+branch while somebody else is still drawing that same zone. Committing the files as they were loaded
+would quietly revert the other person, and the diff would look clean because it is taken against the
+newer tip. So a save that finds the zone has moved does a three-way merge first: regions by name,
+placement by spawn id. Work on different regions or different mobs merges without anybody being
+asked; only a region or a spawn that *both* sides moved differently stops the save, and it is named
+rather than counted.
 
 ## Setting it up, once
 
 1. **Create the GitHub App** at github.com/settings/apps → New GitHub App.
-   - Tick **Request user authorization (OAuth) during installation**. Without it GitHub completes
-     the installation and returns no code, and the editor says so rather than guessing.
    - **Callback URL**: one per origin the editor is served from, and they must match exactly —
      `https://sruon.github.io/xi-visualizer/` and `http://localhost:5199/xi-visualizer/`.
    - Untick Webhook.
@@ -46,7 +57,10 @@ form arrives with a description we wrote, carrying a link to the visual diff of 
    - Where can this app be installed: **Any account**.
    - Copy the client id (`Iv23li…`), and **generate a client secret**.
 
-   Device Flow can be left off. It is not used.
+   Device Flow can be left off, and so can **Request user authorization (OAuth) during
+   installation** — sign-in authorizes on its own. Leaving the latter on is harmless but makes the
+   "Install it on…" link bounce a stray code back into a tab that never asked for one, which the
+   editor then ignores.
 
 2. **Deploy the relay.** Config is `workers/wrangler.toml`; wrangler comes from `npx`, so there is
    nothing to install.

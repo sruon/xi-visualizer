@@ -5,7 +5,7 @@
 // GitHub is enough to hold all three honest.
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
-import { compareUrl, fillTemplate, findFork, prTitle, save } from "./github.ts";
+import { compareUrl, fillTemplate, findFork, prTitle, save, whoAmI } from "./github.ts";
 
 const noHeaders = { get: () => null };
 
@@ -44,8 +44,8 @@ const NETWORK = "LandSandBoat/server";
 const upstreamIs = { "/repos/sruon/server": { full_name: UPSTREAM, source: { full_name: NETWORK } } };
 const forkExists = { ...upstreamIs, "/repos/someone/server": { fork: true, source: { full_name: NETWORK } } };
 const installedFor = (full_name: string) => ({
-  "/user/installations": { installations: [{ id: 7 }] },
-  "/user/installations/7/repositories?per_page=100": { repositories: [{ full_name }] },
+  "/user/installations?per_page=100&page=1": { installations: [{ id: 7 }] },
+  "/user/installations/7/repositories?per_page=100&page=1": { repositories: [{ full_name }] },
 });
 const installedHere = installedFor(FORK);
 
@@ -62,14 +62,14 @@ assert.deepStrictEqual(await findFork("t", UPSTREAM, "sruon"), { state: "ready",
 
 // Authorised but never installed. The token reads the public fork without trouble, so reading is
 // not the question: this is the case that used to report "ready" and then 403 on the first write.
-fakeGitHub({ ...forkExists, "/user/installations": { installations: [] } });
+fakeGitHub({ ...forkExists, "/user/installations?per_page=100&page=1": { installations: [] } });
 assert.deepStrictEqual(await findFork("t", UPSTREAM, "someone"), { state: "not_installed", repo: FORK });
 
 // Installed, but on some other repository of theirs.
 fakeGitHub({
   ...forkExists,
-  "/user/installations": { installations: [{ id: 7 }] },
-  "/user/installations/7/repositories?per_page=100": { repositories: [{ full_name: "someone/notes" }] },
+  "/user/installations?per_page=100&page=1": { installations: [{ id: 7 }] },
+  "/user/installations/7/repositories?per_page=100&page=1": { repositories: [{ full_name: "someone/notes" }] },
 });
 assert.deepStrictEqual(await findFork("t", UPSTREAM, "someone"), { state: "not_installed", repo: FORK });
 
@@ -179,6 +179,23 @@ await assert.rejects(
   /does not grant contents=write/s,
   "the error names the permission and where to grant it",
 );
+
+// An installation spread over more pages than one: reading only the first reported "not installed"
+// and sent people to a link that was already done.
+fakeGitHub({
+  ...upstreamIs,
+  "/repos/someone/server": { fork: true, source: { full_name: NETWORK } },
+  "/user/installations?per_page=100&page=1": { installations: [{ id: 7 }] },
+  "/user/installations/7/repositories?per_page=100&page=1": {
+    repositories: Array.from({ length: 100 }, (_, i) => ({ full_name: `someone/filler-${i}` })),
+  },
+  "/user/installations/7/repositories?per_page=100&page=2": { repositories: [{ full_name: FORK }] },
+});
+assert.deepStrictEqual(await findFork("t", UPSTREAM, "someone"), { state: "ready", repo: FORK }, "found on the second page");
+
+// An expired token is a signed-out session, not a number to look up.
+fakeGitHub({ "/user": { $status: 401, $body: '{"message":"Bad credentials"}' } });
+await assert.rejects(whoAmI("stale"), /session expired, sign in again/);
 
 // --- the pull request title ---
 

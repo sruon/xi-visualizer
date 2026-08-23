@@ -6,8 +6,8 @@ import type { ZoneData } from "../components/zone_model";
 import zones from "../data/zones";
 import { compareUrl, fillTemplate, findFork, type ForkState, forkUrl, installUrl, prTitle, save, whoAmI } from "../github";
 import { canSignIn, completeSignIn, isCallback, signOut, startSignIn as beginSignIn, storedToken } from "../github_auth";
-import { emitRegionsBlock, parseMobsYaml, parseRegionsYaml, patchMobsYaml, patchRegionsYaml, zoneOfMobId } from "../regions";
-import type { Patrol, RegionSet, Spawn } from "../regions";
+import { emitRegionsBlock, mergeZone, parseMobsYaml, parseRegionsYaml, patchMobsYaml, patchRegionsYaml, placementsOf, zoneOfMobId } from "../regions";
+import type { Patrol, Placements, RegionSet, Spawn } from "../regions";
 import { decompress, fetchProgress } from "../util";
 // The wording of a pull request is prose, so it lives in a file that can be edited as prose.
 import prTemplate from "../pr_template.md?raw";
@@ -379,9 +379,37 @@ export default function RegionsPage() {
   };
 
   /** Commits the open zone to the working branch on the user's fork. */
+  /**
+   * The zone as it stands on the staging branch right now, if that is not what we opened.
+   *
+   * Somebody else's pull request can be merged while a zone is being drawn, and committing the
+   * files as loaded would quietly revert their work: the diff would be against the newer tip, so it
+   * would look clean. Both sides are structured, so most of it merges without anybody being asked.
+   */
+  const reconcile = async (f: ZoneFiles) => {
+    const url = (name: string) => `https://raw.githubusercontent.com/${repo()}/${ref()}/${ZONES}/${f.folder}/${name}`;
+    const get = (name: string) => fetch(url(name)).then(r => (r.ok ? r.text() : ""));
+    const [regionsNow, mobsNow] = await Promise.all([get("regions.yaml"), get("mobs.yaml")]);
+    if (!mobsNow || (regionsNow === f.regionsYaml && mobsNow === f.mobsYaml)) return undefined;
+
+    const theirSpawns = parseMobsYaml(mobsNow);
+    const merged = mergeZone(
+      { regions: parseRegionsYaml(f.regionsYaml), placements: placementsOf(spawns() ?? []) },
+      { regions: parseRegionsYaml(regionsNow), placements: placementsOf(theirSpawns) },
+      {
+        regions: pending!.regions,
+        placements: Object.fromEntries((spawns() ?? []).map(s => [
+          s.id,
+          pending!.assign[s.id] ? { region: pending!.assign[s.id] } : pending!.paths[s.id] ? { patrol: pending!.paths[s.id] } : {},
+        ])),
+      },
+    );
+    return { merged, regionsNow, mobsNow, theirSpawns };
+  };
+
   const saveToBranch = async () => {
     const f = files();
-    const next = patched();
+    let next = patched();
     const where = fork();
     if (!f || !next) return;
     // Both dead ends are explained in the panel rather than in an error, since both are fixable.
@@ -389,6 +417,29 @@ export default function RegionsPage() {
 
     setStatus(`Committing ${f.folder}…`);
     try {
+      const moved = await reconcile(f);
+      if (moved) {
+        if (moved.merged.conflicts.length) {
+          setStatus(undefined);
+          return setError(
+            `${f.folder} changed on ${ref()} while you were editing, and ${
+              moved.merged.conflicts.join(", ")
+            } cannot be merged automatically. Reload the zone and redo that part.`,
+          );
+        }
+        // Patch what is on the staging branch now, not what was loaded, so anything else that
+        // arrived in these files while the zone was open survives.
+        const placements: Placements = moved.merged.placements;
+        next = {
+          regionsYaml: patchRegionsYaml(moved.regionsNow, moved.merged.regions),
+          mobsYaml: patchMobsYaml(
+            moved.mobsNow,
+            Object.fromEntries(Object.entries(placements).filter(([, p]) => p.region).map(([id, p]) => [id, p.region!])),
+            Object.fromEntries(moved.theirSpawns.filter(s => s.at).map(s => [s.id, s.at!])),
+            Object.fromEntries(Object.entries(placements).filter(([, p]) => p.patrol).map(([id, p]) => [id, p.patrol!])),
+          ),
+        };
+      }
       const result = await save({
         token: authToken(),
         repo: where.repo,

@@ -22,7 +22,9 @@ async function gh(token: string, path: string, init?: RequestInit) {
   // usual cause is an installation still on the permissions it was created with.
   const needs = res.headers?.get?.("x-accepted-github-permissions");
   const error: any = new Error(
-    res.status === 403 && needs
+    res.status === 401
+      ? "your GitHub session expired, sign in again"
+      : res.status === 403 && needs
       ? `${where} → 403. The app installation does not grant ${needs}. Accept the app's pending `
         + `permission request at github.com/settings/installations, then sign out and in again.`
       : `${where} → HTTP ${res.status} ${(await res.text()).slice(0, 200)}`,
@@ -64,12 +66,23 @@ export const installUrl = (slug: string) => `https://github.com/apps/${slug}/ins
  * first write. This is the question the write path actually depends on.
  */
 async function installedOn(token: string, repo: string): Promise<boolean> {
-  const { installations } = await gh(token, "/user/installations");
-  for (const installation of installations ?? []) {
-    const { repositories } = await gh(token, `/user/installations/${installation.id}/repositories?per_page=100`);
-    if (repositories?.some((r: any) => r.full_name === repo)) return true;
+  // Both lists page, and both can genuinely run long: somebody in a few organisations has several
+  // installations, and one installed on "all repositories" lists every repository they own. Reading
+  // only the first page reports "not installed" and sends them to a link that is already done.
+  for (let page = 1;; page++) {
+    const { installations } = await gh(token, `/user/installations?per_page=100&page=${page}`);
+    if (!installations?.length) return false;
+
+    for (const installation of installations) {
+      for (let inner = 1;; inner++) {
+        const { repositories } = await gh(token, `/user/installations/${installation.id}/repositories?per_page=100&page=${inner}`);
+        if (!repositories?.length) break;
+        if (repositories.some((r: any) => r.full_name === repo)) return true;
+        if (repositories.length < 100) break;
+      }
+    }
+    if (installations.length < 100) return false;
   }
-  return false;
 }
 
 /**
