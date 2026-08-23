@@ -103,6 +103,24 @@ async function installationFor(
  * without an installation means go and install the app on it. Neither is something the app can do
  * on the user's behalf.
  */
+/**
+ * What the installation covering `repo` was granted, as a sentence, for putting in an error.
+ *
+ * A refusal that says only "Resource not accessible by integration" leaves two very different
+ * causes indistinguishable: an installation that was never granted write, and one that has it and
+ * is being refused for some other reason. Reporting what it holds separates them.
+ */
+export async function grantedOn(token: string, repo: string): Promise<string> {
+  try {
+    const found = await installationFor(token, repo);
+    if (!found.found) return "the app is not installed on it at all";
+    const granted = Object.entries(found.permissions ?? {}).map(([k, v]) => `${k}: ${v}`).sort().join(", ");
+    return granted ? `its installation grants ${granted}` : "its installation grants nothing";
+  } catch {
+    return "its installation could not be read";
+  }
+}
+
 export async function findFork(token: string, upstream: string, login: string): Promise<ForkState> {
   // Membership is of the fork *network*, not of one parent. Contributors fork LandSandBoat/server
   // while pull requests target a fork of it, so an immediate-parent test would reject every

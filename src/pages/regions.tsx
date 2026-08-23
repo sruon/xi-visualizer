@@ -4,7 +4,7 @@ import RegionEditor from "../components/region_editor";
 import YamlView from "../components/yaml_view";
 import type { ZoneData } from "../components/zone_model";
 import zones from "../data/zones";
-import { compareUrl, deleteBranch, fillTemplate, findFork, findSitting, type ForkState, forkUrl, installUrl, prTitle, save, type Sitting, whoAmI } from "../github";
+import { compareUrl, deleteBranch, fillTemplate, findFork, findSitting, type ForkState, forkUrl, grantedOn, installUrl, prTitle, save, type Sitting, whoAmI } from "../github";
 import { canSignIn, completeSignIn, isCallback, signOut, startSignIn as beginSignIn, storedToken } from "../github_auth";
 import { emitRegionsBlock, mergeZone, parseMobsYaml, parseRegionsYaml, patchMobsYaml, patchRegionsYaml, placementsOf, zoneOfMobId } from "../regions";
 import type { Patrol, Placements, RegionSet, Spawn } from "../regions";
@@ -568,7 +568,13 @@ export default function RegionsPage() {
       if (result.onBranch) setPushed(true);
     } catch (e) {
       setStatus(undefined);
-      setError(`${e}`);
+      // A refusal on a write is worth one more question before reporting it: "not accessible by
+      // integration" says nothing about which of several causes it was, and what the installation
+      // holds is the fact that tells them apart.
+      const why = (e as { status?: number; }).status === 403
+        ? ` (${where.repo}: ${await grantedOn(authToken(), where.repo)})`
+        : "";
+      setError(`${e}${why}`);
     }
   };
 
