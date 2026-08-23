@@ -4,3 +4,4 @@ dist
 .env*.local
 public/pathdata_gz
 .dev.vars
+.idea/

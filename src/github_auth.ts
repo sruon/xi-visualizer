@@ -1,14 +1,16 @@
 // Installing the app and signing in, in one trip to github.com.
 //
 // A GitHub App has two separate grants and the editor needs both: authorization says who you are,
-// installation is what lets a token write to a repository. The device flow only ever does the
-// first, which is why it was the wrong flow here -- it produces a token that reads your fork
-// perfectly and refuses every commit. Ticking "Request user authorization (OAuth) during
-// installation" on the app collapses both into one redirect, and that is what this drives.
+// installation is what lets a token write to a repository. They are asked for separately, because
+// asking for them together only works once: github.com/apps/<slug>/installations/new completes and
+// redirects on a first install, but for somebody who already installed the app it just shows the
+// configure page and no code ever comes back. So this drives the authorize endpoint, which answers
+// the same way whether or not the app is installed, and the editor sends people to the install page
+// only when it finds the app missing from the repository they want to write to.
 //
-// The exchange needs the client secret, so unlike the device flow the relay does hold a credential
-// now. PKCE is not accepted on the installation entry point, so `state` is what ties the redirect
-// back to the tab that started it. Everything after sign-in talks to api.github.com directly.
+// The exchange needs the client secret, so the relay holds a credential. The authorize endpoint
+// does accept PKCE, so the code is bound to this tab by a verifier it never leaves with, and by
+// `state` on top. Everything after sign-in talks to api.github.com directly.
 
 // import.meta.env is vite's, and node has no such thing, so the tests hand the same names in
 // through globalThis rather than the module having to know it is being tested.
@@ -54,9 +56,24 @@ async function relay(path: string, body: Record<string, string>) {
 
 interface Pending {
   state: string;
+  /** PKCE: proves the code is being redeemed by whoever asked for it. */
+  verifier: string;
   /** The hash route to come back to: the callback lands on the site root with no hash of its own. */
   returnTo: string;
 }
+
+const base64url = (bytes: Uint8Array) =>
+  btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+const randomString = () => base64url(crypto.getRandomValues(new Uint8Array(32)));
+
+async function challengeFor(verifier: string) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+  return base64url(new Uint8Array(digest));
+}
+
+/** Where GitHub sends people back to. Must match a callback URL registered on the app exactly. */
+export const redirectUri = () => `${location.origin}${location.pathname}`;
 
 function readPending(): Pending | null {
   try {
@@ -67,14 +84,23 @@ function readPending(): Pending | null {
 }
 
 /**
- * Sends the user off to install the app. They choose the repositories, and because authorization is
- * requested during installation GitHub comes back to the callback URL carrying a code as well.
+ * Sends the user to authorize the app. Answers with a code whether or not the app is installed
+ * anywhere, which is the whole reason this is not the installation URL.
  */
-export function startInstall(returnTo: string) {
+export async function startSignIn(returnTo: string) {
   if (!canSignIn()) throw new Error("sign-in is not configured");
   const state = crypto.randomUUID();
-  sessionStorage.setItem(PENDING, JSON.stringify({ state, returnTo } satisfies Pending));
-  location.href = `https://github.com/apps/${APP_SLUG}/installations/new?state=${encodeURIComponent(state)}`;
+  const verifier = randomString();
+  sessionStorage.setItem(PENDING, JSON.stringify({ state, verifier, returnTo } satisfies Pending));
+
+  const query = new URLSearchParams({
+    client_id: CLIENT_ID!,
+    redirect_uri: redirectUri(),
+    state,
+    code_challenge: await challengeFor(verifier),
+    code_challenge_method: "S256",
+  });
+  location.href = `https://github.com/login/oauth/authorize?${query}`;
 }
 
 /** Whether the current URL is GitHub bringing somebody back from an installation. */
@@ -90,7 +116,7 @@ export function restoreRoute() {
 }
 
 /** Verifies the redirect belongs to this tab, exchanges the code, and keeps the token. */
-export async function completeInstall(): Promise<StoredToken> {
+export async function completeSignIn(): Promise<StoredToken> {
   const query = new URLSearchParams(location.search);
   const code = query.get("code");
   const pending = readPending();
@@ -101,11 +127,13 @@ export async function completeInstall(): Promise<StoredToken> {
   if (!pending || pending.state !== query.get("state")) {
     throw new Error("this sign-in did not start in this tab, so it was not completed");
   }
-  if (!code) {
-    throw new Error("GitHub sent no code: tick 'Request user authorization (OAuth) during installation' on the app");
-  }
+  if (!code) throw new Error("GitHub sent no code");
 
-  const out = await relay("/oauth/token", { code });
+  const out = await relay("/oauth/token", {
+    code,
+    code_verifier: pending.verifier,
+    redirect_uri: redirectUri(),
+  });
   if (out.error) throw new Error(out.error_description || out.error);
   if (!out.access_token) throw new Error("the relay returned no token");
 

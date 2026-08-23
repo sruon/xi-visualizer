@@ -1,0 +1,10 @@
+import puppeteer from "puppeteer-core";
+const b = await puppeteer.launch({ executablePath: "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe", headless: "new", args: ["--no-sandbox","--use-gl=swiftshader"] });
+const p = await b.newPage();
+p.on("pageerror", e => console.log("[pageerror]", e.message));
+await p.goto("http://localhost:3000/xi-visualizer/", { waitUntil: "networkidle0" });
+await p.evaluate(()=>[...document.querySelectorAll("a")].find(a=>a.textContent.trim()==="Navmesh Diff")?.click());
+await new Promise(r=>setTimeout(r,1000));
+console.log("inputs:", (await p.$$('input[type=file]')).length);
+console.log("body:", (await p.evaluate(()=>document.body.innerText)).slice(0,180).replace(/\n/g," | "));
+await b.close();

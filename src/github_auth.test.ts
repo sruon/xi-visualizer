@@ -25,13 +25,14 @@ let href = "";
 (globalThis as any).location = {
   search: "",
   hash: "",
+  origin: "https://editor.test",
   pathname: "/xi-visualizer/",
   set href(v: string) {
     href = v;
   },
 };
 
-const { canSignIn, completeInstall, isCallback, restoreRoute, signOut, startInstall, storedToken } = await import(
+const { canSignIn, completeSignIn, isCallback, restoreRoute, signOut, startSignIn, storedToken } = await import(
   "./github_auth.ts"
 );
 
@@ -46,15 +47,21 @@ assert.ok(canSignIn(), "configured with a client id, a relay and a slug");
 
 // --- leaving ---
 
-startInstall("#/regions/west_ronfaure");
-assert.match(
-  href,
-  /^https:\/\/github\.com\/apps\/lsb-roam-regions-editor\/installations\/new\?state=/,
-  "goes to install, which authorizes on the way, rather than to authorize alone",
+await startSignIn("#/regions/west_ronfaure");
+// Not the installation URL: that only completes and redirects the first time, and answers somebody
+// who already installed the app with a settings page and no code at all.
+assert.match(href, /^https:\/\/github\.com\/login\/oauth\/authorize\?/, "authorize, not install");
+const sent = new URLSearchParams(href.split("?")[1]);
+assert.strictEqual(sent.get("code_challenge_method"), "S256", "PKCE, which this endpoint does accept");
+assert.strictEqual(sent.get("code_challenge")!.length, 43, "a base64url sha-256 digest");
+assert.strictEqual(
+  sent.get("redirect_uri"),
+  "https://editor.test/xi-visualizer/",
+  "named explicitly, or GitHub picks the first callback registered on the app",
 );
 /** The nonce the module just issued, which is the only thing a valid callback can carry. */
 const issued = () => JSON.parse(sessionStorage.getItem("xi-regions-oauth-pending")!).state as string;
-assert.ok(href.includes(`state=${encodeURIComponent(issued())}`), "carries the nonce tying the trip back to this tab");
+assert.strictEqual(sent.get("state"), issued(), "carries the nonce tying the trip back to this tab");
 
 // --- coming back ---
 
@@ -68,9 +75,13 @@ restoreRoute();
 assert.strictEqual(location.hash, "#/regions/west_ronfaure", "back where they were, not the home page");
 
 reply = { access_token: "ghu_test", login: "someone" };
-const token = await completeInstall();
+const verifier = JSON.parse(sessionStorage.getItem("xi-regions-oauth-pending")!).verifier as string;
+assert.ok(verifier.length >= 43, "a verifier long enough to be worth hashing");
+const token = await completeSignIn();
 assert.deepStrictEqual(token, { token: "ghu_test", login: "someone" });
 assert.strictEqual(calls[0].body.code, "abc", "the code went to the relay");
+assert.strictEqual(calls[0].body.code_verifier, verifier, "redeemed with the verifier whose hash was sent out");
+assert.strictEqual(calls[0].body.redirect_uri, "https://editor.test/xi-visualizer/", "and the uri the code was issued for");
 assert.ok(!("client_secret" in calls[0].body), "the secret is the relay's business, not the page's");
 assert.deepStrictEqual(storedToken(), { token: "ghu_test", login: "someone" }, "kept for next time");
 
@@ -81,29 +92,24 @@ assert.strictEqual(storedToken(), null, "signing out forgets it");
 
 // a callback nobody started here: the pending state was consumed above, so nothing matches it
 location.search = "?code=abc&state=whatever";
-await assert.rejects(completeInstall(), /did not start in this tab/, "an unsolicited callback is refused");
+await assert.rejects(completeSignIn(), /did not start in this tab/, "an unsolicited callback is refused");
 
 // a state that does not match the one we issued
-startInstall("#/regions");
+await startSignIn("#/regions");
 location.search = "?code=abc&state=somebody-elses";
-await assert.rejects(completeInstall(), /did not start in this tab/, "a forged state is refused");
-
-// installed, but the app never asks for authorization, so there is no code to exchange
-startInstall("#/regions");
-location.search = `?installation_id=42&setup_action=install&state=${issued()}`;
-await assert.rejects(completeInstall(), /Request user authorization/, "says which setting is missing");
+await assert.rejects(completeSignIn(), /did not start in this tab/, "a forged state is refused");
 
 // the relay refusing somebody has to reach the user rather than vanish into a generic failure
-startInstall("#/regions");
+await startSignIn("#/regions");
 location.search = `?code=abc&state=${issued()}`;
 reply = { error: "not_allowed", error_description: "nobody is not on this editor's list." };
-await assert.rejects(completeInstall(), /not on this editor's list/, "says why it was refused");
+await assert.rejects(completeSignIn(), /not on this editor's list/, "says why it was refused");
 
 // a spent code cannot be replayed by reloading, since the pending state is consumed either way
-startInstall("#/regions");
+await startSignIn("#/regions");
 location.search = `?code=abc&state=${issued()}`;
 reply = { access_token: "ghu_x", login: "someone" };
-await completeInstall();
-await assert.rejects(completeInstall(), /did not start in this tab/, "the pending state is single use");
+await completeSignIn();
+await assert.rejects(completeSignIn(), /did not start in this tab/, "the pending state is single use");
 
 console.log("ok");

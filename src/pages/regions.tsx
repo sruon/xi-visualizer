@@ -5,7 +5,7 @@ import YamlView from "../components/yaml_view";
 import type { ZoneData } from "../components/zone_model";
 import zones from "../data/zones";
 import { compareUrl, findFork, type ForkState, forkUrl, installUrl, save, whoAmI } from "../github";
-import { canSignIn, completeInstall, isCallback, signOut, startInstall, storedToken } from "../github_auth";
+import { canSignIn, completeSignIn, isCallback, signOut, startSignIn as beginSignIn, storedToken } from "../github_auth";
 import { emitRegionsBlock, parseMobsYaml, parseRegionsYaml, patchMobsYaml, patchRegionsYaml, zoneOfMobId } from "../regions";
 import type { Patrol, RegionSet, Spawn } from "../regions";
 import { decompress, fetchProgress } from "../util";
@@ -116,11 +116,11 @@ export default function RegionsPage() {
   };
 
   /** Leaves the page. Everything after this happens on the way back, in finishSignIn. */
-  const startSignIn = () => {
+  const startSignIn = async () => {
     setError(undefined);
     setSigningIn(true);
     try {
-      startInstall(location.hash || "#/regions");
+      await beginSignIn(location.hash || "#/regions");
     } catch (e) {
       setError(`${e}`);
       setSigningIn(false);
@@ -132,14 +132,18 @@ export default function RegionsPage() {
     setSigningIn(true);
     setStatus("Finishing sign-in…");
     try {
-      setAccount(await completeInstall());
+      setAccount(await completeSignIn());
       setShowSignIn(false);
       await locateFork();
       setStatus(undefined);
     } catch (e) {
       setStatus(undefined);
-      setError(`${e}`);
-      setShowSignIn(true);
+      // Installing through the "Install it on ..." link can bounce a code back on its own, into a
+      // tab that never asked for one. Nothing was exchanged, so there is nothing to report.
+      if (!(authToken() && `${e}`.includes("did not start in this tab"))) {
+        setError(`${e}`);
+        setShowSignIn(true);
+      }
     } finally {
       // The code is single use and spent either way; leaving it in the bar invites a reload that
       // fails for a reason nobody could guess at.

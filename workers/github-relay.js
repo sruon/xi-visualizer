@@ -1,4 +1,4 @@
-// The only server the regions editor has: it turns an installation's code into a token, and holds
+// The only server the regions editor has: it turns an authorization code into a token, and holds
 // the list of people allowed to use the editor.
 //
 // It exists because github.com/login/oauth/access_token sends no CORS headers and requires the
@@ -9,13 +9,9 @@
 // nobody can push to base with or without it, and anyone can fork and open a pull request by hand.
 // It exists so the sign-in button is not an open door, and that is all it needs to do.
 //
-// Deploy (Cloudflare Workers free tier):
-//   npx wrangler deploy workers/github-relay.js --name github-relay --compatibility-date 2026-01-01
-//   npx wrangler secret put GH_CLIENT_SECRET    # from the app's settings page
-//   npx wrangler secret put ALLOWED_LOGINS      # e.g. sruon,someone,someone-else
-//   npx wrangler secret put GH_CLIENT_ID        # Iv23li…, public, a secret only for convenience
-// The app needs "Request user authorization (OAuth) during installation" ticked and a callback URL
-// for every origin below, or GitHub comes back without a code.
+// Deploy with `pnpm relay:deploy`, secrets with `pnpm relay:secrets`. The app needs a callback URL
+// registered for every origin below; the page names which one it wants, because GitHub otherwise
+// picks the first registered and sends people somewhere they did not come from.
 
 const ALLOWED_ORIGINS = [
   "http://localhost:5173",
@@ -59,14 +55,22 @@ export default {
     if (path !== "/oauth/token" || request.method !== "POST") return json({ error: "not_found" }, 404, origin);
     if (!env.GH_CLIENT_SECRET || !env.GH_CLIENT_ID) return json({ error: "relay_misconfigured" }, 500, origin);
 
-    const { code } = await request.json().catch(() => ({}));
+    const { code, code_verifier, redirect_uri } = await request.json().catch(() => ({}));
     if (!code) return json({ error: "no_code" }, 400, origin);
 
     // The one thing the page cannot do itself: the secret goes in here and never leaves.
     const upstream = await fetch(TOKEN_URL, {
       method: "POST",
       headers: { "Accept": "application/json", "Content-Type": "application/json" },
-      body: JSON.stringify({ client_id: env.GH_CLIENT_ID, client_secret: env.GH_CLIENT_SECRET, code }),
+      // redirect_uri has to match the one the code was issued for, which matters as soon as the
+      // app has more than one callback URL registered. code_verifier is the PKCE half.
+      body: JSON.stringify({
+        client_id: env.GH_CLIENT_ID,
+        client_secret: env.GH_CLIENT_SECRET,
+        code,
+        ...(code_verifier ? { code_verifier } : {}),
+        ...(redirect_uri ? { redirect_uri } : {}),
+      }),
     });
     const body = await upstream.json().catch(() => ({}));
 
