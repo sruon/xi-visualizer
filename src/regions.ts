@@ -42,7 +42,18 @@ export function zoneOfMobId(mobId: string | number): number {
 
 // --- parsing ---
 
+/**
+ * A yaml file with no document in it -- empty, blank, or nothing but comments.
+ *
+ * js-yaml raises "expected a document, but the input is empty" for all three, and a zone nobody has
+ * drawn regions for yet is exactly that: regions.yaml is absent for almost every zone, and reads
+ * back as "". Absent is an answer here, not a parse failure. Real syntax errors still throw.
+ */
+const hasNoDocument = (text: string) =>
+  text.split("\n").every(line => !line.trim() || line.trimStart().startsWith("#"));
+
 export function parseRegionsYaml(text: string): RegionSet {
+  if (hasNoDocument(text)) return {};
   const doc = load(text) as any;
   const out: RegionSet = {};
   for (const [name, r] of Object.entries<any>(doc?.regions ?? {})) {
@@ -52,7 +63,7 @@ export function parseRegionsYaml(text: string): RegionSet {
 }
 
 export function parseMobsYaml(text: string): Spawn[] {
-  const doc = load(text) as any;
+  const doc = hasNoDocument(text) ? undefined : (load(text) as any);
   if (!doc?.spawns) throw new Error("no `spawns:` section in this file");
   return Object.entries<any>(doc.spawns).map(([id, s]) => ({
     id: String(id),

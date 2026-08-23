@@ -97,6 +97,17 @@ const split = regionsFromPoints(camps);
 assert.strictEqual(split.length, 2, "two clusters, two regions");
 assert.ok(camps.every(p => split.some(r => containsXZ(r, p.x, p.z))), "every point lands in one of them");
 
+// Almost every zone has no regions.yaml at all, so it reads back as "" -- and js-yaml raises
+// "expected a document, but the input is empty" for an empty file, a blank one, and one holding
+// nothing but its schema comment. None of those is a broken file; they are zones nobody has drawn
+// yet, and treating them as failures made 299 of 300 zones refuse to open.
+assert.deepStrictEqual(parseRegionsYaml(""), {}, "a zone with no regions.yaml has no regions");
+assert.deepStrictEqual(parseRegionsYaml("  \n\n"), {}, "nor does a blank one");
+assert.deepStrictEqual(parseRegionsYaml("# yaml-language-server: $schema=x\n"), {}, "nor one with only its header");
+// ...but a file that is genuinely malformed still has to say so rather than read as empty
+assert.throws(() => parseRegionsYaml("regions: [oops\n"), /deficient indentation|unexpected end/i, "real syntax errors still throw");
+assert.throws(() => parseMobsYaml(""), /no `spawns:` section/, "an empty mobs.yaml is a missing section, not a yaml puzzle");
+
 // --- regions.yaml round trip and patching ---
 const regionsYaml = `# yaml-language-server: $schema=../../schemas/regions.schema.json
 
