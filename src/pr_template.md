@@ -8,9 +8,9 @@
 
 ## What does this pull request do?
 
-[Regions editor]({{editor}}).
+Edited with the [Regions editor]({{editor}})
 
-**[See it on the map]({{diff}})**
+**[See diff]({{diff}})**
 
 {{regions}} regions, {{spawns}} spawns placed.
 

@@ -106,6 +106,15 @@ export const compareUrl = (upstream: string, base: string, repo: string, branch:
   `https://github.com/${upstream}/compare/${base}...${repo.replace("/", ":")}:${branch}?quick_pull=1`;
 
 /**
+ * The pull request's title. A sitting's branch can hold several zones, so it names them while there
+ * are few enough to read in a list of pull requests, and counts them after that.
+ */
+export function prTitle(zones: string[]): string {
+  const named = zones.length === 0 ? "several zones" : zones.length <= 3 ? zones.join(", ") : `${zones.length} zones`;
+  return `[yaml] Roam regions for ${named}`;
+}
+
+/**
  * Fills `{{name}}` placeholders. A name with nothing to put in it is left as it was rather than
  * blanked, so a typo in the template shows up in the pull request instead of quietly vanishing.
  */
@@ -139,8 +148,8 @@ export interface SaveResult {
   /** Whether the branch exists now. False when there was nothing to commit and no branch yet, which
    * is the one case where offering a pull request link would lead to an empty compare page. */
   onBranch: boolean;
-  /** How many zones the branch now carries, which is also how many commits it has. */
-  zones: number;
+  /** The zones the branch now carries, one commit each, in the order they appear on it. */
+  zones: string[];
 }
 
 /** One zone's contribution to the branch: the files it changes, and why. */
@@ -213,7 +222,7 @@ export async function save(req: SaveRequest): Promise<SaveResult> {
   if (already) {
     const wanted = await Promise.all(files.map(async f => `${f.path}@${await blobSha(f.content)}`));
     const have = already.entries.map(e => `${e.path}@${e.sha}`);
-    if (wanted.sort().join() === have.sort().join()) return { unchanged: true, created: false, onBranch: true, zones: work.size };
+    if (wanted.sort().join() === have.sort().join()) return { unchanged: true, created: false, onBranch: true, zones: [...work.keys()].sort() };
   }
 
   work.set(zone, { message: req.message, entries: files.map(f => ({ path: f.path, content: f.content })) });
@@ -242,7 +251,7 @@ export async function save(req: SaveRequest): Promise<SaveResult> {
     })).sha;
   }
 
-  if (parent === baseSha) return { unchanged: true, created: false, onBranch: !!head, zones: 0 };
+  if (parent === baseSha) return { unchanged: true, created: false, onBranch: !!head, zones: [] };
 
   if (head) {
     // Force, because replaying rewrote what was there. It is a working branch and this is its point.
@@ -257,5 +266,5 @@ export async function save(req: SaveRequest): Promise<SaveResult> {
     });
   }
 
-  return { sha: parent, unchanged: false, created: !head, onBranch: true, zones: work.size };
+  return { sha: parent, unchanged: false, created: !head, onBranch: true, zones: [...work.keys()].sort() };
 }

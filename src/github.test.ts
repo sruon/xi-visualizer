@@ -5,7 +5,7 @@
 // GitHub is enough to hold all three honest.
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
-import { compareUrl, fillTemplate, findFork, save } from "./github.ts";
+import { compareUrl, fillTemplate, findFork, prTitle, save } from "./github.ts";
 
 const noHeaders = { get: () => null };
 
@@ -99,7 +99,7 @@ const branchAt = sha => ({ [`/repos/someone/server/git/ref/heads/${SITTING}`]: {
 // first save of a sitting: the branch is cut straight from the staging tip
 let calls = fakeGitHub({ ...commonRoutes });
 let result = await save({ ...saving, ...thisZone });
-assert.deepStrictEqual(result, { sha: "commit-1", unchanged: false, created: true, onBranch: true, zones: 1 });
+assert.deepStrictEqual(result, { sha: "commit-1", unchanged: false, created: true, onBranch: true, zones: [ZONE] });
 assert.ok(
   calls.some(c => c.path === "/repos/sruon/server/git/ref/heads/regions-master"),
   "cut from the staging branch itself, which forks in a network can point a ref at",
@@ -119,7 +119,7 @@ calls = fakeGitHub({
   },
 });
 result = await save({ ...saving, ...thisZone });
-assert.strictEqual(result.zones, 2, "both zones are on the branch");
+assert.deepStrictEqual(result.zones, ["east_ronfaure", ZONE], "both zones are on the branch, in a stable order");
 const commits = calls.filter(c => c.method === "POST" && c.path.endsWith("/git/commits"));
 assert.strictEqual(commits.length, 2, "one commit per zone, not one per save");
 assert.deepStrictEqual(
@@ -145,7 +145,7 @@ calls = fakeGitHub({
   },
 });
 result = await save({ ...saving, ...thisZone });
-assert.deepStrictEqual(result, { unchanged: true, created: false, onBranch: true, zones: 1 });
+assert.deepStrictEqual(result, { unchanged: true, created: false, onBranch: true, zones: [ZONE] });
 assert.ok(!calls.some(c => c.method === "PATCH" || c.path.endsWith("/git/commits") && c.method === "POST"), "nothing was rewritten");
 
 // Work already merged into the staging branch compares away, so the sitting starts over instead of
@@ -157,12 +157,12 @@ calls = fakeGitHub({
   "/repos/someone/server/compare/base-sha...branch-sha": { commits: [], files: [] },
 });
 result = await save({ ...saving, ...thisZone });
-assert.strictEqual(result.zones, 1, "only the zone being saved is left");
+assert.deepStrictEqual(result.zones, [ZONE], "only the zone being saved is left");
 
 // nothing to commit and no branch either: no pull request to offer, which is what onBranch says
 calls = fakeGitHub({ ...commonRoutes, "POST /repos/someone/server/git/trees": { sha: "tree-old" } });
 result = await save({ ...saving, ...thisZone });
-assert.deepStrictEqual(result, { unchanged: true, created: false, onBranch: false, zones: 0 });
+assert.deepStrictEqual(result, { unchanged: true, created: false, onBranch: false, zones: [] });
 
 // A refusal has to arrive naming the permission and the way out, since "Resource not accessible by
 // integration" is what GitHub says when an installation is still on the permissions it was made with.
@@ -179,6 +179,13 @@ await assert.rejects(
   /does not grant contents=write/s,
   "the error names the permission and where to grant it",
 );
+
+// --- the pull request title ---
+
+assert.strictEqual(prTitle([ZONE]), "[yaml] Roam regions for west_ronfaure");
+assert.strictEqual(prTitle(["a", "b", "c"]), "[yaml] Roam regions for a, b, c", "a few are worth naming");
+assert.strictEqual(prTitle(["a", "b", "c", "d"]), "[yaml] Roam regions for 4 zones", "more than a few are worth counting");
+assert.strictEqual(prTitle([]), "[yaml] Roam regions for several zones", "and nothing known is not an empty title");
 
 // --- the pull request body ---
 

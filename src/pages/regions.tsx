@@ -4,7 +4,7 @@ import RegionEditor from "../components/region_editor";
 import YamlView from "../components/yaml_view";
 import type { ZoneData } from "../components/zone_model";
 import zones from "../data/zones";
-import { compareUrl, fillTemplate, findFork, type ForkState, forkUrl, installUrl, save, whoAmI } from "../github";
+import { compareUrl, fillTemplate, findFork, type ForkState, forkUrl, installUrl, prTitle, save, whoAmI } from "../github";
 import { canSignIn, completeSignIn, isCallback, signOut, startSignIn as beginSignIn, storedToken } from "../github_auth";
 import { emitRegionsBlock, parseMobsYaml, parseRegionsYaml, patchMobsYaml, patchRegionsYaml, zoneOfMobId } from "../regions";
 import type { Patrol, RegionSet, Spawn } from "../regions";
@@ -110,6 +110,8 @@ export default function RegionsPage() {
   /** The fork's owner/name once we know it, for the states that have one. */
   const forkRepo = () => (fork() as { repo?: string; } | undefined)?.repo ?? "";
   const [pushed, setPushed] = createSignal(false);
+  /** The zones sitting on the working branch, so the pull request can name what it actually holds. */
+  const [branchZones, setBranchZones] = createSignal<string[]>([]);
 
   const locateFork = async () => {
     const t = authToken();
@@ -400,7 +402,7 @@ export default function RegionsPage() {
           { path: `${ZONES}/${f.folder}/mobs.yaml`, content: next.mobsYaml },
         ],
       });
-      setStatus(result.unchanged ? (result.onBranch ? "Already committed" : "Nothing to commit") : `Committed, ${result.zones} zone${result.zones === 1 ? "" : "s"} on ${branchForToday()}`);
+      setStatus(result.unchanged ? (result.onBranch ? "Already committed" : "Nothing to commit") : `Committed, ${result.zones.length} zone${result.zones.length === 1 ? "" : "s"} on ${branchForToday()}`);
       if (!result.unchanged) {
         // It is on a branch now, so this is as safe as saving to disk.
         setFiles({ ...f, ...next });
@@ -408,6 +410,7 @@ export default function RegionsPage() {
         setDirty(false);
         clearDraft(f.folder);
       }
+      if (result.zones.length) setBranchZones(result.zones);
       if (result.onBranch) setPushed(true);
     } catch (e) {
       setStatus(undefined);
@@ -433,7 +436,8 @@ export default function RegionsPage() {
       regions: String(Object.keys(pending?.regions ?? {}).length),
       spawns: String(Object.keys(pending?.assign ?? {}).length),
     });
-    const title = `Spawn regions for ${zone || "several zones"}`;
+    // What the branch holds, not whichever zone happened to be open when the link was clicked.
+    const title = prTitle(branchZones().length ? branchZones() : [zone].filter(Boolean));
     return `${compareUrl(repo(), ref(), where.repo, branchForToday())}&title=${encodeURIComponent(title)}&body=${encodeURIComponent(body)}`;
   };
 
