@@ -8,6 +8,7 @@ import { compareUrl, fillTemplate, findFork, type ForkState, forkUrl, installUrl
 import { canSignIn, completeSignIn, isCallback, signOut, startSignIn as beginSignIn, storedToken } from "../github_auth";
 import { emitRegionsBlock, mergeZone, parseMobsYaml, parseRegionsYaml, patchMobsYaml, patchRegionsYaml, placementsOf, zoneOfMobId } from "../regions";
 import type { Patrol, Placements, RegionSet, Spawn } from "../regions";
+import type { ZoneOnBranch } from "../github";
 import { decompress, fetchProgress } from "../util";
 // The wording of a pull request is prose, so it lives in a file that can be edited as prose.
 import prTemplate from "../pr_template.md?raw";
@@ -50,6 +51,8 @@ const LOCAL = "/local-zones"; // dev middleware over a folder on disk, see vite.
 // Work done on a later day starts a new branch, leaving the previous pull request alone.
 const branchForToday = () => `regions/${new Date().toISOString().slice(0, 10)}`;
 const APP_SLUG = import.meta.env.VITE_GH_APP_SLUG || "lsb-roam-regions-editor";
+/** "1 region", "3 regions" -- these end up in commit messages and pull request bodies. */
+const count = (n: number, thing: string) => `${n} ${thing}${n === 1 ? "" : "s"}`;
 
 /**
  * Draft slot for a zone, identified by the files it was taken from and not just the folder name.
@@ -111,7 +114,7 @@ export default function RegionsPage() {
   const forkRepo = () => (fork() as { repo?: string; } | undefined)?.repo ?? "";
   const [pushed, setPushed] = createSignal(false);
   /** The zones sitting on the working branch, so the pull request can name what it actually holds. */
-  const [branchZones, setBranchZones] = createSignal<string[]>([]);
+  const [branchZones, setBranchZones] = createSignal<ZoneOnBranch[]>([]);
 
   const locateFork = async () => {
     const t = authToken();
@@ -447,13 +450,15 @@ export default function RegionsPage() {
         branch: branchForToday(),
         base: ref(),
         zone: f.folder,
-        message: `${f.folder}: ${Object.keys(pending!.regions).length} regions, ${Object.keys(pending!.assign).length} spawns assigned`,
+        message: `${f.folder}: ${count(Object.keys(pending!.regions).length, "region")}, ${
+          count(Object.keys(pending!.assign).length + Object.keys(pending!.paths).length, "spawn")
+        } placed`,
         files: [
           { path: `${ZONES}/${f.folder}/regions.yaml`, content: next.regionsYaml },
           { path: `${ZONES}/${f.folder}/mobs.yaml`, content: next.mobsYaml },
         ],
       });
-      setStatus(result.unchanged ? (result.onBranch ? "Already committed" : "Nothing to commit") : `Committed, ${result.zones.length} zone${result.zones.length === 1 ? "" : "s"} on ${branchForToday()}`);
+      setStatus(result.unchanged ? (result.onBranch ? "Already committed" : "Nothing to commit") : `Committed, ${count(result.zones.length, "zone")} on ${branchForToday()}`);
       if (!result.unchanged) {
         // It is on a branch now, so this is as safe as saving to disk.
         setFiles({ ...f, ...next });
@@ -479,16 +484,25 @@ export default function RegionsPage() {
     if (where?.state !== "ready") return undefined;
     const editor = `${location.origin}${location.pathname}`;
     const zone = files()?.folder ?? "";
+    const diffFor = (name: string) =>
+      `${editor}#/regions-diff?repo=${where.repo}&base=${ref()}&head=${branchForToday()}&zone=${name}`;
+
+    // Every zone on the branch, not whichever one is open: a sitting's pull request covers all of
+    // them, and a reviewer wants a diff link per zone rather than one into the middle of it.
+    const onBranch = branchZones().length ? branchZones() : [{ zone, summary: "" }];
     const body = fillTemplate(prTemplate, {
       editor,
       zone,
       base: ref(),
-      diff: `${editor}#/regions-diff?repo=${where.repo}&base=${ref()}&head=${branchForToday()}&zone=${zone}`,
+      zones: onBranch
+        .map(z => `- [${z.zone}](${diffFor(z.zone)})${z.summary ? ` (${z.summary})` : ""}`)
+        .join("\n"),
+      diff: diffFor(zone),
       regions: String(Object.keys(pending?.regions ?? {}).length),
       spawns: String(Object.keys(pending?.assign ?? {}).length),
     });
     // What the branch holds, not whichever zone happened to be open when the link was clicked.
-    const title = prTitle(branchZones().length ? branchZones() : [zone].filter(Boolean));
+    const title = prTitle(onBranch.map(z => z.zone).filter(Boolean));
     return `${compareUrl(repo(), ref(), where.repo, branchForToday())}&title=${encodeURIComponent(title)}&body=${encodeURIComponent(body)}`;
   };
 

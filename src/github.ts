@@ -152,6 +152,17 @@ export interface SaveRequest {
   files: { path: string; content: string; }[];
 }
 
+/** A zone on the working branch: its name, and the summary its own commit carries. */
+export interface ZoneOnBranch {
+  zone: string;
+  /** The commit message with the leading `<zone>: ` taken off, e.g. "3 regions, 42 spawns placed". */
+  summary: string;
+}
+
+/** Commit messages are written `<zone>: <summary>`, which is the only place a summary survives for
+ * zones committed in an earlier save. */
+const summaryOf = (message: string) => message.slice(message.indexOf(":") + 1).trim();
+
 export interface SaveResult {
   /** The commit, absent when the files already matched the branch. */
   sha?: string;
@@ -162,7 +173,7 @@ export interface SaveResult {
    * is the one case where offering a pull request link would lead to an empty compare page. */
   onBranch: boolean;
   /** The zones the branch now carries, one commit each, in the order they appear on it. */
-  zones: string[];
+  zones: ZoneOnBranch[];
 }
 
 /** One zone's contribution to the branch: the files it changes, and why. */
@@ -202,6 +213,9 @@ function zoneOfPath(path: string): string | null {
  * saved, and it means a branch whose work has since been merged quietly starts over rather than
  * carrying the merged commits around.
  */
+const listing = (work: Map<string, ZoneWork>): ZoneOnBranch[] =>
+  [...work.keys()].sort().map(zone => ({ zone, summary: summaryOf(work.get(zone)!.message) }));
+
 export async function save(req: SaveRequest): Promise<SaveResult> {
   const { token, repo, baseRepo, branch, base, zone, files } = req;
 
@@ -235,7 +249,7 @@ export async function save(req: SaveRequest): Promise<SaveResult> {
   if (already) {
     const wanted = await Promise.all(files.map(async f => `${f.path}@${await blobSha(f.content)}`));
     const have = already.entries.map(e => `${e.path}@${e.sha}`);
-    if (wanted.sort().join() === have.sort().join()) return { unchanged: true, created: false, onBranch: true, zones: [...work.keys()].sort() };
+    if (wanted.sort().join() === have.sort().join()) return { unchanged: true, created: false, onBranch: true, zones: listing(work) };
   }
 
   work.set(zone, { message: req.message, entries: files.map(f => ({ path: f.path, content: f.content })) });
@@ -279,5 +293,5 @@ export async function save(req: SaveRequest): Promise<SaveResult> {
     });
   }
 
-  return { sha: parent, unchanged: false, created: !head, onBranch: true, zones: [...work.keys()].sort() };
+  return { sha: parent, unchanged: false, created: !head, onBranch: true, zones: listing(work) };
 }

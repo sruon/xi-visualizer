@@ -79,7 +79,7 @@ const ZONE = "west_ronfaure";
 const SITTING = "regions/2026-08-23";
 const files = [{ path: `data/zones/${ZONE}/regions.yaml`, content: "regions:\n" }];
 const saving = { token: "t", repo: FORK, baseRepo: UPSTREAM, branch: SITTING, base: "regions-master" };
-const thisZone = { zone: ZONE, message: `${ZONE}: 3 regions, 42 spawns`, files };
+const thisZone = { zone: ZONE, message: `${ZONE}: 3 regions, 42 spawns placed`, files };
 
 // The staging tip is read on every save, so it belongs to every case.
 const nth = (calls, suffix) => calls.filter(c => c.method === "POST" && c.path.endsWith(suffix)).length;
@@ -99,7 +99,7 @@ const branchAt = sha => ({ [`/repos/someone/server/git/ref/heads/${SITTING}`]: {
 // first save of a sitting: the branch is cut straight from the staging tip
 let calls = fakeGitHub({ ...commonRoutes });
 let result = await save({ ...saving, ...thisZone });
-assert.deepStrictEqual(result, { sha: "commit-1", unchanged: false, created: true, onBranch: true, zones: [ZONE] });
+assert.deepStrictEqual(result, { sha: "commit-1", unchanged: false, created: true, onBranch: true, zones: [{ zone: ZONE, summary: "3 regions, 42 spawns placed" }] });
 assert.ok(
   calls.some(c => c.path === "/repos/sruon/server/git/ref/heads/regions-master"),
   "cut from the staging branch itself, which forks in a network can point a ref at",
@@ -114,17 +114,24 @@ calls = fakeGitHub({
   ...branchAt("branch-sha"),
   [`PATCH /repos/someone/server/git/refs/heads/${SITTING}`]: {},
   "/repos/someone/server/compare/base-sha...branch-sha": {
-    commits: [{ commit: { message: "east_ronfaure: 1 region, 8 spawns" } }],
+    commits: [{ commit: { message: "east_ronfaure: 1 region, 8 spawns placed" } }],
     files: [{ filename: "data/zones/east_ronfaure/regions.yaml", sha: "blob-east", status: "modified" }],
   },
 });
 result = await save({ ...saving, ...thisZone });
-assert.deepStrictEqual(result.zones, ["east_ronfaure", ZONE], "both zones are on the branch, in a stable order");
+assert.deepStrictEqual(
+  result.zones,
+  [
+    { zone: "east_ronfaure", summary: "1 region, 8 spawns placed" },
+    { zone: ZONE, summary: "3 regions, 42 spawns placed" },
+  ],
+  "each zone comes back with the summary its own commit carries, so a pull request can list them all",
+);
 const commits = calls.filter(c => c.method === "POST" && c.path.endsWith("/git/commits"));
 assert.strictEqual(commits.length, 2, "one commit per zone, not one per save");
 assert.deepStrictEqual(
   commits.map(c => c.body.message),
-  ["east_ronfaure: 1 region, 8 spawns", `${ZONE}: 3 regions, 42 spawns`],
+  ["east_ronfaure: 1 region, 8 spawns placed", `${ZONE}: 3 regions, 42 spawns placed`],
   "each zone keeps its own message, in a stable order",
 );
 const trees = calls.filter(c => c.method === "POST" && c.path.endsWith("/git/trees"));
@@ -140,12 +147,12 @@ calls = fakeGitHub({
   ...commonRoutes,
   ...branchAt("branch-sha"),
   "/repos/someone/server/compare/base-sha...branch-sha": {
-    commits: [{ commit: { message: `${ZONE}: 3 regions, 42 spawns` } }],
+    commits: [{ commit: { message: `${ZONE}: 3 regions, 42 spawns placed` } }],
     files: [{ filename: `data/zones/${ZONE}/regions.yaml`, sha: sameBlob, status: "modified" }],
   },
 });
 result = await save({ ...saving, ...thisZone });
-assert.deepStrictEqual(result, { unchanged: true, created: false, onBranch: true, zones: [ZONE] });
+assert.deepStrictEqual(result, { unchanged: true, created: false, onBranch: true, zones: [{ zone: ZONE, summary: "3 regions, 42 spawns placed" }] });
 assert.ok(!calls.some(c => c.method === "PATCH" || c.path.endsWith("/git/commits") && c.method === "POST"), "nothing was rewritten");
 
 // Work already merged into the staging branch compares away, so the sitting starts over instead of
@@ -157,7 +164,7 @@ calls = fakeGitHub({
   "/repos/someone/server/compare/base-sha...branch-sha": { commits: [], files: [] },
 });
 result = await save({ ...saving, ...thisZone });
-assert.deepStrictEqual(result.zones, [ZONE], "only the zone being saved is left");
+assert.deepStrictEqual(result.zones, [{ zone: ZONE, summary: "3 regions, 42 spawns placed" }], "only the zone being saved is left");
 
 // nothing to commit and no branch either: no pull request to offer, which is what onBranch says
 calls = fakeGitHub({ ...commonRoutes, "POST /repos/someone/server/git/trees": { sha: "tree-old" } });
@@ -220,9 +227,22 @@ assert.strictEqual(fillTemplate("nothing to fill", {}), "nothing to fill");
 // and the template that actually ships has to be fillable by what the editor passes it
 const template = readFileSync(new URL("./pr_template.md", import.meta.url), "utf8");
 const filled = fillTemplate(template, {
-  editor: "E", zone: "Z", base: "B", diff: "D", regions: "1", spawns: "2",
+  editor: "E", zone: "Z", base: "B", diff: "D", regions: "1", spawns: "2", zones: "- [Z](D)",
 });
 assert.doesNotMatch(filled, /\{\{/, `pr_template.md has a placeholder nothing fills: ${filled.match(/\{\{\w+\}\}/g)}`);
+// The body a sitting actually produces: one line per zone with its own diff link, since a pull
+// request covers every zone touched that day and a link into the middle of it helps nobody.
+const listed = fillTemplate(template, {
+  editor: "E",
+  zones: [
+    "- [west_ronfaure](D1) (1 region, 1 spawn placed)",
+    "- [toraimarai_canal](D2) (1 region, 0 spawns placed)",
+  ].join("\n"),
+});
+assert.match(listed, /^- \[west_ronfaure\]\(D1\) \(1 region, 1 spawn placed\)$/m);
+assert.match(listed, /^- \[toraimarai_canal\]\(D2\) \(1 region, 0 spawns placed\)$/m);
+assert.doesNotMatch(listed, /\{\{/, "and nothing was left unfilled");
+
 // Deliberately not asserting which placeholders the template uses: the prose is the maintainer's
 // to edit, and dropping one is a valid edit. What must hold is that whatever it does use is fed.
 

@@ -8,11 +8,9 @@
 
 ## What does this pull request do?
 
-Edited with the [Regions editor]({{editor}})
+Edited with the [Regions editor]({{editor}}).
 
-**[See diff]({{diff}})**
-
-{{regions}} regions, {{spawns}} spawns placed.
+{{zones}}
 
 ## Steps to test these changes
 
