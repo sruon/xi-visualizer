@@ -1,8 +1,12 @@
 # Signing in to GitHub
 
-Contributors sign in, draw regions, and press Save. Each save commits both yaml files to one branch
-on **their own fork** of LSB. When they are done they click one link, which opens GitHub's pull
-request form already filled in. Nobody needs push access to LSB and nobody has to make a token.
+Contributors sign in, draw regions, and press Save. Each save puts that zone on a branch on **their
+own fork**, as exactly one commit. When they are done they click one link, which opens GitHub's pull
+request form already filled in. Nobody needs push access and nobody has to make a token.
+
+Everything funnels into **`sruon/server@regions-master`**: zone data is read from there, pull
+requests are opened against it, and pushing from there up to LandSandBoat is done by hand outside
+this editor.
 
 ## The shape, and why
 
@@ -108,12 +112,28 @@ exists so the sign-in button is not an open door. Two consequences worth knowing
    **public** repository whether or not the app was installed, so the fork reads back perfectly and
    then refuses the first write. The editor asks `/user/installations` instead of inferring it from
    a successful read.
-4. The toolbar then shows `→ their-login/server@xi-regions`, which is where Save goes.
-5. **Save** commits both files. The first save syncs their fork's `base` from upstream and cuts the
-   branch; later saves move it. Saving unchanged files does nothing rather than piling up empty
-   commits.
-6. **Open pull request** appears once something is on the branch, and opens GitHub's form with the
-   description already written.
+4. The toolbar then shows `→ their-login/server@regions/<date>`, which is where Save goes.
+5. **Save** puts the zone on that branch as one commit. The branch covers a sitting: every zone
+   touched that day is one commit on it, and saving a zone again rewrites *its* commit rather than
+   adding another. Saving unchanged files does nothing at all.
+6. **Open pull request** appears once something is on the branch, and opens GitHub's form against
+   `regions-master` with the description already written, from `src/pr_template.md`.
+
+## How the branch is built
+
+The branch is rebuilt from the staging tip on every save rather than appended to. Each zone already
+on it is replayed as a single commit -- by blob reference, so nothing is re-uploaded -- the saved
+zone's commit is replaced, and the ref is force-moved to the result. Three things fall out of that:
+
+- one commit per zone stays true however many times a zone is saved;
+- a branch whose work has since been merged compares away to nothing, so the next save starts over
+  from the new staging tip instead of dragging merged commits along;
+- a save that changes nothing has to be recognised *before* the replay, since commit hashes take in
+  the time they were made and a replay would otherwise mint new ones every time. That is why the
+  editor computes git's own blob hash locally and compares it against what the branch already has.
+
+A fork can point a ref straight at a commit in the staging repository because every fork in a
+network shares one object store, which is also why no syncing step is needed.
 
 Tokens expire after 8 hours by default. There is no refresh handling on purpose: 8 hours is a work
 session, and signing in again is one click against twenty lines of token juggling.

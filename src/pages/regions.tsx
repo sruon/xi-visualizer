@@ -4,11 +4,13 @@ import RegionEditor from "../components/region_editor";
 import YamlView from "../components/yaml_view";
 import type { ZoneData } from "../components/zone_model";
 import zones from "../data/zones";
-import { compareUrl, findFork, type ForkState, forkUrl, installUrl, save, whoAmI } from "../github";
+import { compareUrl, fillTemplate, findFork, type ForkState, forkUrl, installUrl, save, whoAmI } from "../github";
 import { canSignIn, completeSignIn, isCallback, signOut, startSignIn as beginSignIn, storedToken } from "../github_auth";
 import { emitRegionsBlock, parseMobsYaml, parseRegionsYaml, patchMobsYaml, patchRegionsYaml, zoneOfMobId } from "../regions";
 import type { Patrol, RegionSet, Spawn } from "../regions";
 import { decompress, fetchProgress } from "../util";
+// The wording of a pull request is prose, so it lives in a file that can be edited as prose.
+import prTemplate from "../pr_template.md?raw";
 
 const PATHDATA = import.meta.env.VITE_PATHDATA_URL || `${import.meta.env.BASE_URL}/pathdata_gz`;
 
@@ -36,12 +38,17 @@ interface Draft {
   paths?: Record<string, Patrol>;
 }
 
-const DEFAULT_REPO = "LandSandBoat/server";
+// Everything funnels into one staging repository: contributors open pull requests against it, and
+// pushing from there up to LandSandBoat is done by hand, outside this editor. Zone data is read
+// from the same place, so a contributor sees the regions already accepted rather than redoing them.
+const DEFAULT_REPO = "sruon/server";
+const DEFAULT_REF = "regions-master";
 const ZONES = "data/zones"; // where the zone folders live inside the repo
 const LOCAL = "/local-zones"; // dev middleware over a folder on disk, see vite.config.ts
-// One branch for all of it. Zones are small and reviewed together, and a branch per zone would mean
-// a pull request per zone, which is more ceremony than the work deserves.
-const BRANCH = "xi-regions";
+// A branch per sitting, carrying one commit per zone touched in it. A branch per zone would mean a
+// pull request per zone, and a single standing branch would have to be re-cut after every merge anyway.
+// Work done on a later day starts a new branch, leaving the previous pull request alone.
+const branchForToday = () => `regions/${new Date().toISOString().slice(0, 10)}`;
 const APP_SLUG = import.meta.env.VITE_GH_APP_SLUG || "lsb-roam-regions-editor";
 
 /**
@@ -89,7 +96,7 @@ export default function RegionsPage() {
   const [query] = useSearchParams<{ repo?: string; ref?: string; }>();
   const navigate = useNavigate();
   const repo = () => query.repo || DEFAULT_REPO;
-  const ref = () => query.ref || "base";
+  const ref = () => query.ref || DEFAULT_REF;
   // The only way in is signing in. api.github.com is CORS-enabled, so the token it yields is used
   // straight from here and needs no help from anybody.
   const [account, setAccount] = createSignal(storedToken());
@@ -383,15 +390,17 @@ export default function RegionsPage() {
       const result = await save({
         token: authToken(),
         repo: where.repo,
-        branch: BRANCH,
+        baseRepo: repo(),
+        branch: branchForToday(),
         base: ref(),
+        zone: f.folder,
         message: `${f.folder}: ${Object.keys(pending!.regions).length} regions, ${Object.keys(pending!.assign).length} spawns assigned`,
         files: [
           { path: `${ZONES}/${f.folder}/regions.yaml`, content: next.regionsYaml },
           { path: `${ZONES}/${f.folder}/mobs.yaml`, content: next.mobsYaml },
         ],
       });
-      setStatus(result.unchanged ? (result.onBranch ? "Already committed" : "Nothing to commit") : result.created ? `Branched ${BRANCH}` : "Committed");
+      setStatus(result.unchanged ? (result.onBranch ? "Already committed" : "Nothing to commit") : `Committed, ${result.zones} zone${result.zones === 1 ? "" : "s"} on ${branchForToday()}`);
       if (!result.unchanged) {
         // It is on a branch now, so this is as safe as saving to disk.
         setFiles({ ...f, ...next });
@@ -415,16 +424,17 @@ export default function RegionsPage() {
     const where = fork();
     if (where?.state !== "ready") return undefined;
     const editor = `${location.origin}${location.pathname}`;
-    const diff = `${editor}#/regions-diff?repo=${where.repo}&base=${ref()}&head=${BRANCH}&zone=${files()?.folder ?? ""}`;
-    const body = [
-      `Spawn regions drawn with the [regions editor](${editor}).`,
-      "",
-      `**[See it on the map](${diff})** — the polygons and routes side by side against \`${ref()}\`, which is`,
-      "a good deal easier to review than the coordinates.",
-      "",
-    ].join("\n");
-    const title = `Spawn regions for ${files()?.folder ?? "several zones"}`;
-    return `${compareUrl(repo(), ref(), where.repo, BRANCH)}&title=${encodeURIComponent(title)}&body=${encodeURIComponent(body)}`;
+    const zone = files()?.folder ?? "";
+    const body = fillTemplate(prTemplate, {
+      editor,
+      zone,
+      base: ref(),
+      diff: `${editor}#/regions-diff?repo=${where.repo}&base=${ref()}&head=${branchForToday()}&zone=${zone}`,
+      regions: String(Object.keys(pending?.regions ?? {}).length),
+      spawns: String(Object.keys(pending?.assign ?? {}).length),
+    });
+    const title = `Spawn regions for ${zone || "several zones"}`;
+    return `${compareUrl(repo(), ref(), where.repo, branchForToday())}&title=${encodeURIComponent(title)}&body=${encodeURIComponent(body)}`;
   };
 
   // On by default; a zone's trails are a few MB, so unticking it also stops the fetch.
@@ -508,7 +518,7 @@ export default function RegionsPage() {
             class="px-2 py-1 rounded"
             classList={{ "bg-emerald-600 hover:bg-emerald-500": dirty(), "bg-slate-700 text-slate-400": !dirty() }}
             onClick={local() ? saveLocal : saveToBranch}
-            title={local() ? "Write both files back to the local folder" : `Commit both files to ${BRANCH} on your fork`}
+            title={local() ? "Write both files back to the local folder" : `Commit both files to ${branchForToday()} on your fork`}
           >
             {dirty() ? "Save" : local() ? "Saved" : pushed() ? "Committed" : "No changes"}
           </button>
@@ -546,7 +556,7 @@ export default function RegionsPage() {
           <span class="text-red-500">{error()}</span>
         </Show>
         <Show when={fork()?.state === "ready"}>
-          <span class="text-slate-500" title="Where Save commits to">→ {forkRepo()}@{BRANCH}</span>
+          <span class="text-slate-500" title="Where Save commits to">→ {forkRepo()}@{branchForToday()}</span>
         </Show>
         <Show when={account()}>
           {who => (
@@ -575,7 +585,7 @@ export default function RegionsPage() {
             </button>
             <span class="text-slate-400">
               Takes you to GitHub to install this app on your fork of {repo()}, and signs you in on the way back. Saves then
-              commit to <b>{BRANCH}</b> there, and nothing else is touched until you open the pull request yourself.
+              commit to <b>{branchForToday()}</b> there, and nothing else is touched until you open the pull request yourself.
             </span>
           </Show>
 

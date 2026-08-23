@@ -6,7 +6,7 @@ import { diffRegions, parseMobsYaml, parseRegionsYaml, zoneOfMobId } from "../re
 import type { RegionsDiff, ZoneSide } from "../regions";
 import { loadZoneMesh } from "../zone_mesh";
 
-const DEFAULT_REPO = "LandSandBoat/server";
+const DEFAULT_REPO = "sruon/server";
 const ZONES = "data/zones";
 
 const raw = (repo: string, ref: string, zone: string, file: string) => `https://raw.githubusercontent.com/${repo}/${ref}/${ZONES}/${zone}/${file}`;
