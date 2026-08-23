@@ -300,10 +300,26 @@ export default function RegionsPage() {
     setLocal(false);
     setStatus(`Listing ${repo()}…`);
     try {
-      const res = await fetch(`https://api.github.com/repos/${repo()}/git/trees/${ref()}?recursive=1`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      // The subtree under data/zones, not the whole repository: asking for the repository root
+      // recursively downloaded nearly 7MB to read a few hundred directory names, on every visit,
+      // against a limit of 60 requests an hour for anyone not signed in. A large transfer that
+      // gives up looks exactly like "Failed to fetch".
+      const res = await fetch(
+        `https://api.github.com/repos/${repo()}/git/trees/${ref()}:${ZONES}?recursive=1`,
+        // Being signed in raises that hourly limit from 60 to 5000, and costs nothing to send.
+        authToken() ? { headers: { Authorization: `Bearer ${authToken()}` } } : undefined,
+      );
+      if (!res.ok) {
+        if (res.status === 403 && res.headers.get("x-ratelimit-remaining") === "0") {
+          throw new Error("GitHub's hourly limit for signed-out requests is used up on this network; signing in raises it from 60 to 5000");
+        }
+        if (res.status === 404) throw new Error(`no ${ref()} branch, or it cannot be read`);
+        throw new Error(`HTTP ${res.status}`);
+      }
       const json = (await res.json()) as { tree?: { path: string; }[]; };
-      const wanted = new RegExp(`^${ZONES}/([^/]+)/mobs\\.yaml$`);
+      // Paths come back relative to data/zones, so a zone is a directory holding a mobs.yaml.
+      // Fifty of them are towns with none, and those cannot be edited here.
+      const wanted = new RegExp("^([^/]+)/mobs\\.yaml$");
       const names = (json.tree ?? [])
         .map(e => e.path.match(wanted)?.[1])
         .filter((n): n is string => !!n)
@@ -313,7 +329,13 @@ export default function RegionsPage() {
       setError(names.length ? undefined : `No ${ZONES}/<zone>/mobs.yaml in ${repo()}@${ref()} yet`);
     } catch (e) {
       setStatus(undefined);
-      setError(`${repo()}: ${e}`);
+      // fetch rejects with a TypeError when the request never completed at all: nothing was
+      // refused, so there is no status to report and "Failed to fetch" on its own helps nobody.
+      setError(
+        e instanceof TypeError
+          ? `Could not reach api.github.com (${e}). The request was blocked or the connection dropped -- ${repo()} itself is public and readable without signing in.`
+          : `${repo()}: ${e}`,
+      );
     }
   };
 
