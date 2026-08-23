@@ -801,10 +801,16 @@ export default function RegionsPage() {
           <Show when={fork()?.state === "needs_sync"}>
             <span>
               Your fork <b>{forkRepo()}</b> is behind <b>{repo()}</b>, far enough that the first commit would carry workflow
-              changes into it. GitHub does not let an app do that. Sync your fork and it will work.
+              changes into it, which GitHub does not let an app do. Either fixes it:
             </span>
             <a class={BTN_GO} href={`https://github.com/${forkRepo()}`} target="_blank" rel="noreferrer">
-              Sync fork on GitHub
+              Sync fork
+            </a>
+            {/* The other way: accepting the app's permissions covers it however far behind the fork
+                is. Changing an app's permissions leaves a request the installation's owner has to
+                accept -- signing in again does not do it, since that only issues a new token. */}
+            <a class={BTN_PLAIN} href="https://github.com/settings/installations" target="_blank" rel="noreferrer">
+              or accept the app's permissions
             </a>
             <button class={BTN_QUIET} onClick={locateFork}>Done, check again</button>
           </Show>

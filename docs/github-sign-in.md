@@ -63,7 +63,12 @@ rather than counted.
      bare 403 on the ref, after the trees and commits have already been written.
 
      A contributor who keeps their fork synced never needs it. The editor checks which case applies
-     and offers "sync your fork" rather than the permission where that is enough.
+     and offers both ways out.
+
+     Changing an app's permissions after people have installed it leaves a request each of them has
+     to **accept**, at github.com/settings/installations. Signing in again does not do it: that
+     issues a new user token, and an installation keeps the permissions it was created with until
+     its owner says otherwise.
    - Where can this app be installed: **Any account**.
    - Copy the client id (`Iv23li…`), and **generate a client secret**.
 
