@@ -140,8 +140,8 @@ export default function RegionsPage() {
 
       // The zone on screen was read from staging before we knew there was a branch carrying a newer
       // version of it. Re-read it, unless there is unsaved work that a reload would throw away.
-      const open = files()?.folder;
-      if (open && now.ancestor && !dirty()) await openZone(open);
+      const showing = files()?.folder;
+      if (showing && now.ancestor && !dirty()) await openZone(showing);
     } catch (e) {
       setFork(undefined);
       setError(`${e}`);
@@ -184,6 +184,8 @@ export default function RegionsPage() {
       setSigningIn(false);
     }
   };
+  /** False until we know whether there is a working branch, so the first read goes to the right place. */
+  const [authSettled, setAuthSettled] = createSignal(false);
   const [showSignIn, setShowSignIn] = createSignal(false);
   const [local, setLocal] = createSignal(false);
   const [folders, setFolders] = createSignal<string[]>([]);
@@ -232,8 +234,9 @@ export default function RegionsPage() {
 
   onMount(() => {
     listZones();
-    if (isCallback()) finishSignIn();
-    else if (authToken()) locateFork();
+    if (isCallback()) finishSignIn().finally(() => setAuthSettled(true));
+    else if (authToken()) locateFork().finally(() => setAuthSettled(true));
+    else setAuthSettled(true);
     const guard = (e: BeforeUnloadEvent) => {
       if (dirty()) e.preventDefault();
     };
@@ -247,6 +250,9 @@ export default function RegionsPage() {
   // The URL is the source of truth for which zone is open, so deep links work without the listing.
   createEffect(() => {
     const zone = params.zone;
+    // Waiting costs a moment; not waiting reads the zone from staging and shows work already
+    // committed as missing.
+    if (!authSettled()) return;
     if (zone && zone !== untrack(files)?.folder) openZone(zone);
   });
 
@@ -353,7 +359,10 @@ export default function RegionsPage() {
     setSource(stamp);
     dropStaleDrafts(next.folder, stamp);
     setDraft(readDraft(next.folder, stamp));
-    setEditorKey(next.folder);
+    // Keyed on the content, not the name: re-opening the same zone from a different branch used to
+    // leave the key unchanged, so the editor was never rebuilt and went on showing the files it
+    // first mounted with while every signal underneath it held the newer ones.
+    setEditorKey(`${next.folder}:${stamp}`);
   };
 
   const restoreDraft = () => {
