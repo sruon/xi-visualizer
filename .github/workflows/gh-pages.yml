@@ -51,6 +51,11 @@ jobs:
         run: pnpm run build
         env:
           VITE_PATHDATA_URL: https://f002.backblazeb2.com/file/ffxi-roam-data
+          # All three are public: the client id and slug identify the app, they do not authorise
+          # anything. The client secret lives only in the relay, never here.
+          VITE_GH_CLIENT_ID: Iv23li7drJXDFS8WB5b4
+          VITE_GH_APP_SLUG: lsb-roam-regions-editor
+          VITE_GH_RELAY: https://github-relay.sruonlsb.workers.dev
 
       - name: Setup Pages
         uses: actions/configure-pages@v4

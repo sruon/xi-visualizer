@@ -21,8 +21,9 @@ it is. This document covers the inputs, the recommended algorithm, and the traps
 Filenames use the zone name with spaces as underscores and ` - ` as `_-_` (`Abyssea_-_Altepa.json.gz`);
 `src/data/zones.json` maps zone id → name.
 
-**Zone data** — `lsb/data/zones/<zone>/{zone.yaml,mobs.yaml}` on branch **`zone_yaml`**. Only three
-zones exist there today: `qulun_dome`, `valkurm_dunes`, `west_ronfaure`. All three have roam data.
+**Zone data** — `lsb/data/zones/<zone>/{regions.yaml,mobs.yaml}` on **`LandSandBoat/server@base`**,
+where all 300 zones now live. `regions.yaml` exists only where someone has drawn regions; a zone
+without one has none yet.
 `mobs.yaml` holds `spawns:` keyed by mobid with `template:`, `at: [x, y, z, rot]`, `level:`.
 
 **How they line up** (measured on west_ronfaure): 602 spawns, 409 of them have roam data (68%), and
@@ -123,10 +124,10 @@ For each zone you touch:
 
 1. `node src/regions.test.ts` and `node src/regions_files.test.ts` still pass.
 2. Re-parse your own output and assert: every `region:` names a region defined in that zone's
-   `zone.yaml`; no ring self-intersects (`selfIntersects()`); every region has at least one spawn;
+   `regions.yaml`; no ring self-intersects (`selfIntersects()`); every region has at least one spawn;
    report the unassigned count.
 3. `git diff` shows **only** `at:` lines replaced by `region:` lines in `mobs.yaml`, one per
-   assigned spawn, plus one added `regions:` block in `zone.yaml`. Any other change is a bug in the
+   assigned spawn, plus the zone's `regions.yaml`. Any other change is a bug in the
    writer, not a formatting preference.
 4. Open the zone in the visualizer's Regions page and look at it. The Review tab lists degenerate
    rings, self-crossings, empty regions, dangling names, and spawns nearer another region's floor.

@@ -5,7 +5,12 @@ import { render } from "solid-js/web";
 
 import { HashRouter } from "@solidjs/router";
 import App from "./app";
+import { restoreRoute } from "./github_auth";
 import { routes } from "./routes";
+
+// GitHub sends people back from an installation to the site root, which under a hash router is the
+// home page rather than the editor they left. Put the route back before the router reads it.
+restoreRoute();
 
 const root = document.getElementById("root");
 

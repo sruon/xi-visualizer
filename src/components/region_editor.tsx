@@ -2042,7 +2042,7 @@ export default function RegionEditor(props: RegionEditorProps) {
                     <span class="text-slate-400">{patrol.legs.length} legs</span>
                     <button
                       class="px-1 text-slate-400 hover:text-white"
-                      title={patrol.loop === false ? "Walks back along the route" : "Closes into a loop"}
+                      title={patrol.loop === false ? "path: walks back along the same legs" : "circuit: closes into a loop"}
                       onClick={e => {
                         e.stopPropagation();
                         checkpoint(`${props.spawns.find(s => s.id === id)?.name ?? id} walks back and forth`);

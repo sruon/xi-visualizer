@@ -1,53 +1,127 @@
 # Signing in to GitHub
 
-Contributors edit a zone in the browser and propose the result as a pull request. They do not need
-push access to the data repository and they do not need to create a token: they sign in, and if they
-cannot push, the change goes to their own fork and the pull request comes back to yours.
+Contributors sign in, draw regions, and press Save. Each save commits both yaml files to one branch
+on **their own fork** of LSB. When they are done they click one link, which opens GitHub's pull
+request form already filled in. Nobody needs push access to LSB and nobody has to make a token.
 
-## Why a relay is needed
+## The shape, and why
 
-`api.github.com` sends CORS headers, so everything after sign-in happens directly from the page.
-`github.com/login/*` does not, so the token exchange cannot be done by a browser at all. That is
-true of every flow, PKCE included, so a static site needs something in the middle.
+**A relay is unavoidable.** `api.github.com` sends CORS headers, so everything after sign-in happens
+straight from the page. `github.com/login/oauth/access_token` does not, and it requires the client
+secret — GitHub demands it even when PKCE is used. A static page can hold neither, so a static site
+needs something in the middle. `workers/github-relay.js` is that, and nothing else.
 
-The device flow is the one worth using here, because it **needs no client secret**. The relay is
-therefore not a secret-holder: it forwards two POSTs and adds a header, and there is nothing in it
-worth stealing. `workers/github-relay.js` is the whole thing, 50 lines.
+**The install flow, not the device flow.** A GitHub App has two separate grants and this needs both:
+*authorization* says who you are, *installation* is what lets a token write to a repository. The
+device flow only ever does the first, so it produces a token that reads your fork perfectly and
+refuses every commit — which is exactly the wall we hit. Ticking **"Request user authorization
+(OAuth) during installation"** collapses both into one redirect.
+
+PKCE is not accepted on the installation entry point, so `state` is what ties the redirect back to
+the tab that began it. GitHub persists `state` across the install, and the page also uses it to
+remember which zone to return to.
+
+**A GitHub App, not an OAuth app**, so the consent screen reads "access to `you/server`" instead of
+"write to every public repository you own", and can be revoked for that one repo.
+
+**Two steps the app cannot do**: creating the fork and opening the pull request. Both require the
+app to be installed on the account owning the *upstream* repo — LandSandBoat's, not ours. So both
+are links the user clicks on github.com. This is a small loss and one real gain: the pull request
+form arrives with a description we wrote, carrying a link to the visual diff of the branch.
 
 ## Setting it up, once
 
-1. **Create an OAuth app**: github.com/settings/developers → New OAuth App. Any callback URL will
-   do, the device flow does not use it. Tick **Enable Device Flow**, or GitHub answers every request
-   with `device_flow_disabled`. Copy the client id; it is public and belongs in the build.
+1. **Create the GitHub App** at github.com/settings/apps → New GitHub App.
+   - Tick **Request user authorization (OAuth) during installation**. Without it GitHub completes
+     the installation and returns no code, and the editor says so rather than guessing.
+   - **Callback URL**: one per origin the editor is served from, and they must match exactly —
+     `https://sruon.github.io/xi-visualizer/` and `http://localhost:5199/xi-visualizer/`.
+   - Untick Webhook.
+   - Repository permissions: **Contents: Read and write**. That is all it needs; it never opens the
+     pull request, so it does not need Pull requests.
+   - Where can this app be installed: **Any account**.
+   - Copy the client id (`Iv23li…`), and **generate a client secret**.
 
-2. **Deploy the relay** and allow the site's origin in its `ALLOWED` list:
+   Device Flow can be left off. It is not used.
+
+2. **Deploy the relay.** Config is `workers/wrangler.toml`; wrangler comes from `npx`, so there is
+   nothing to install.
 
    ```
-   npx wrangler deploy workers/github-relay.js --name github-relay --compatibility-date 2026-01-01
+   npx wrangler@4 login             # interactive, opens a browser against your Cloudflare account
+   pnpm relay:deploy                # prints the https://github-relay.<subdomain>.workers.dev address
+   cp .dev.vars.example .dev.vars   # then fill in GH_CLIENT_SECRET
+   pnpm relay:secrets               # uploads all three from that file
    ```
 
-3. **Point the build at both**, in `.github/workflows/gh-pages.yml` under the existing `env:`:
+   `relay:secrets` reads `.dev.vars` rather than prompting, because `wrangler secret put` asks only
+   "Enter a secret value" without naming the key — putting the client id and the client secret the
+   wrong way round is easy, and secrets cannot be read back to check. The script refuses to upload
+   if the two look swapped, and uploading again simply overwrites.
 
-   ```yaml
-   VITE_GH_CLIENT_ID: Iv1.xxxxxxxxxxxx
-   VITE_GH_RELAY: https://github-relay.<your-subdomain>.workers.dev
-   ```
+   `pnpm relay:deploy` again after any change to the worker. Secrets survive redeploys, so
+   `relay:secrets` is only needed when one of them changes.
 
-   Locally, put the same two names in `.env.local`. With neither set, the sign-in button does not
-   appear and the editor asks for a pasted token exactly as it does today.
+   Add the site's origin to `ALLOWED_ORIGINS` in the worker first, or the browser will refuse the
+   response.
 
-## What contributors get asked for
+   **Where the secret lives:** only in Cloudflare's secret store, put there by `wrangler secret put`
+   and injected as `env.GH_CLIENT_SECRET`. It is never in the repository and never readable back —
+   rotate it on the app's settings page if it ever leaks. `.dev.vars` (gitignored, and wrangler's
+   own convention) holds it locally: `pnpm relay` reads it to run the worker on node, and
+   `pnpm relay:secrets` uploads it. It is never passed as a command argument, so it stays out of
+   the shell history and the process list.
 
-The scope requested is `public_repo`: enough to write to public repositories, and no reach at all
-into private ones. That matters because the token is kept in the browser's localStorage. If the data
-repository is ever made private this has to become `repo`, which grants a great deal more, and is a
-good reason to keep the data public.
+   **Never put it in `.env.local`.** Vite inlines every `VITE_*` name into the public JavaScript
+   bundle, which is correct for the client id and catastrophic for the secret.
 
-## What happens on Propose
+3. **Point the build at all three.** `.github/workflows/gh-pages.yml` already carries the client id
+   and the slug; uncomment `VITE_GH_RELAY` there with the address step 2 printed. All three are
+   public — they identify the app, they do not authorise anything — so they are literals in the
+   workflow rather than repository secrets.
 
-- With push access: a `regions/<zone>` branch on the data repository, and a pull request from it.
-- Without: the repository is forked (idempotent, an existing fork is reused), the branch is made
-  there, and the pull request is opened across to the data repository. The status line says
-  `PR opened via <your-login>` so it is clear where the commits went.
+   Locally the same three names go in `.env.local`. Note that vite bakes `VITE_*` into the bundle at
+   **build** time, so `pnpm dev` will not pick up a change to `.env.local` without a restart, and a
+   preview build has to be rebuilt. With any of them missing there is no way to sign in at all: the
+   editor says so and leaves **Copy YAML** as the way to get the files out.
 
-Both paths reuse an open pull request for the same zone rather than opening a second one.
+## What the allowlist is, and is not
+
+It gates **who gets to use this editor**. It is not a boundary around LSB: nobody can push to `base`
+with or without it, and anyone who wants to can fork and open a pull request by hand today. It
+exists so the sign-in button is not an open door. Two consequences worth knowing:
+
+- It is checked when the token is issued, not on every write. Removing a login stops new sign-ins;
+  it does not reach back and invalidate a token somebody already holds. Revoke the app installation
+  for that to be immediate.
+- Anyone can still paste their own token into a self-hosted copy and commit to their own fork. That
+  is their repository and their business.
+
+## What a contributor sees
+
+1. **Install & sign in** → github.com, choose the fork to install on, and back to the editor already
+   signed in. No code to type.
+2. If they have no fork, the panel says so and links to **Fork it on GitHub**. One click, then
+   "Done, check again". An app cannot fork on someone's behalf.
+3. If they are signed in but the app is not installed on the fork, the panel says *that* and links
+   to the install page. This case is worth catching properly: a user access token can read any
+   **public** repository whether or not the app was installed, so the fork reads back perfectly and
+   then refuses the first write. The editor asks `/user/installations` instead of inferring it from
+   a successful read.
+4. The toolbar then shows `→ their-login/server@xi-regions`, which is where Save goes.
+5. **Save** commits both files. The first save syncs their fork's `base` from upstream and cuts the
+   branch; later saves move it. Saving unchanged files does nothing rather than piling up empty
+   commits.
+6. **Open pull request** appears once something is on the branch, and opens GitHub's form with the
+   description already written.
+
+Tokens expire after 8 hours by default. There is no refresh handling on purpose: 8 hours is a work
+session, and signing in again is one click against twenty lines of token juggling.
+
+## If a write fails with "Resource not accessible by integration"
+
+That is GitHub saying the installation does not grant what the call needs. The editor turns it into
+the permission's name and the page to fix it on, because the raw message names neither. The usual
+causes are the app not being installed on that repository at all, or an installation still holding
+the permissions it was created with after the app's were widened — the account owner has to accept
+the new permissions before they take effect.

@@ -6,9 +6,9 @@ import {
   emitRegionsBlock,
   floorYAt,
   parseMobsYaml,
-  parseZoneYaml,
+  parseRegionsYaml,
   patchMobsYaml,
-  patchZoneYaml,
+  patchRegionsYaml,
   regionArea,
   regionAt,
   regionsFromPoints,
@@ -95,21 +95,25 @@ const split = regionsFromPoints(camps);
 assert.strictEqual(split.length, 2, "two clusters, two regions");
 assert.ok(camps.every(p => split.some(r => containsXZ(r, p.x, p.z))), "every point lands in one of them");
 
-// --- zone.yaml round trip and patching ---
-const zoneYaml = `# yaml-language-server: $schema=../../schemas/zone.schema.json
-type: [outdoors]
+// --- regions.yaml round trip and patching ---
+const regionsYaml = `# yaml-language-server: $schema=../../schemas/regions.schema.json
 
-zonelines:
+regions:
 
-  z2s0:
-    from:  [-119.065, -65.707, 280.921]
-    to:    southern_san_doria
+  old_one:
+    poly:
+      - [0.00, 0.00, 0.00]
 `;
-const patched = patchZoneYaml(zoneYaml, regions);
-assert.ok(patched.startsWith(zoneYaml.trimEnd()), "existing zone.yaml content survives verbatim");
-assert.deepStrictEqual(parseZoneYaml(patched), regions, "regions round-trip through zone.yaml");
-assert.strictEqual(patchZoneYaml(patched, regions), patched, "patching is idempotent");
-assert.ok(!patchZoneYaml(patched, {}).includes("regions:"), "empty region set removes the block");
+const patched = patchRegionsYaml(regionsYaml, regions);
+assert.ok(patched.startsWith("# yaml-language-server:"), "the schema header survives verbatim");
+assert.deepStrictEqual(parseRegionsYaml(patched), regions, "regions round-trip through regions.yaml");
+assert.strictEqual(patchRegionsYaml(patched, regions), patched, "patching is idempotent");
+assert.ok(!patchRegionsYaml(patched, {}).includes("regions:"), "empty region set removes the block");
+// most zones have none, so the first region drawn writes the whole file
+const fresh = patchRegionsYaml("", regions);
+assert.ok(fresh.startsWith("# yaml-language-server: $schema=../../schemas/regions.schema.json\n\nregions:"), "a new file carries its schema");
+assert.deepStrictEqual(parseRegionsYaml(fresh), regions, "and parses back");
+assert.strictEqual(patchRegionsYaml("", {}), "", "no regions, no file");
 assert.match(emitRegionsBlock(regions), /^  f1_hall:$/m);
 assert.ok(emitRegionsBlock(regions).indexOf("f1_hall") < emitRegionsBlock(regions).indexOf("f2_hall"), "sorted by name");
 
@@ -139,7 +143,8 @@ slots:
 `;
 const positions = Object.fromEntries(parseMobsYaml(mobsYaml).filter(s => s.at).map(s => [s.id, s.at!]));
 const assigned = patchMobsYaml(mobsYaml, { "17186822": "f1_hall" }, positions);
-assert.match(assigned, /template: Wild_Rabbit\n {4}level: {4}\[1, 1\]\n {4}region: {3}f1_hall\n/, "region replaces the fixed spawn point");
+// the placement key takes the line at: had, and the entry stays aligned to its widest key
+assert.match(assigned, /template: Wild_Rabbit\n {4}region: {3}f1_hall\n {4}level: {4}\[1, 1\]\n/, "region replaces the fixed spawn point");
 assert.ok(!assigned.includes("-317.406"), "at: removed once a region places it");
 assert.ok(!assigned.includes("stale_region"), "assignment dropped when no longer assigned");
 assert.ok(assigned.includes("templates:\n\n  Wild_Rabbit:"), "templates untouched");
@@ -163,6 +168,19 @@ assert.deepStrictEqual(spawns[0], {
 });
 assert.deepStrictEqual(spawns[1].at, [1, 2, 3]);
 assert.strictEqual(spawns[1].region, undefined);
+
+// a route is `circuit:` when it closes and `path:` when it is walked out and back
+const legs: Vertex[] = [[0, -50, 0], [10, -50, 0], [10, -50, 10]];
+const circuit = patchMobsYaml(mobsYaml, {}, positions, { "17186822": { legs } });
+assert.match(circuit, /^ {4}circuit:$/m, "a closed route is a circuit");
+assert.ok(!circuit.includes("-317.406"), "at: gives way to the route");
+assert.deepStrictEqual(parseMobsYaml(circuit)[0].path, legs);
+assert.strictEqual(parseMobsYaml(circuit)[0].loop, undefined, "circuit closes, which is the default");
+const backAndForth = patchMobsYaml(mobsYaml, {}, positions, { "17186822": { legs, loop: false } });
+assert.match(backAndForth, /^ {4}path:$/m, "an out-and-back route is a path");
+assert.strictEqual(parseMobsYaml(backAndForth)[0].loop, false);
+assert.strictEqual(patchMobsYaml(circuit, {}, positions, { "17186822": { legs } }), circuit, "routes patch idempotently");
+assert.strictEqual(patchMobsYaml(circuit, {}, positions), mobsYaml.replace("    region:   stale_region\n", ""), "dropping a route puts at: back");
 assert.strictEqual(zoneOfMobId("17186822"), 100); // West Ronfaure
 
 // --- tracing a route out of a trail ---
@@ -259,10 +277,10 @@ const patrolled = patchMobsYaml(mobsYaml, {}, positions, {
 });
 assert.match(
   patrolled,
-  /template: Wild_Rabbit\n {4}level: {4}\[1, 1\]\n {4}path:\n {6}- \[1\.000, -50\.000, 2\.000\]\n {6}- \[3\.000, -50\.000, 4\.000\]\n {6}- \[5\.000, -50\.000, 6\.000\]\n/,
+  /template: Wild_Rabbit\n {4}circuit:\n {6}- \[1\.000, -50\.000, 2\.000\]\n {6}- \[3\.000, -50\.000, 4\.000\]\n {6}- \[5\.000, -50\.000, 6\.000\]\n {4}level: \[1, 1\]\n/,
   "legs replace the fixed spawn point",
 );
-assert.match(patrolled, / {4}loop: {5}false\n {4}path:\n/, "loop only written when it is not the default");
+assert.match(patrolled, /template: Tunnel_Worm\n {4}path:\n/, "an out-and-back route is a path, not a circuit");
 assert.ok(!patrolled.includes("-317.406"), "at: removed once a route places it");
 
 const walkers = parseMobsYaml(patrolled);

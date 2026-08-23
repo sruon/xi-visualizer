@@ -1,0 +1,16 @@
+# Copy to .dev.vars (gitignored) and fill in. `pnpm relay` reads it to run the worker locally, and
+# `pnpm relay:secrets` uploads all three to Cloudflare.
+#
+# Never put these in .env.local: VITE_* names are inlined into the public bundle at build time.
+
+# GitHub usernames allowed to sign in to the editor, comma separated. The relay asks GitHub who a
+# token belongs to and refuses anyone not listed. This gates who can use the editor; it is not a
+# boundary around LSB, since anyone can fork and open a pull request by hand regardless.
+ALLOWED_LOGINS=sruon
+
+# The GitHub App's client id, from its settings page. Public, always starts Iv23li.
+GH_CLIENT_ID=Iv23li7drJXDFS8WB5b4
+
+# The GitHub App's client secret, from the same page ("Generate a new client secret").
+# This is the only real secret here. It never goes in the repo or the bundle.
+GH_CLIENT_SECRET=

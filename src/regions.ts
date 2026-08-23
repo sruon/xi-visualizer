@@ -24,7 +24,7 @@ export interface Spawn {
   region?: string;
   /** Patrol route. The mob spawns on the first leg, so this replaces `at:` too. */
   path?: Vertex[];
-  /** Whether the route closes back on itself. Absent means true. */
+  /** Whether the route closes back on itself. Absent means true, which is yaml's `circuit:`. */
   loop?: boolean;
 }
 
@@ -42,7 +42,7 @@ export function zoneOfMobId(mobId: string | number): number {
 
 // --- parsing ---
 
-export function parseZoneYaml(text: string): RegionSet {
+export function parseRegionsYaml(text: string): RegionSet {
   const doc = load(text) as any;
   const out: RegionSet = {};
   for (const [name, r] of Object.entries<any>(doc?.regions ?? {})) {
@@ -62,10 +62,14 @@ export function parseMobsYaml(text: string): Spawn[] {
     z: s?.at?.[2] ?? 0,
     at: Array.isArray(s?.at) ? s.at.map(Number) : undefined,
     region: s?.region ? String(s.region) : undefined,
-    path: Array.isArray(s?.path) ? s.path.map((p: any) => [Number(p[0]), Number(p[1]), Number(p[2])] as Vertex) : undefined,
-    loop: typeof s?.loop === "boolean" ? s.loop : undefined,
+    // `circuit:` closes back on itself, `path:` is walked out and back along the same legs.
+    path: legsOf(s?.circuit ?? s?.path),
+    loop: Array.isArray(s?.path) ? false : undefined,
   }));
 }
+
+const legsOf = (v: any): Vertex[] | undefined =>
+  Array.isArray(v) ? v.map((p: any) => [Number(p[0]), Number(p[1]), Number(p[2])] as Vertex) : undefined;
 
 // --- emitting ---
 
@@ -89,19 +93,54 @@ export function emitRegionsBlock(regions: RegionSet): string {
   const names = Object.keys(regions).sort();
   if (!names.length) return "";
   const out = ["regions:"];
+  let afterHoles = false;
   for (const name of names) {
     const rings = regions[name].rings;
-    out.push("", `  ${name}:`);
+    // ruamel drops a blank line that follows a nested sequence, so leaving one after a region with
+    // holes would fail LSB's format check. Everywhere else the blank line survives and is kept.
+    if (!afterHoles) out.push("");
+    afterHoles = rings.length > 1;
+    out.push(`  ${name}:`);
     out.push("    poly:");
     for (const v of canonicalRing(rings[0] ?? [])) out.push(`      - ${vtx(v)}`);
     if (rings.length > 1) {
       out.push("    holes:");
       for (const hole of rings.slice(1)) {
-        canonicalRing(hole).forEach((v, i) => out.push(`      ${i === 0 ? "-" : " "} - ${vtx(v)}`));
+        // ruamel's nesting, as tools/yaml/format.py in LSB writes it and its CI check demands.
+        canonicalRing(hole).forEach((v, i) => out.push(`      ${i === 0 ? "-  " : "   "} - ${vtx(v)}`));
       }
     }
   }
   return out.join("\n") + "\n";
+}
+
+const SPAWN_KEY = /^ {4}([a-z_]+): +(\S.*)$/;
+
+/**
+ * Pads the `key: value` lines of one spawn to the widest key among them, which is what LSB's
+ * tools/yaml/format.py does and its CI checks. Adding or removing a key can change that width, so
+ * the whole entry is re-padded rather than the new line alone. Anything deeper, or a block opener,
+ * ends the run exactly as the formatter's does.
+ */
+function alignKeys(body: string[]): string[] {
+  const out = [...body];
+  let run: number[] = [];
+  const flush = () => {
+    if (run.length) {
+      const width = Math.max(...run.map(i => out[i].match(SPAWN_KEY)![1].length)) + 2;
+      for (const i of run) {
+        const [, key, value] = out[i].match(SPAWN_KEY)!;
+        out[i] = "    " + `${key}: `.padEnd(width) + value;
+      }
+    }
+    run = [];
+  };
+  for (let i = 0; i < out.length; i++) {
+    if (SPAWN_KEY.test(out[i])) run.push(i);
+    else flush();
+  }
+  flush();
+  return out;
 }
 
 function splitLines(text: string) {
@@ -116,8 +155,15 @@ function blockEnd(lines: string[], start: number) {
   return i;
 }
 
-/** Replaces (or appends) the top-level `regions:` block, leaving the rest of zone.yaml untouched. */
-export function patchZoneYaml(text: string, regions: RegionSet): string {
+const REGIONS_HEADER = "# yaml-language-server: $schema=../../schemas/regions.schema.json";
+
+/** Replaces (or appends) the top-level `regions:` block. Writes the whole file when there is none. */
+export function patchRegionsYaml(text: string, regions: RegionSet): string {
+  if (!text.trim()) {
+    return Object.keys(regions).length ? `${REGIONS_HEADER}
+
+${emitRegionsBlock(regions)}` : "";
+  }
   const { lines, eol } = splitLines(text);
   const block = emitRegionsBlock(regions).split("\n").slice(0, -1);
   const at = lines.findIndex(l => /^regions:\s*$/.test(l));
@@ -162,7 +208,7 @@ export function patchMobsYaml(
     const keep: string[] = [];
     let inPath = false;
     for (const line of body) {
-      if (/^\s+path:/.test(line)) {
+      if (/^\s+(path|circuit):/.test(line)) {
         inPath = true;
         continue;
       }
@@ -170,27 +216,24 @@ export function patchMobsYaml(
         if (/^\s+-/.test(line)) continue;
         inPath = false;
       }
-      if (/^\s+(region|loop):/.test(line)) continue;
+      if (/^\s+region:/.test(line)) continue;
       if (placed && /^\s+at:/.test(line)) continue;
       keep.push(line);
     }
 
-    if (!placed && !keep.some(l => /^\s+at:/.test(l)) && positions[id]) {
+    // Placement sits where `at:` sat, right after the template, which is how LSB writes it.
+    const where = keep.findLastIndex(l => /^ {4}(template|script):/.test(l)) + 1;
+    if (region) {
+      keep.splice(where, 0, `    region: ${region}`);
+    } else if (patrol) {
+      const key = patrol.loop === false ? "path" : "circuit";
+      keep.splice(where, 0, `    ${key}:`, ...patrol.legs.map(v => `      - [${v.map(n => n.toFixed(3)).join(", ")}]`));
+    } else if (!keep.some(l => /^ {4}at:/.test(l)) && positions[id]) {
       const at = positions[id].map((n, i) => (i < 3 ? n.toFixed(3) : String(n))).join(", ");
-      const after = keep.findLastIndex(l => /^\s+(template|script):/.test(l));
-      keep.splice(after + 1, 0, `    at:       [${at}]`);
+      keep.splice(where, 0, `    at: [${at}]`);
     }
 
-    let last = keep.length;
-    while (last > 0 && keep[last - 1].trim() === "") last--;
-    if (region) keep.splice(last, 0, `    region:   ${region}`);
-    else if (patrol) {
-      const lines = [`    path:`, ...patrol.legs.map(v => `      - [${v.map(n => n.toFixed(3)).join(", ")}]`)];
-      if (patrol.loop === false) lines.unshift(`    loop:     false`);
-      keep.splice(last, 0, ...lines);
-    }
-
-    out.push(...keep);
+    out.push(...alignKeys(keep));
     id = null;
     body = [];
   };

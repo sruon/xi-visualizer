@@ -1,0 +1,13 @@
+# Config for the sign-in relay. Deploy with `pnpm relay:deploy`.
+#
+# There are no secrets here and there must never be: GH_CLIENT_ID, GH_CLIENT_SECRET and
+# ALLOWED_LOGINS are set with `wrangler secret put`, which keeps them encrypted at Cloudflare and
+# out of the repository. See docs/github-sign-in.md.
+
+name = "github-relay"
+main = "github-relay.js"
+compatibility_date = "2026-01-01"
+
+# Gives the worker a https://github-relay.<subdomain>.workers.dev address, which is the value
+# VITE_GH_RELAY needs at build time.
+workers_dev = true

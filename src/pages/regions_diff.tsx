@@ -2,21 +2,21 @@ import { useSearchParams } from "@solidjs/router";
 import { createEffect, createResource, createSignal, For, Show } from "solid-js";
 import RegionDiffViewer, { STATUS_COLOR } from "../components/region_diff_viewer";
 import zones from "../data/zones";
-import { diffRegions, parseMobsYaml, parseZoneYaml, zoneOfMobId } from "../regions";
+import { diffRegions, parseMobsYaml, parseRegionsYaml, zoneOfMobId } from "../regions";
 import type { RegionsDiff, ZoneSide } from "../regions";
 import { loadZoneMesh } from "../zone_mesh";
 
-const DEFAULT_REPO = "sruon/lsb-roam-data-temp";
+const DEFAULT_REPO = "LandSandBoat/server";
 const ZONES = "data/zones";
 
 const raw = (repo: string, ref: string, zone: string, file: string) => `https://raw.githubusercontent.com/${repo}/${ref}/${ZONES}/${zone}/${file}`;
 
 async function side(repo: string, ref: string, zone: string): Promise<ZoneSide> {
   const get = (file: string) => fetch(raw(repo, ref, zone, file)).then(r => (r.ok ? r.text() : null));
-  const [zoneYaml, mobsYaml] = await Promise.all([get("zone.yaml"), get("mobs.yaml")]);
+  const [regionsYaml, mobsYaml] = await Promise.all([get("regions.yaml"), get("mobs.yaml")]);
   // A ref that predates the zone reads as empty, so everything in the other one counts as added.
   if (!mobsYaml) return { regions: {}, spawns: [] };
-  return { regions: zoneYaml ? parseZoneYaml(zoneYaml) : {}, spawns: parseMobsYaml(mobsYaml) };
+  return { regions: regionsYaml ? parseRegionsYaml(regionsYaml) : {}, spawns: parseMobsYaml(mobsYaml) };
 }
 
 export default function RegionsDiffPage() {

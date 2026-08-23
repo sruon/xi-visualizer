@@ -4,9 +4,9 @@ import RegionEditor from "../components/region_editor";
 import YamlView from "../components/yaml_view";
 import type { ZoneData } from "../components/zone_model";
 import zones from "../data/zones";
-import { propose } from "../github";
-import { canSignIn, type DeviceCode, requestCode, signOut, storedToken, waitForToken } from "../github_auth";
-import { emitRegionsBlock, parseMobsYaml, parseZoneYaml, patchMobsYaml, patchZoneYaml, zoneOfMobId } from "../regions";
+import { compareUrl, findFork, type ForkState, forkUrl, installUrl, save, whoAmI } from "../github";
+import { canSignIn, completeInstall, isCallback, signOut, startInstall, storedToken } from "../github_auth";
+import { emitRegionsBlock, parseMobsYaml, parseRegionsYaml, patchMobsYaml, patchRegionsYaml, zoneOfMobId } from "../regions";
 import type { Patrol, RegionSet, Spawn } from "../regions";
 import { decompress, fetchProgress } from "../util";
 
@@ -20,10 +20,10 @@ export interface RoamData {
   count: number;
 }
 
-// data/zones/<zone>/{zone.yaml,mobs.yaml} straight out of the LSB checkout.
+// data/zones/<zone>/{regions.yaml,mobs.yaml} straight out of the LSB checkout.
 interface ZoneFiles {
   folder: string;
-  zoneYaml: string;
+  regionsYaml: string;
   mobsYaml: string;
 }
 
@@ -36,10 +36,13 @@ interface Draft {
   paths?: Record<string, Patrol>;
 }
 
-const DEFAULT_REPO = "sruon/lsb-roam-data-temp";
+const DEFAULT_REPO = "LandSandBoat/server";
 const ZONES = "data/zones"; // where the zone folders live inside the repo
-const TOKEN_KEY = "xi-visualizer:github-token";
 const LOCAL = "/local-zones"; // dev middleware over a folder on disk, see vite.config.ts
+// One branch for all of it. Zones are small and reviewed together, and a branch per zone would mean
+// a pull request per zone, which is more ceremony than the work deserves.
+const BRANCH = "xi-regions";
+const APP_SLUG = import.meta.env.VITE_GH_APP_SLUG || "lsb-roam-regions-editor";
 
 /**
  * Draft slot for a zone, identified by the files it was taken from and not just the folder name.
@@ -86,34 +89,65 @@ export default function RegionsPage() {
   const [query] = useSearchParams<{ repo?: string; ref?: string; }>();
   const navigate = useNavigate();
   const repo = () => query.repo || DEFAULT_REPO;
-  const ref = () => query.ref || "HEAD";
-  // A signed-in token wins over a pasted one, but both end up in the same place: a bearer token
-  // for api.github.com, which is CORS-enabled and needs no help from anybody.
+  const ref = () => query.ref || "base";
+  // The only way in is signing in. api.github.com is CORS-enabled, so the token it yields is used
+  // straight from here and needs no help from anybody.
   const [account, setAccount] = createSignal(storedToken());
-  const [device, setDevice] = createSignal<DeviceCode | undefined>();
   const [signingIn, setSigningIn] = createSignal(false);
-  const [token, setToken] = createSignal(localStorage.getItem(TOKEN_KEY) ?? "");
-  const authToken = () => account()?.token || token();
+  const authToken = () => account()?.token ?? "";
 
-  const startSignIn = async () => {
+  // Where this session's commits go: one branch on the user's own fork, cut from base the first
+  // time and added to after that. Resolved once a token exists, because a token that cannot reach a
+  // fork is worth saying so about before someone spends an hour drawing regions.
+  const [fork, setFork] = createSignal<ForkState | undefined>();
+  /** The fork's owner/name once we know it, for the states that have one. */
+  const forkRepo = () => (fork() as { repo?: string; } | undefined)?.repo ?? "";
+  const [pushed, setPushed] = createSignal(false);
+
+  const locateFork = async () => {
+    const t = authToken();
+    if (!t) return setFork(undefined);
+    try {
+      setFork(await findFork(t, repo(), await whoAmI(t)));
+    } catch (e) {
+      setFork(undefined);
+      setError(`${e}`);
+    }
+  };
+
+  /** Leaves the page. Everything after this happens on the way back, in finishSignIn. */
+  const startSignIn = () => {
     setError(undefined);
     setSigningIn(true);
     try {
-      const code = await requestCode();
-      setDevice(code);
-      window.open(code.verificationUri, "_blank", "noopener");
-      setAccount(await waitForToken(code));
-      setDevice(undefined);
-      setAskToken(false);
+      startInstall(location.hash || "#/regions");
     } catch (e) {
       setError(`${e}`);
-      setDevice(undefined);
-    } finally {
       setSigningIn(false);
     }
   };
-  const [askToken, setAskToken] = createSignal(false);
-  const [pr, setPr] = createSignal<{ url: string; note: string; } | undefined>();
+
+  /** The other half, run on the redirect back from GitHub. */
+  const finishSignIn = async () => {
+    setSigningIn(true);
+    setStatus("Finishing sign-in…");
+    try {
+      setAccount(await completeInstall());
+      setShowSignIn(false);
+      await locateFork();
+      setStatus(undefined);
+    } catch (e) {
+      setStatus(undefined);
+      setError(`${e}`);
+      setShowSignIn(true);
+    } finally {
+      // The code is single use and spent either way; leaving it in the bar invites a reload that
+      // fails for a reason nobody could guess at.
+      history.replaceState({}, "", location.pathname + location.hash);
+      setSigningIn(false);
+    }
+  };
+  const [showSignIn, setShowSignIn] = createSignal(false);
   const [local, setLocal] = createSignal(false);
   const [folders, setFolders] = createSignal<string[]>([]);
   const [files, setFiles] = createSignal<ZoneFiles | undefined>();
@@ -161,6 +195,8 @@ export default function RegionsPage() {
 
   onMount(() => {
     listZones();
+    if (isCallback()) finishSignIn();
+    else if (authToken()) locateFork();
     const guard = (e: BeforeUnloadEvent) => {
       if (dirty()) e.preventDefault();
     };
@@ -235,10 +271,11 @@ export default function RegionsPage() {
       const url = (name: string) =>
         local()
           ? `${LOCAL}/${folder}/${name}`
-          : `https://raw.githubusercontent.com/${repo()}/${ref() === "HEAD" ? "main" : ref()}/${ZONES}/${folder}/${name}`;
+          : `https://raw.githubusercontent.com/${repo()}/${ref()}/${ZONES}/${folder}/${name}`;
       const raw = (name: string) => fetch(url(name)).then(r => (r.ok ? r.text() : Promise.reject(new Error(`${name} → HTTP ${r.status}`))));
-      const [zoneYaml, mobsYaml] = await Promise.all([raw("zone.yaml"), raw("mobs.yaml")]);
-      open({ folder, zoneYaml, mobsYaml });
+      // Most zones have no regions.yaml yet; drawing the first region is what creates it.
+      const [regionsYaml, mobsYaml] = await Promise.all([raw("regions.yaml").catch(() => ""), raw("mobs.yaml")]);
+      open({ folder, regionsYaml, mobsYaml });
       setStatus(undefined);
     } catch (e) {
       setFiles(undefined);
@@ -252,7 +289,7 @@ export default function RegionsPage() {
     let regionSet: RegionSet;
     try {
       parsed = parseMobsYaml(next.mobsYaml);
-      regionSet = parseZoneYaml(next.zoneYaml);
+      regionSet = parseRegionsYaml(next.regionsYaml);
     } catch (e) {
       setFiles(undefined);
       setError(`${next.folder}: ${e}`);
@@ -270,7 +307,7 @@ export default function RegionsPage() {
     setDirty(false);
     setError(undefined);
     setRestored(undefined);
-    const stamp = fingerprint(next.zoneYaml, next.mobsYaml);
+    const stamp = fingerprint(next.regionsYaml, next.mobsYaml);
     setSource(stamp);
     dropStaleDrafts(next.folder, stamp);
     setDraft(readDraft(next.folder, stamp));
@@ -289,14 +326,14 @@ export default function RegionsPage() {
     if (!showYaml()) return undefined;
     edits();
     const out = patched();
-    return out && [{ name: "zone.yaml", text: out.zoneYaml }, { name: "mobs.yaml", text: out.mobsYaml }];
+    return out && [{ name: "regions.yaml", text: out.regionsYaml }, { name: "mobs.yaml", text: out.mobsYaml }];
   });
 
   const patched = () => {
     const f = files();
     if (!f || !pending) return undefined;
     return {
-      zoneYaml: patchZoneYaml(f.zoneYaml, pending.regions),
+      regionsYaml: patchRegionsYaml(f.regionsYaml, pending.regions),
       mobsYaml: patchMobsYaml(f.mobsYaml, pending.assign, positions(), pending.paths),
     };
   };
@@ -308,7 +345,7 @@ export default function RegionsPage() {
     if (!f || !next) return;
     setStatus(`Saving ${f.folder}…`);
     try {
-      for (const [name, text] of [["zone.yaml", next.zoneYaml], ["mobs.yaml", next.mobsYaml]] as const) {
+      for (const [name, text] of [["regions.yaml", next.regionsYaml], ["mobs.yaml", next.mobsYaml]] as const) {
         const res = await fetch(`${LOCAL}/${f.folder}/${name}`, { method: "PUT", body: text });
         if (!res.ok) throw new Error(`${name} → HTTP ${res.status}`);
       }
@@ -325,38 +362,32 @@ export default function RegionsPage() {
 
   const copyPatched = () => {
     const next = patched();
-    if (next) navigator.clipboard.writeText(`# --- zone.yaml ---\n${next.zoneYaml}\n# --- mobs.yaml (spawns section) ---\n${next.mobsYaml}`);
+    if (next) navigator.clipboard.writeText(`# --- regions.yaml ---\n${next.regionsYaml}\n# --- mobs.yaml (spawns section) ---\n${next.mobsYaml}`);
   };
 
-  const proposePr = async () => {
+  /** Commits the open zone to the working branch on the user's fork. */
+  const saveToBranch = async () => {
     const f = files();
     const next = patched();
+    const where = fork();
     if (!f || !next) return;
-    if (!authToken()) return setAskToken(true);
+    // Both dead ends are explained in the panel rather than in an error, since both are fixable.
+    if (!authToken() || where?.state !== "ready") return setShowSignIn(true);
 
-    setStatus(`Pushing ${f.folder}…`);
-    setPr(undefined);
+    setStatus(`Committing ${f.folder}…`);
     try {
-      const result = await propose({
+      const result = await save({
         token: authToken(),
-        repo: repo(),
-        branch: `regions/${f.folder}`,
-        base: ref() === "HEAD" ? undefined : ref(),
-        title: `Spawn regions for ${f.folder}`,
+        repo: where.repo,
+        branch: BRANCH,
+        base: ref(),
         message: `${f.folder}: ${Object.keys(pending!.regions).length} regions, ${Object.keys(pending!.assign).length} spawns assigned`,
-        body: "Generated with the xi-visualizer Regions editor.",
         files: [
-          { path: `${ZONES}/${f.folder}/zone.yaml`, content: next.zoneYaml },
+          { path: `${ZONES}/${f.folder}/regions.yaml`, content: next.regionsYaml },
           { path: `${ZONES}/${f.folder}/mobs.yaml`, content: next.mobsYaml },
         ],
       });
-      // Where it went matters: without push access the commits land on the user's own fork.
-      const via = result.wrote === repo() ? "" : ` via ${result.wrote}`;
-      setPr({
-        url: result.url,
-        note: (result.unchanged ? "no changes to push" : result.updated ? "updated" : "opened") + via,
-      });
-      setStatus(undefined);
+      setStatus(result.unchanged ? (result.onBranch ? "Already committed" : "Nothing to commit") : result.created ? `Branched ${BRANCH}` : "Committed");
       if (!result.unchanged) {
         // It is on a branch now, so this is as safe as saving to disk.
         setFiles({ ...f, ...next });
@@ -364,10 +395,32 @@ export default function RegionsPage() {
         setDirty(false);
         clearDraft(f.folder);
       }
+      if (result.onBranch) setPushed(true);
     } catch (e) {
       setStatus(undefined);
       setError(`${e}`);
     }
+  };
+
+  /**
+   * The pull request form on github.com, prefilled. A GitHub App cannot open the pull request
+   * itself, and this is the better half of that trade: the description arrives carrying a link to
+   * the visual diff, which is the thing a reviewer actually wants and cannot get from the yaml.
+   */
+  const prUrl = () => {
+    const where = fork();
+    if (where?.state !== "ready") return undefined;
+    const editor = `${location.origin}${location.pathname}`;
+    const diff = `${editor}#/regions-diff?repo=${where.repo}&base=${ref()}&head=${BRANCH}&zone=${files()?.folder ?? ""}`;
+    const body = [
+      `Spawn regions drawn with the [regions editor](${editor}).`,
+      "",
+      `**[See it on the map](${diff})** — the polygons and routes side by side against \`${ref()}\`, which is`,
+      "a good deal easier to review than the coordinates.",
+      "",
+    ].join("\n");
+    const title = `Spawn regions for ${files()?.folder ?? "several zones"}`;
+    return `${compareUrl(repo(), ref(), where.repo, BRANCH)}&title=${encodeURIComponent(title)}&body=${encodeURIComponent(body)}`;
   };
 
   // On by default; a zone's trails are a few MB, so unticking it also stops the fetch.
@@ -450,10 +503,10 @@ export default function RegionsPage() {
           <button
             class="px-2 py-1 rounded"
             classList={{ "bg-emerald-600 hover:bg-emerald-500": dirty(), "bg-slate-700 text-slate-400": !dirty() }}
-            onClick={local() ? saveLocal : proposePr}
-            title={local() ? "Write both files back to the local folder" : "Commit to a branch and open a pull request"}
+            onClick={local() ? saveLocal : saveToBranch}
+            title={local() ? "Write both files back to the local folder" : `Commit both files to ${BRANCH} on your fork`}
           >
-            {local() ? (dirty() ? "Save" : "Saved") : dirty() ? "Propose PR" : "Pushed"}
+            {dirty() ? "Save" : local() ? "Saved" : pushed() ? "Committed" : "No changes"}
           </button>
           <button class="px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded" onClick={copyPatched}>Copy YAML</button>
           <button
@@ -479,11 +532,17 @@ export default function RegionsPage() {
         <Show when={status()}>
           <span class="text-slate-400">{status()}</span>
         </Show>
-        <Show when={pr()}>
-          <a class="text-emerald-400 underline" href={pr()!.url} target="_blank" rel="noreferrer">PR {pr()!.note}</a>
+        {/* Only once something is actually on the branch: an empty compare page helps nobody. */}
+        <Show when={pushed() && prUrl()}>
+          <a class="text-emerald-400 underline" href={prUrl()} target="_blank" rel="noreferrer">
+            Open pull request
+          </a>
         </Show>
         <Show when={error()}>
           <span class="text-red-500">{error()}</span>
+        </Show>
+        <Show when={fork()?.state === "ready"}>
+          <span class="text-slate-500" title="Where Save commits to">→ {forkRepo()}@{BRANCH}</span>
         </Show>
         <Show when={account()}>
           {who => (
@@ -491,7 +550,7 @@ export default function RegionsPage() {
               {who().login}
               <button
                 class="ml-2 px-1.5 py-0.5 bg-slate-700 hover:bg-slate-600 rounded text-xs"
-                onClick={() => (signOut(), setAccount(null))}
+                onClick={() => (signOut(), setAccount(null), setFork(undefined), setPushed(false))}
               >
                 sign out
               </button>
@@ -500,68 +559,59 @@ export default function RegionsPage() {
         </Show>
       </div>
 
-      <Show when={askToken()}>
+      <Show when={showSignIn()}>
         <div class="mt-3 flex flex-wrap items-center gap-2 text-sm bg-slate-800 border border-slate-600 rounded px-3 py-2">
-          <Show when={canSignIn()}>
-            <Show
-              when={device()}
-              fallback={
-                <>
-                  <button
-                    class="px-2 py-1 bg-emerald-600 hover:bg-emerald-500 rounded disabled:opacity-50"
-                    disabled={signingIn()}
-                    onClick={startSignIn}
-                  >
-                    Sign in with GitHub
-                  </button>
-                  <span class="text-slate-400">
-                    Opens github.com to confirm a code. No push access needed: without it the change goes to a fork and the pull request comes back here.
-                  </span>
-                </>
-              }
+          <Show when={canSignIn() && !authToken()}>
+            <button
+              class="px-2 py-1 bg-emerald-600 hover:bg-emerald-500 rounded disabled:opacity-50"
+              disabled={signingIn()}
+              onClick={startSignIn}
             >
-              {code => (
-                <>
-                  <span>
-                    Type <b class="font-mono text-lg tracking-widest text-emerald-400">{code().userCode}</b> at{" "}
-                    <a class="underline" href={code().verificationUri} target="_blank" rel="noreferrer">{code().verificationUri}</a>
-                  </span>
-                  <span class="text-slate-400">Waiting for you to confirm…</span>
-                </>
-              )}
-            </Show>
-            <span class="text-slate-600">or</span>
+              {signingIn() ? "Off to GitHub…" : "Install & sign in"}
+            </button>
+            <span class="text-slate-400">
+              Takes you to GitHub to install this app on your fork of {repo()}, and signs you in on the way back. Saves then
+              commit to <b>{BRANCH}</b> there, and nothing else is touched until you open the pull request yourself.
+            </span>
           </Show>
-          <span>
-            GitHub token: a fine-grained one limited to <b>{repo()}</b> with Contents and Pull requests set to read/write.
-          </span>
-          <input
-            type="password"
-            class="px-2 py-1 bg-slate-700 rounded w-72"
-            placeholder="github_pat_…"
-            onChange={e => setToken(e.currentTarget.value.trim())}
-          />
-          <button
-            class="px-2 py-1 bg-emerald-600 hover:bg-emerald-500 rounded"
-            onClick={() => {
-              localStorage.setItem(TOKEN_KEY, token());
-              setAskToken(false);
-              proposePr();
-            }}
-          >
-            Save &amp; propose
-          </button>
-          <button
-            class="px-2 py-1 bg-slate-600 hover:bg-slate-500 rounded"
-            onClick={() => {
-              localStorage.removeItem(TOKEN_KEY);
-              setToken("");
-              setAskToken(false);
-            }}
-          >
-            Forget
-          </button>
-          <span class="text-slate-500">Kept in this browser's localStorage, sent only to api.github.com.</span>
+
+          {/* Signed in, but there is nowhere to write yet. Both cases are one click on github.com. */}
+          <Show when={authToken() && fork()?.state === "missing"}>
+            <span>
+              You have no fork of <b>{repo()}</b> yet. A GitHub App cannot make one for you, so this part is manual.
+            </span>
+            <a class="px-2 py-1 bg-emerald-600 hover:bg-emerald-500 rounded no-underline" href={forkUrl(repo())} target="_blank" rel="noreferrer">
+              Fork it on GitHub
+            </a>
+            <button class="px-2 py-1 bg-slate-600 hover:bg-slate-500 rounded" onClick={locateFork}>Done, check again</button>
+          </Show>
+
+          {/* Signing in authorises the app; it does not install it, and only an installation can
+              write. The token reads the fork perfectly either way, so this has to be asked about
+              rather than waited for. */}
+          <Show when={fork()?.state === "not_installed"}>
+            <span>
+              Signed in, but the app is not installed on <b>{forkRepo()}</b> yet. Installing is what lets it commit; signing in
+              only proved who you are.
+            </span>
+            <a
+              class="px-2 py-1 bg-emerald-600 hover:bg-emerald-500 rounded no-underline"
+              href={installUrl(APP_SLUG)}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Install it on {forkRepo()}
+            </a>
+            <button class="px-2 py-1 bg-slate-600 hover:bg-slate-500 rounded" onClick={locateFork}>Done, check again</button>
+          </Show>
+
+          {/* Nothing to offer without a relay, and saying so beats an empty box. */}
+          <Show when={!canSignIn()}>
+            <span class="text-slate-400">
+              Sign-in is not configured on this copy of the editor. Use <b>Copy YAML</b> and commit the files yourself, or see
+              docs/github-sign-in.md to point a build at a relay.
+            </span>
+          </Show>
         </div>
       </Show>
 
