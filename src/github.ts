@@ -14,7 +14,8 @@ async function gh(token: string, path: string, init?: RequestInit) {
     ...init,
     headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${token}`, ...(init?.headers ?? {}) },
   });
-  if (res.ok) return res.json();
+  // A DELETE answers 204 with no body at all, which json() treats as malformed.
+  if (res.ok) return res.status === 204 ? null : res.json().catch(() => null);
 
   const where = `${init?.method ?? "GET"} ${path}`;
   // On a refusal GitHub names the permission the call wanted. "Resource not accessible by
@@ -260,6 +261,15 @@ export async function findSitting(
     return { branch, ancestor: diff.merge_base_commit?.sha, zones: zonesInCommits(diff.commits) };
   }
   return { branch: today, zones: [] };
+}
+
+/**
+ * Throws the sitting away. Its commits become unreachable and this cannot be undone from here, so
+ * it is worth asking before calling. An open pull request for the branch is left with nothing to
+ * merge, which GitHub shows as closed.
+ */
+export async function deleteBranch(token: string, repo: string, branch: string): Promise<void> {
+  await gh(token, `/repos/${repo}/git/refs/heads/${branch}`, { method: "DELETE" });
 }
 
 const listing = (work: Map<string, ZoneWork>): ZoneOnBranch[] =>

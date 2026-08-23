@@ -5,7 +5,7 @@
 // GitHub is enough to hold all three honest.
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
-import { compareUrl, fillTemplate, findFork, findSitting, prTitle, save, whoAmI } from "./github.ts";
+import { compareUrl, deleteBranch, fillTemplate, findFork, findSitting, prTitle, save, whoAmI } from "./github.ts";
 
 const noHeaders = { get: () => null };
 
@@ -26,6 +26,7 @@ function fakeGitHub(routes: Record<string, any>) {
     const hit = routes[`${method} ${path}`] ?? routes[path];
     const value = typeof hit === "function" ? hit(calls) : hit;
     if (value === undefined) return { ok: false, status: 404, headers: noHeaders, text: async () => "no such thing" };
+    if (value?.$noBody) return { ok: true, status: 204, headers: noHeaders, json: async () => { throw new Error("no body"); } };
     if (value?.$status) {
       return { ok: false, status: value.$status, headers: value.$headers ?? noHeaders, text: async () => value.$body ?? "" };
     }
@@ -260,6 +261,16 @@ assert.deepStrictEqual(await findFork("t", UPSTREAM, "someone"), { state: "ready
 // An expired token is a signed-out session, not a number to look up.
 fakeGitHub({ "/user": { $status: 401, $body: '{"message":"Bad credentials"}' } });
 await assert.rejects(whoAmI("stale"), /session expired, sign in again/);
+
+// Throwing the sitting away. A DELETE answers 204 with no body, which used to be read as a
+// malformed response and reported as a failure after the branch was already gone.
+let del = fakeGitHub({ "DELETE /repos/someone/server/git/refs/heads/regions/2026-08-23": { $noBody: true } });
+await deleteBranch("t", FORK, "regions/2026-08-23");
+assert.deepStrictEqual(
+  del.map(c => `${c.method} ${c.path}`),
+  ["DELETE /repos/someone/server/git/refs/heads/regions/2026-08-23"],
+  "one call, and the branch name is not mangled by its slash",
+);
 
 // --- the pull request title ---
 

@@ -4,7 +4,7 @@ import RegionEditor from "../components/region_editor";
 import YamlView from "../components/yaml_view";
 import type { ZoneData } from "../components/zone_model";
 import zones from "../data/zones";
-import { compareUrl, fillTemplate, findFork, findSitting, type ForkState, forkUrl, installUrl, prTitle, save, type Sitting, whoAmI } from "../github";
+import { compareUrl, deleteBranch, fillTemplate, findFork, findSitting, type ForkState, forkUrl, installUrl, prTitle, save, type Sitting, whoAmI } from "../github";
 import { canSignIn, completeSignIn, isCallback, signOut, startSignIn as beginSignIn, storedToken } from "../github_auth";
 import { emitRegionsBlock, mergeZone, parseMobsYaml, parseRegionsYaml, patchMobsYaml, patchRegionsYaml, placementsOf, zoneOfMobId } from "../regions";
 import type { Patrol, Placements, RegionSet, Spawn } from "../regions";
@@ -54,6 +54,14 @@ const LOCAL = "/local-zones"; // dev middleware over a folder on disk, see vite.
 // Work done on a later day starts a new branch, leaving the previous pull request alone.
 const branchForToday = () => `regions/${new Date().toISOString().slice(0, 10)}`;
 const APP_SLUG = import.meta.env.VITE_GH_APP_SLUG || "lsb-roam-regions-editor";
+// One button vocabulary for the whole page. Anything that acts like a button looks like one,
+// including the links -- an <a> is the right element for something that opens github.com, but it
+// has no business being the only underlined blue thing in a row of buttons.
+const BTN = "px-2 py-1 rounded no-underline whitespace-nowrap";
+const BTN_PLAIN = `${BTN} bg-slate-700 hover:bg-slate-600 text-white`;
+const BTN_QUIET = `${BTN} bg-slate-600 hover:bg-slate-500 text-white`;
+const BTN_GO = `${BTN} bg-emerald-600 hover:bg-emerald-500 text-white`;
+
 /** "1 region", "3 regions" -- these end up in commit messages and pull request bodies. */
 const count = (n: number, thing: string) => `${n} ${thing}${n === 1 ? "" : "s"}`;
 
@@ -186,6 +194,8 @@ export default function RegionsPage() {
   };
   /** False until we know whether there is a working branch, so the first read goes to the right place. */
   const [authSettled, setAuthSettled] = createSignal(false);
+  /** Armed by a first click, so throwing the sitting away takes two and says what it costs. */
+  const [confirmReset, setConfirmReset] = createSignal(false);
   const [showSignIn, setShowSignIn] = createSignal(false);
   const [local, setLocal] = createSignal(false);
   const [folders, setFolders] = createSignal<string[]>([]);
@@ -417,6 +427,25 @@ export default function RegionsPage() {
   };
 
   /** Commits the open zone to the working branch on the user's fork. */
+  /** Deletes the working branch and goes back to reading the zone from staging. */
+  const resetBranch = async () => {
+    const where = fork();
+    if (where?.state !== "ready" || !sitting()?.ancestor) return;
+    setStatus(`Deleting ${branchName()}…`);
+    try {
+      await deleteBranch(authToken(), where.repo, branchName());
+      setSitting(undefined);
+      setPushed(false);
+      setConfirmReset(false);
+      setStatus(`Deleted ${branchName()}`);
+      const showing = files()?.folder;
+      if (showing) await openZone(showing); // back to staging's version of it
+    } catch (e) {
+      setStatus(undefined);
+      setError(`${e}`);
+    }
+  };
+
   /**
    * The zone as it stands on the staging branch right now, if that is not what we opened.
    *
@@ -620,7 +649,7 @@ export default function RegionsPage() {
           <For each={folders()}>{f => <option value={f}>{f}</option>}</For>
         </select>
         <button
-          class="px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded"
+          class={BTN_PLAIN}
           onClick={listZones}
           title={local() ? "Re-read the local folder" : `Re-read ${repo()}@${ref()}`}
         >
@@ -631,22 +660,41 @@ export default function RegionsPage() {
             {zones[zoneId()!]?.name ?? "?"} ({zoneId()}) · {spawns()?.length ?? 0} spawns
           </span>
           <button
-            class="px-2 py-1 rounded"
-            classList={{ "bg-emerald-600 hover:bg-emerald-500": dirty(), "bg-slate-700 text-slate-400": !dirty() }}
+            class={BTN}
+            classList={{ "bg-emerald-600 hover:bg-emerald-500 text-white": dirty(), "bg-slate-700 text-slate-400": !dirty() }}
             onClick={local() ? saveLocal : saveToBranch}
             title={local() ? "Write both files back to the local folder" : `Commit both files to ${branchName()} on your fork`}
           >
             {dirty() ? "Save" : local() ? "Saved" : pushed() ? "Committed" : "No changes"}
           </button>
-          <button class="px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded" onClick={copyPatched}>Copy YAML</button>
+          <button class={BTN_PLAIN} onClick={copyPatched}>Copy YAML</button>
           <button
-            class="px-2 py-1 rounded"
-            classList={{ "bg-slate-600 text-white": showYaml(), "bg-slate-700 hover:bg-slate-600": !showYaml() }}
+            class={BTN}
+            classList={{ "bg-slate-600 text-white": showYaml(), "bg-slate-700 hover:bg-slate-600 text-white": !showYaml() }}
             title="Show the files as they would be written"
             onClick={() => setShowYaml(v => !v)}
           >
             {showYaml() ? "Hide YAML" : "View YAML"}
           </button>
+          {/* Nothing to throw away until something is on the branch. */}
+          <Show when={sitting()?.ancestor}>
+            <button
+              class={confirmReset() ? `${BTN} bg-red-700 hover:bg-red-600 text-white` : BTN_PLAIN}
+              title={`Delete ${branchName()} from your fork. The work on it is not recoverable from here, and an open pull request for it would be left with nothing to merge.`}
+              onClick={() => (confirmReset() ? resetBranch() : setConfirmReset(true))}
+              onBlur={() => setConfirmReset(false)}
+            >
+              {confirmReset()
+                ? `Discard ${count(branchZones().length, "zone")}?`
+                : "Reset branch"}
+            </button>
+          </Show>
+          {/* Only once something is actually on the branch: an empty compare page helps nobody. */}
+          <Show when={pushed() && prUrl()}>
+            <a class={BTN_GO} href={prUrl()} target="_blank" rel="noreferrer" title={`Opens a pull request against ${repo()}@${ref()}`}>
+              Open pull request
+            </a>
+          </Show>
         </Show>
         <Show when={files()}>
           <label class="flex items-center gap-2 text-slate-400 cursor-pointer" title="Overlay the recorded roam trails for this zone">
@@ -662,29 +710,32 @@ export default function RegionsPage() {
         <Show when={status()}>
           <span class="text-slate-400">{status()}</span>
         </Show>
-        {/* Only once something is actually on the branch: an empty compare page helps nobody. */}
-        <Show when={pushed() && prUrl()}>
-          <a class="text-emerald-400 underline" href={prUrl()} target="_blank" rel="noreferrer">
-            Open pull request
-          </a>
-        </Show>
         <Show when={error()}>
           <span class="text-red-500">{error()}</span>
         </Show>
         <Show when={fork()?.state === "ready"}>
           <span class="text-slate-500" title="Where Save commits to">→ {forkRepo()}@{branchName()}</span>
         </Show>
-        <Show when={account()}>
-          {who => (
-            <span class="text-slate-400">
-              {who().login}
-              <button
-                class="ml-2 px-1.5 py-0.5 bg-slate-700 hover:bg-slate-600 rounded text-xs"
-                onClick={() => (signOut(), setAccount(null), setFork(undefined), setPushed(false))}
-              >
-                sign out
+        <Show
+          when={account()}
+          fallback={
+            <Show when={canSignIn()}>
+              <button class={BTN_GO} disabled={signingIn()} onClick={startSignIn}>
+                {signingIn() ? "Off to GitHub…" : "Sign in with GitHub"}
               </button>
-            </span>
+            </Show>
+          }
+        >
+          {who => (
+            <>
+              <span class="text-slate-400">{who().login}</span>
+              <button
+                class={BTN_PLAIN}
+                onClick={() => (signOut(), setAccount(null), setFork(undefined), setSitting(undefined), setPushed(false))}
+              >
+                Sign out
+              </button>
+            </>
           )}
         </Show>
       </div>
@@ -693,7 +744,7 @@ export default function RegionsPage() {
         <div class="mt-3 flex flex-wrap items-center gap-2 text-sm bg-slate-800 border border-slate-600 rounded px-3 py-2">
           <Show when={canSignIn() && !authToken()}>
             <button
-              class="px-2 py-1 bg-emerald-600 hover:bg-emerald-500 rounded disabled:opacity-50"
+              class={`${BTN_GO} disabled:opacity-50`}
               disabled={signingIn()}
               onClick={startSignIn}
             >
@@ -710,10 +761,10 @@ export default function RegionsPage() {
             <span>
               You have no fork of <b>{repo()}</b> yet. A GitHub App cannot make one for you, so this part is manual.
             </span>
-            <a class="px-2 py-1 bg-emerald-600 hover:bg-emerald-500 rounded no-underline" href={forkUrl(repo())} target="_blank" rel="noreferrer">
+            <a class={BTN_GO} href={forkUrl(repo())} target="_blank" rel="noreferrer">
               Fork it on GitHub
             </a>
-            <button class="px-2 py-1 bg-slate-600 hover:bg-slate-500 rounded" onClick={locateFork}>Done, check again</button>
+            <button class={BTN_QUIET} onClick={locateFork}>Done, check again</button>
           </Show>
 
           {/* Signing in authorises the app; it does not install it, and only an installation can
@@ -725,14 +776,14 @@ export default function RegionsPage() {
               only proved who you are.
             </span>
             <a
-              class="px-2 py-1 bg-emerald-600 hover:bg-emerald-500 rounded no-underline"
+              class={BTN_GO}
               href={installUrl(APP_SLUG)}
               target="_blank"
               rel="noreferrer"
             >
               Install it on {forkRepo()}
             </a>
-            <button class="px-2 py-1 bg-slate-600 hover:bg-slate-500 rounded" onClick={locateFork}>Done, check again</button>
+            <button class={BTN_QUIET} onClick={locateFork}>Done, check again</button>
           </Show>
 
           {/* Nothing to offer without a relay, and saying so beats an empty box. */}
@@ -751,8 +802,8 @@ export default function RegionsPage() {
             Unsaved work on {files()!.folder} from {new Date(draft()!.at).toLocaleString()}: {Object.keys(draft()!.regions).length} regions,{" "}
             {Object.keys(draft()!.assign).length} assignments.
           </span>
-          <button class="px-2 py-1 bg-amber-600 hover:bg-amber-500 rounded" onClick={restoreDraft}>Restore</button>
-          <button class="px-2 py-1 bg-slate-600 hover:bg-slate-500 rounded" onClick={() => clearDraft(files()!.folder)}>Discard</button>
+          <button class={`${BTN} bg-amber-600 hover:bg-amber-500 text-white`} onClick={restoreDraft}>Restore</button>
+          <button class={BTN_QUIET} onClick={() => clearDraft(files()!.folder)}>Discard</button>
         </div>
       </Show>
 
