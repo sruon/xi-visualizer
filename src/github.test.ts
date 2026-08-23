@@ -5,7 +5,7 @@
 // GitHub is enough to hold all three honest.
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
-import { compareUrl, fillTemplate, findFork, prTitle, save, whoAmI } from "./github.ts";
+import { compareUrl, fillTemplate, findFork, findSitting, prTitle, save, whoAmI } from "./github.ts";
 
 const noHeaders = { get: () => null };
 
@@ -72,6 +72,63 @@ fakeGitHub({
   "/user/installations/7/repositories?per_page=100&page=1": { repositories: [{ full_name: "someone/notes" }] },
 });
 assert.deepStrictEqual(await findFork("t", UPSTREAM, "someone"), { state: "not_installed", repo: FORK });
+
+// --- which sitting is in progress ---
+
+const TODAY = "regions/2026-08-24";
+const sittingRoutes = {
+  "/repos/sruon/server/git/ref/heads/regions-master": { object: { sha: "base-sha" } },
+};
+
+// Nothing started yet: today's name, and nothing to open a pull request for.
+fakeGitHub({ ...sittingRoutes, "/repos/someone/server/git/matching-refs/heads/regions/": [] });
+assert.deepStrictEqual(await findSitting("t", FORK, UPSTREAM, "regions-master", TODAY), { branch: TODAY, zones: [] });
+
+// A branch still ahead of staging is the sitting, whatever day it was started on: its pull request
+// has not been merged, so its work is not on staging and the editor has to keep reading from it.
+fakeGitHub({
+  ...sittingRoutes,
+  "/repos/someone/server/git/matching-refs/heads/regions/": [{ ref: "refs/heads/regions/2026-08-23" }],
+  "/repos/someone/server/compare/base-sha...regions/2026-08-23": {
+    ahead_by: 2,
+    merge_base_commit: { sha: "cut-from" },
+    commits: [
+      { commit: { message: "west_ronfaure: 1 region, 1 spawn placed" } },
+      { commit: { message: "toraimarai_canal: 1 region, 0 spawns placed" } },
+    ],
+  },
+});
+assert.deepStrictEqual(await findSitting("t", FORK, UPSTREAM, "regions-master", TODAY), {
+  branch: "regions/2026-08-23",
+  ancestor: "cut-from",
+  zones: [
+    { zone: "toraimarai_canal", summary: "1 region, 0 spawns placed" },
+    { zone: "west_ronfaure", summary: "1 region, 1 spawn placed" },
+  ],
+}, "yesterday's unmerged branch continues, carrying what it already holds");
+
+// Once it is merged it is no longer ahead, so the next save starts a new sitting.
+fakeGitHub({
+  ...sittingRoutes,
+  "/repos/someone/server/git/matching-refs/heads/regions/": [{ ref: "refs/heads/regions/2026-08-23" }],
+  "/repos/someone/server/compare/base-sha...regions/2026-08-23": { ahead_by: 0, commits: [] },
+});
+assert.deepStrictEqual(await findSitting("t", FORK, UPSTREAM, "regions-master", TODAY), { branch: TODAY, zones: [] });
+
+// Several old branches: the newest one still ahead wins.
+fakeGitHub({
+  ...sittingRoutes,
+  "/repos/someone/server/git/matching-refs/heads/regions/": [
+    { ref: "refs/heads/regions/2026-08-20" },
+    { ref: "refs/heads/regions/2026-08-23" },
+  ],
+  "/repos/someone/server/compare/base-sha...regions/2026-08-23": {
+    ahead_by: 1,
+    merge_base_commit: { sha: "cut-from" },
+    commits: [{ commit: { message: "west_ronfaure: 1 region, 1 spawn placed" } }],
+  },
+});
+assert.strictEqual((await findSitting("t", FORK, UPSTREAM, "regions-master", TODAY)).branch, "regions/2026-08-23");
 
 // --- saving ---
 

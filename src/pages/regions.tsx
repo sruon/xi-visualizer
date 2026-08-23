@@ -4,7 +4,7 @@ import RegionEditor from "../components/region_editor";
 import YamlView from "../components/yaml_view";
 import type { ZoneData } from "../components/zone_model";
 import zones from "../data/zones";
-import { compareUrl, fillTemplate, findFork, type ForkState, forkUrl, installUrl, prTitle, save, whoAmI } from "../github";
+import { compareUrl, fillTemplate, findFork, findSitting, type ForkState, forkUrl, installUrl, prTitle, save, type Sitting, whoAmI } from "../github";
 import { canSignIn, completeSignIn, isCallback, signOut, startSignIn as beginSignIn, storedToken } from "../github_auth";
 import { emitRegionsBlock, mergeZone, parseMobsYaml, parseRegionsYaml, patchMobsYaml, patchRegionsYaml, placementsOf, zoneOfMobId } from "../regions";
 import type { Patrol, Placements, RegionSet, Spawn } from "../regions";
@@ -28,6 +28,9 @@ interface ZoneFiles {
   folder: string;
   regionsYaml: string;
   mobsYaml: string;
+  /** Whether these came off the working branch rather than staging, which decides what the merge
+   * at save time may treat as the common ancestor. */
+  fromBranch?: boolean;
 }
 
 // Unsaved work is mirrored to localStorage so a closed tab or a crash does not lose it. One draft
@@ -113,14 +116,32 @@ export default function RegionsPage() {
   /** The fork's owner/name once we know it, for the states that have one. */
   const forkRepo = () => (fork() as { repo?: string; } | undefined)?.repo ?? "";
   const [pushed, setPushed] = createSignal(false);
+  /**
+   * The sitting in progress: which branch to read from and write to. Work lives there until the
+   * pull request is merged, so it is also where the editor has to *read* a zone from -- reading
+   * staging after a commit shows the zone as it was before, which looks like the work vanished.
+   */
+  const [sitting, setSitting] = createSignal<Sitting | undefined>();
+  const branchName = () => sitting()?.branch ?? branchForToday();
   /** The zones sitting on the working branch, so the pull request can name what it actually holds. */
-  const [branchZones, setBranchZones] = createSignal<ZoneOnBranch[]>([]);
+  const branchZones = () => sitting()?.zones ?? [];
 
   const locateFork = async () => {
     const t = authToken();
     if (!t) return setFork(undefined);
     try {
-      setFork(await findFork(t, repo(), await whoAmI(t)));
+      const found = await findFork(t, repo(), await whoAmI(t));
+      setFork(found);
+      if (found.state !== "ready") return;
+
+      const now = await findSitting(t, found.repo, repo(), ref(), branchForToday());
+      setSitting(now);
+      if (now.ancestor) setPushed(true); // there is already something to open a pull request for
+
+      // The zone on screen was read from staging before we knew there was a branch carrying a newer
+      // version of it. Re-read it, unless there is unsaved work that a reload would throw away.
+      const open = files()?.folder;
+      if (open && now.ancestor && !dirty()) await openZone(open);
     } catch (e) {
       setFork(undefined);
       setError(`${e}`);
@@ -284,14 +305,19 @@ export default function RegionsPage() {
     if (!folder) return;
     setStatus(`Loading ${folder}…`);
     try {
+      // The working branch first when it carries this zone, since that is where the newest version
+      // of it is; staging otherwise, and always in a local folder.
+      const mine = sitting()?.ancestor && branchZones().some(z => z.zone === folder)
+        ? { repo: forkRepo(), ref: branchName() }
+        : { repo: repo(), ref: ref() };
       const url = (name: string) =>
         local()
           ? `${LOCAL}/${folder}/${name}`
-          : `https://raw.githubusercontent.com/${repo()}/${ref()}/${ZONES}/${folder}/${name}`;
+          : `https://raw.githubusercontent.com/${mine.repo}/${mine.ref}/${ZONES}/${folder}/${name}`;
       const raw = (name: string) => fetch(url(name)).then(r => (r.ok ? r.text() : Promise.reject(new Error(`${name} → HTTP ${r.status}`))));
       // Most zones have no regions.yaml yet; drawing the first region is what creates it.
       const [regionsYaml, mobsYaml] = await Promise.all([raw("regions.yaml").catch(() => ""), raw("mobs.yaml")]);
-      open({ folder, regionsYaml, mobsYaml });
+      open({ folder, regionsYaml, mobsYaml, fromBranch: !local() && mine.repo === forkRepo() });
       setStatus(undefined);
     } catch (e) {
       setFiles(undefined);
@@ -390,14 +416,26 @@ export default function RegionsPage() {
    * would look clean. Both sides are structured, so most of it merges without anybody being asked.
    */
   const reconcile = async (f: ZoneFiles) => {
-    const url = (name: string) => `https://raw.githubusercontent.com/${repo()}/${ref()}/${ZONES}/${f.folder}/${name}`;
-    const get = (name: string) => fetch(url(name)).then(r => (r.ok ? r.text() : ""));
-    const [regionsNow, mobsNow] = await Promise.all([get("regions.yaml"), get("mobs.yaml")]);
-    if (!mobsNow || (regionsNow === f.regionsYaml && mobsNow === f.mobsYaml)) return undefined;
+    const at = (where: string, ref: string, name: string) =>
+      fetch(`https://raw.githubusercontent.com/${where}/${ref}/${ZONES}/${f.folder}/${name}`).then(r => (r.ok ? r.text() : ""));
+    const [regionsNow, mobsNow] = await Promise.all([at(repo(), ref(), "regions.yaml"), at(repo(), ref(), "mobs.yaml")]);
+    if (!mobsNow) return undefined;
+
+    // What both sides started from. Files read off the working branch already contain this
+    // contributor's committed work, so using them as the ancestor would read that work as "never
+    // changed" and let staging quietly undo it. The real ancestor is where the branch was cut.
+    const ancestor = sitting()?.ancestor;
+    let [regionsWas, mobsWas] = f.fromBranch && ancestor
+      ? await Promise.all([at(forkRepo(), ancestor, "regions.yaml"), at(forkRepo(), ancestor, "mobs.yaml")])
+      : [f.regionsYaml, f.mobsYaml];
+    // An ancestor we cannot read is no ancestor. Falling back to what was loaded is the old
+    // behaviour, which is wrong in one direction; guessing at an empty one is wrong in every.
+    if (!mobsWas) [regionsWas, mobsWas] = [f.regionsYaml, f.mobsYaml];
+    if (regionsNow === regionsWas && mobsNow === mobsWas) return undefined; // staging has not moved
 
     const theirSpawns = parseMobsYaml(mobsNow);
     const merged = mergeZone(
-      { regions: parseRegionsYaml(f.regionsYaml), placements: placementsOf(spawns() ?? []) },
+      { regions: parseRegionsYaml(regionsWas), placements: placementsOf(parseMobsYaml(mobsWas)) },
       { regions: parseRegionsYaml(regionsNow), placements: placementsOf(theirSpawns) },
       {
         regions: pending!.regions,
@@ -447,7 +485,7 @@ export default function RegionsPage() {
         token: authToken(),
         repo: where.repo,
         baseRepo: repo(),
-        branch: branchForToday(),
+        branch: branchName(),
         base: ref(),
         zone: f.folder,
         message: `${f.folder}: ${count(Object.keys(pending!.regions).length, "region")}, ${
@@ -458,7 +496,7 @@ export default function RegionsPage() {
           { path: `${ZONES}/${f.folder}/mobs.yaml`, content: next.mobsYaml },
         ],
       });
-      setStatus(result.unchanged ? (result.onBranch ? "Already committed" : "Nothing to commit") : `Committed, ${count(result.zones.length, "zone")} on ${branchForToday()}`);
+      setStatus(result.unchanged ? (result.onBranch ? "Already committed" : "Nothing to commit") : `Committed, ${count(result.zones.length, "zone")} on ${branchName()}`);
       if (!result.unchanged) {
         // It is on a branch now, so this is as safe as saving to disk.
         setFiles({ ...f, ...next });
@@ -466,7 +504,7 @@ export default function RegionsPage() {
         setDirty(false);
         clearDraft(f.folder);
       }
-      if (result.zones.length) setBranchZones(result.zones);
+      setSitting({ ...sitting()!, branch: branchName(), zones: result.zones, ancestor: sitting()?.ancestor ?? "committed" });
       if (result.onBranch) setPushed(true);
     } catch (e) {
       setStatus(undefined);
@@ -485,7 +523,7 @@ export default function RegionsPage() {
     const editor = `${location.origin}${location.pathname}`;
     const zone = files()?.folder ?? "";
     const diffFor = (name: string) =>
-      `${editor}#/regions-diff?repo=${where.repo}&base=${ref()}&head=${branchForToday()}&zone=${name}`;
+      `${editor}#/regions-diff?repo=${where.repo}&base=${ref()}&head=${branchName()}&zone=${name}`;
 
     // Every zone on the branch, not whichever one is open: a sitting's pull request covers all of
     // them, and a reviewer wants a diff link per zone rather than one into the middle of it.
@@ -503,7 +541,7 @@ export default function RegionsPage() {
     });
     // What the branch holds, not whichever zone happened to be open when the link was clicked.
     const title = prTitle(onBranch.map(z => z.zone).filter(Boolean));
-    return `${compareUrl(repo(), ref(), where.repo, branchForToday())}&title=${encodeURIComponent(title)}&body=${encodeURIComponent(body)}`;
+    return `${compareUrl(repo(), ref(), where.repo, branchName())}&title=${encodeURIComponent(title)}&body=${encodeURIComponent(body)}`;
   };
 
   // On by default; a zone's trails are a few MB, so unticking it also stops the fetch.
@@ -587,7 +625,7 @@ export default function RegionsPage() {
             class="px-2 py-1 rounded"
             classList={{ "bg-emerald-600 hover:bg-emerald-500": dirty(), "bg-slate-700 text-slate-400": !dirty() }}
             onClick={local() ? saveLocal : saveToBranch}
-            title={local() ? "Write both files back to the local folder" : `Commit both files to ${branchForToday()} on your fork`}
+            title={local() ? "Write both files back to the local folder" : `Commit both files to ${branchName()} on your fork`}
           >
             {dirty() ? "Save" : local() ? "Saved" : pushed() ? "Committed" : "No changes"}
           </button>
@@ -625,7 +663,7 @@ export default function RegionsPage() {
           <span class="text-red-500">{error()}</span>
         </Show>
         <Show when={fork()?.state === "ready"}>
-          <span class="text-slate-500" title="Where Save commits to">→ {forkRepo()}@{branchForToday()}</span>
+          <span class="text-slate-500" title="Where Save commits to">→ {forkRepo()}@{branchName()}</span>
         </Show>
         <Show when={account()}>
           {who => (
@@ -654,7 +692,7 @@ export default function RegionsPage() {
             </button>
             <span class="text-slate-400">
               Takes you to GitHub to install this app on your fork of {repo()}, and signs you in on the way back. Saves then
-              commit to <b>{branchForToday()}</b> there, and nothing else is touched until you open the pull request yourself.
+              commit to <b>{branchName()}</b> there, and nothing else is touched until you open the pull request yourself.
             </span>
           </Show>
 

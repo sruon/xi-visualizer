@@ -213,6 +213,55 @@ function zoneOfPath(path: string): string | null {
  * saved, and it means a branch whose work has since been merged quietly starts over rather than
  * carrying the merged commits around.
  */
+/** The zones a set of commits covers, from the `<zone>: <summary>` messages they carry. */
+const zonesInCommits = (commits: any[]): ZoneOnBranch[] => {
+  const seen = new Map<string, string>();
+  for (const entry of commits ?? []) {
+    const message = String(entry.commit?.message ?? "");
+    const zone = message.split(":")[0].trim();
+    if (zone) seen.set(zone, summaryOf(message));
+  }
+  return [...seen.keys()].sort().map(zone => ({ zone, summary: seen.get(zone)! }));
+};
+
+export interface Sitting {
+  /** The branch to read from and write to. */
+  branch: string;
+  /** Absent when the branch does not exist yet, i.e. nothing has been committed this sitting. */
+  ancestor?: string;
+  /** What the branch already carries, so a pull request can be opened without saving again. */
+  zones: ZoneOnBranch[];
+}
+
+/**
+ * The sitting in progress.
+ *
+ * Work sits on the contributor's own branch until their pull request is merged, so the staging
+ * branch is not where their most recent zone lives -- reading from it after a commit shows the zone
+ * as it was before, which reads as the work having been lost. A sitting therefore continues for as
+ * long as its branch is still ahead of staging, whatever day it was started on, and only once it
+ * has been merged does the next save begin a new one.
+ */
+export async function findSitting(
+  token: string,
+  fork: string,
+  baseRepo: string,
+  base: string,
+  today: string,
+): Promise<Sitting> {
+  const baseSha = (await gh(token, `/repos/${baseRepo}/git/ref/heads/${base}`)).object.sha as string;
+  const refs = (await ghMaybe(token, `/repos/${fork}/git/matching-refs/heads/regions/`)) ?? [];
+  // Newest first, which the date in the name gives for free.
+  const names = refs.map((r: any) => String(r.ref).replace("refs/heads/", "")).sort().reverse();
+
+  for (const branch of names) {
+    const diff = await ghMaybe(token, `/repos/${fork}/compare/${baseSha}...${branch}`);
+    if (!diff || diff.ahead_by === 0) continue; // merged, or never had anything
+    return { branch, ancestor: diff.merge_base_commit?.sha, zones: zonesInCommits(diff.commits) };
+  }
+  return { branch: today, zones: [] };
+}
+
 const listing = (work: Map<string, ZoneWork>): ZoneOnBranch[] =>
   [...work.keys()].sort().map(zone => ({ zone, summary: summaryOf(work.get(zone)!.message) }));
 
