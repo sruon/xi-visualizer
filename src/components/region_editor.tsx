@@ -1663,6 +1663,11 @@ export default function RegionEditor(props: RegionEditorProps) {
       canvasElement.removeEventListener("contextmenu", onContextMenu);
       renderer.setAnimationLoop(null);
       renderer.dispose();
+      // dispose() releases what three.js allocated, but leaves the WebGL context itself alive: the
+      // canvas goes away, the context does not, and it holds its buffers on the GPU until the
+      // browser eventually collects it. Swapping zones a dozen times reaches the limit a browser
+      // keeps contexts for, and the only thing that frees them is restarting the browser.
+      renderer.forceContextLoss();
       controls?.dispose();
       cleanupNode(scene());
     });
