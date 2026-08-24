@@ -70,7 +70,14 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
     });
   });
 
-  const outline = (region: Region, color: number, thick: boolean, opacity: number) => {
+  /**
+   * `thick` draws the version that is there now; anything else is a before.
+   *
+   * A before used to be the same colour, thinner. When a reshape is a simplification the outline
+   * follows nearly the same path, so the thin line sat underneath the thick one and there was
+   * nothing to see -- the change looked like no change. Dashes read through an overlap.
+   */
+  const outline = (region: Region, color: number, thick: boolean, opacity: number, dashed = false) => {
     for (const ring of region.rings) {
       if (ring.length < 2) continue;
       if (thick) {
@@ -85,8 +92,15 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
         line.renderOrder = 3;
         overlay.add(line);
       } else {
-        const geo = new THREE.BufferGeometry().setFromPoints(ring.map(([x, y, z]) => new THREE.Vector3(x, y, z)));
-        const line = new THREE.LineLoop(geo, new THREE.LineBasicMaterial({ color, depthTest: false, transparent: true, opacity }));
+        const points = ring.map(([x, y, z]) => new THREE.Vector3(x, y, z));
+        const geo = new THREE.BufferGeometry().setFromPoints([...points, points[0].clone()]);
+        const line = new THREE.Line(
+          geo,
+          dashed
+            ? new THREE.LineDashedMaterial({ color, depthTest: false, transparent: true, opacity, dashSize: 4, gapSize: 3 })
+            : new THREE.LineBasicMaterial({ color, depthTest: false, transparent: true, opacity }),
+        );
+        if (dashed) line.computeLineDistances();
         line.renderOrder = 2;
         overlay.add(line);
       }
@@ -124,7 +138,8 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
 
       // What the old file said, faint underneath, so a reshape reads as a before and an after.
       if (kind === "removed" || kind === "reshaped") {
-        if (before) outline(before, color, false, 0.5);
+        // Dashed, and brighter than it was: a before nobody can pick out is not worth drawing.
+        if (before) outline(before, color, false, 0.9, true);
         if (before && kind === "removed") fill(before, color, 0.18);
       }
       if (after) {
@@ -315,7 +330,7 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
             <span style={{ color: `#${color.toString(16)}` }}>
               {kind}
               <Show when={kind === "removed" || kind === "reshaped"}>
-                <span class="text-slate-500">(thin = before)</span>
+                <span class="text-slate-500">(dashed = before)</span>
               </Show>
             </span>
           )}
