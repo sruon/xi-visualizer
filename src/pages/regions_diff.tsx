@@ -50,7 +50,48 @@ export default function RegionsDiffPage() {
     }, { replace: true });
     return names;
   });
-  const branchesFor = (which: "base" | "head") => (which === "base" ? baseBranches() : headBranches()) ?? [];
+  /**
+   * Branch names for one side, with the branch actually in use always among them.
+   *
+   * A repository can have far more branches than one page holds -- the staging repository has over
+   * a hundred, and regions-master is not on the first -- so the branch being compared could be
+   * missing from its own picker, which then showed "pick a branch" over a perfectly good
+   * comparison. What is selected is a fact, whether or not the list happens to mention it.
+   */
+  const branchesFor = (which: "base" | "head") => {
+    const names = (which === "base" ? baseBranches() : headBranches()) ?? [];
+    const chosen = query[which];
+    return chosen && !names.includes(chosen) ? [chosen, ...names] : names;
+  };
+
+  /**
+   * The zones this comparison actually touches, which is the question a reviewer opens the page
+   * with. Picking from every zone in the repository meant knowing the answer already.
+   */
+  const [changed] = createResource(
+    () => (query.base && query.head ? { base: query.base, head: query.head, from: repo(), to: headRepo() } : undefined),
+    async ({ base, head, from, to }) => {
+      // Across forks the head is named owner:repo:branch; within one repository it is just a ref.
+      const [owner, name] = to.split("/");
+      const spec = to === from ? head : `${owner}:${name}:${head}`;
+      const res = await fetch(`https://api.github.com/repos/${from}/compare/${base}...${spec}`);
+      if (!res.ok) throw new Error(`comparing ${base} with ${head} → HTTP ${res.status}`);
+      const body = await res.json() as { files?: { filename: string; additions: number; deletions: number; }[]; };
+
+      const perZone = new Map<string, { zone: string; additions: number; deletions: number; files: number; }>();
+      for (const file of body.files ?? []) {
+        const parts = file.filename.split("/");
+        if (parts[0] !== "data" || parts[1] !== "zones" || parts.length < 4) continue;
+        const zone = parts[2];
+        const seen = perZone.get(zone) ?? { zone, additions: 0, deletions: 0, files: 0 };
+        seen.additions += file.additions ?? 0;
+        seen.deletions += file.deletions ?? 0;
+        seen.files += 1;
+        perZone.set(zone, seen);
+      }
+      return [...perZone.values()].sort((a, b) => b.additions + b.deletions - (a.additions + a.deletions));
+    },
+  );
 
   // The zones worth offering are the ones the head carries, so this reads the head's repository.
   const [zoneList] = createResource(
@@ -109,10 +150,19 @@ export default function RegionsDiffPage() {
             </label>
           )}
         </For>
+        <Show when={changed()}>
+          <span class="text-slate-400">
+            {changed()!.length ? `${changed()!.length} zone${changed()!.length === 1 ? "" : "s"} changed` : "nothing changed"}
+          </span>
+        </Show>
+        <Show when={changed.loading}>
+          <span class="text-slate-500">comparing…</span>
+        </Show>
+        {/* Every zone in the repository is still reachable, for looking at one nothing touched. */}
         <Picker
           options={zoneList() ?? []}
           value={query.zone}
-          empty={zoneList()?.length ? `${zoneList()!.length} zones, pick one` : "no zones"}
+          empty="any other zone"
           onChange={v => setQuery({ zone: v })}
         />
         <Show when={pair()}>
@@ -128,11 +178,40 @@ export default function RegionsDiffPage() {
         </Show>
       </div>
 
-      <Show
-        when={pair() && mesh()}
-        fallback={<div class="mt-4 text-slate-400">Pick two branches and a zone to compare.</div>}
-      >
-        <div class="flex gap-4 mt-4" style={{ height: "78vh" }}>
+      <div class="flex gap-4 mt-4" style={{ height: "78vh" }}>
+        {/* What the comparison touches, in one place. A reviewer arrives knowing a pull request
+            changed something and not where, and picking from every zone in the repository asked
+            them to already know. Ordered by size, so the biggest change is the first thing read. */}
+        <Show when={changed()?.length}>
+          <div class="w-60 shrink-0 flex flex-col bg-slate-800 rounded-lg p-2 overflow-y-auto text-sm">
+            <div class="text-xs uppercase tracking-wide text-slate-500 px-1 pb-1">
+              zones changed ({changed()!.length})
+            </div>
+            <For each={changed()}>
+              {z => (
+                <button
+                  class="flex items-center gap-2 py-1 px-1 rounded text-left hover:bg-slate-700"
+                  classList={{ "bg-slate-700": query.zone === z.zone }}
+                  title={`${z.files} file${z.files === 1 ? "" : "s"} changed`}
+                  onClick={() => setQuery({ zone: z.zone })}
+                >
+                  <span class="flex-1 truncate">{z.zone}</span>
+                  <span class="text-emerald-500 tabular-nums">+{z.additions}</span>
+                  <span class="text-red-400 tabular-nums">−{z.deletions}</span>
+                </button>
+              )}
+            </For>
+          </div>
+        </Show>
+
+        <Show
+          when={pair() && mesh()}
+          fallback={
+            <div class="flex-1 text-slate-400">
+              {changed()?.length ? "Pick a zone from the list to see what changed in it." : "Pick two branches to compare."}
+            </div>
+          }
+        >
           <div class="flex-1">
             <RegionDiffViewer zoneData={mesh()!} base={pair()!.base} head={pair()!.head} diff={pair()!.diff} focus={focus()} />
           </div>
@@ -183,8 +262,8 @@ export default function RegionsDiffPage() {
               </div>
             </Show>
           </div>
-        </div>
-      </Show>
+        </Show>
+      </div>
     </section>
   );
 }
