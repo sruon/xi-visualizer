@@ -2149,7 +2149,10 @@ export default function RegionEditor(props: RegionEditorProps) {
           <ReviewList findings={findings()} onJump={jumpTo} onRepair={repairShape} />
         </Show>
 
-        <Show when={tab() === "regions" && !props.readOnly}>
+        <Show when={tab() === "regions"}>
+          {/* The tools that change geometry, and only those: the list of regions below is the
+              main thing a reviewer came to read. */}
+          <Show when={!props.readOnly}>
           <div class="flex gap-1 mb-2">
             <button class="flex-1 px-2 py-1 bg-slate-600 hover:bg-slate-500 rounded" onClick={addRegion}>+ Region</button>
             <button
@@ -2173,6 +2176,7 @@ export default function RegionEditor(props: RegionEditorProps) {
               {mode() === "draw" ? "Done" : "Draw"}
             </button>
           </div>
+          </Show>
 
           {/* Only somewhere with floors to choose between: an outdoor zone is one map sheet. */}
           <Show when={floors().length > 1}>

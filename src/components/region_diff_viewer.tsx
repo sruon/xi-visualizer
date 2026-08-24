@@ -155,6 +155,34 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
   createEffect(() => scene().add(marker));
   onCleanup(() => cleanupNode(marker));
 
+  /** Where a spawn actually stands on one side: its own point, or the middle of the region placing it. */
+  const standsAt = (side: ZoneSide, id: string, regionName?: string | null) => {
+    const spawn = side.spawns.find(sp => sp.id === id);
+    if (spawn?.at) return new THREE.Vector3(spawn.x, -spawn.y, -spawn.z);
+    const ring = regionName ? side.regions[regionName]?.rings[0] : undefined;
+    if (!ring?.length) return null;
+    const middle = ring.reduce((sum, [x, y, z]) => sum.add(new THREE.Vector3(x, -y, -z)), new THREE.Vector3());
+    return middle.divideScalar(ring.length);
+  };
+
+  const ringLine = (ring: readonly (readonly number[])[], colour: number) => {
+    const points = ring.map(([x, y, z]) => new THREE.Vector3(x, -y, -z));
+    points.push(points[0].clone());
+    return new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints(points),
+      new THREE.LineBasicMaterial({ color: colour, depthTest: false }),
+    );
+  };
+
+  const pin = (at: THREE.Vector3, colour: number) => {
+    const group = new THREE.Group();
+    const stalk = new THREE.BufferGeometry().setFromPoints([at, at.clone().setY(at.y + 30)]);
+    group.add(new THREE.Line(stalk, new THREE.LineBasicMaterial({ color: colour, depthTest: false })));
+    const dot = new THREE.BufferGeometry().setFromPoints([at]);
+    group.add(new THREE.Points(dot, new THREE.PointsMaterial({ color: colour, size: 12, sizeAttenuation: false, depthTest: false })));
+    return group;
+  };
+
   createEffect(() => {
     const want = props.focus;
     while (marker.children.length) cleanupNode(marker.children.pop()!);
@@ -162,32 +190,42 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
 
     // Scene coordinates are flipped on the scale, so points go in negated on y and z.
     const box = new THREE.Box3();
-    const spawn = want.spawn ? (props.head.spawns.find(s => s.id === want.spawn) ?? props.base.spawns.find(s => s.id === want.spawn)) : undefined;
-    const region = want.name ? (props.head.regions[want.name] ?? props.base.regions[want.name]) : undefined;
 
-    if (spawn) {
-      const at = new THREE.Vector3(spawn.x, -spawn.y, -spawn.z);
-      box.expandByPoint(at);
-      // A dot alone is lost against terrain; a line up from it is visible from any angle.
-      const stalk = new THREE.BufferGeometry().setFromPoints([at, at.clone().setY(at.y + 30)]);
-      marker.add(new THREE.Line(stalk, new THREE.LineBasicMaterial({ color: 0xfff066, depthTest: false })));
-      const dot = new THREE.BufferGeometry().setFromPoints([at]);
-      marker.add(new THREE.Points(dot, new THREE.PointsMaterial({ color: 0xfff066, size: 12, sizeAttenuation: false, depthTest: false })));
-    } else if (region?.rings[0]?.length) {
+    if (want.spawn) {
+      // A move has two ends and showing one of them explains nothing. A spawn placed by a region
+      // has no point of its own -- the region replaced it -- so "where it is" means that region.
+      const move = props.diff.moved.find(m => m.id === want.spawn);
+      const from = standsAt(props.base, want.spawn, move?.from);
+      const to = standsAt(props.head, want.spawn, move?.to);
+      if (!from && !to) return;
+
+      const fromRing = move?.from ? props.base.regions[move.from]?.rings[0] : undefined;
+      const toRing = move?.to ? props.head.regions[move.to]?.rings[0] : undefined;
+      if (fromRing?.length) marker.add(ringLine(fromRing, STATUS_COLOR.removed));
+      if (toRing?.length) marker.add(ringLine(toRing, STATUS_COLOR.added));
+      if (from) (marker.add(pin(from, STATUS_COLOR.removed)), box.expandByPoint(from));
+      if (to) (marker.add(pin(to, STATUS_COLOR.added)), box.expandByPoint(to));
+      // The move itself, so which way it went is not a guess.
+      if (from && to) {
+        marker.add(new THREE.Line(
+          new THREE.BufferGeometry().setFromPoints([from.clone().setY(from.y + 30), to.clone().setY(to.y + 30)]),
+          new THREE.LineBasicMaterial({ color: 0xfff066, depthTest: false }),
+        ));
+      }
+    } else if (want.name) {
+      const region = props.head.regions[want.name] ?? props.base.regions[want.name];
+      if (!region?.rings[0]?.length) return;
       for (const ring of region.rings) {
         if (ring.length < 2) continue;
-        const points = ring.map(([x, y, z]) => new THREE.Vector3(x, -y, -z));
-        for (const p of points) box.expandByPoint(p);
-        points.push(points[0].clone());
-        const geo = new THREE.BufferGeometry().setFromPoints(points);
-        marker.add(new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xfff066, depthTest: false })));
+        marker.add(ringLine(ring, 0xfff066));
+        for (const [x, y, z] of ring) box.expandByPoint(new THREE.Vector3(x, -y, -z));
       }
     } else {
       return;
     }
 
-    // Close enough that the thing fills the view rather than merely being somewhere in it, keeping
-    // whatever angle the camera was already at. A single spawn has no size of its own to fit.
+    // Close enough that it fills the view rather than merely being in it, keeping whatever angle
+    // the camera was already at. Both ends of a move have to fit, however far apart they are.
     const centre = box.getCenter(new THREE.Vector3());
     const radius = Math.max(box.getBoundingSphere(new THREE.Sphere()).radius, 12);
     const distance = (radius * 2.2) / Math.tan((camera().fov * Math.PI) / 360);

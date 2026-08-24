@@ -221,8 +221,21 @@ export default function RegionsDiffPage() {
             </div>
           }
         >
-          <div class="flex-1">
+          <div class="flex-1 relative">
             <RegionDiffViewer zoneData={mesh()!} base={pair()!.base} head={pair()!.head} diff={pair()!.diff} focus={focus()} />
+            {/* Two pins and a line between them say a move happened; this says which way and whose. */}
+            <Show when={focus()?.spawn && pair()!.diff.moved.find(m => m.id === focus()!.spawn)}>
+              {found => (
+                <div class="absolute top-2 left-2 bg-slate-900/85 rounded px-3 py-2 text-sm pointer-events-none">
+                  <span class="text-slate-300">{found().name}</span> <span class="text-slate-500">{found().id}</span>
+                  <div class="mt-1">
+                    <span style={{ color: swatch("removed") }}>{found().from ?? "no region"}</span>
+                    <span class="text-slate-400"> → </span>
+                    <span style={{ color: swatch("added") }}>{found().to ?? "no region"}</span>
+                  </div>
+                </div>
+              )}
+            </Show>
           </div>
 
           <div class="w-96 flex flex-col bg-slate-800 rounded-lg p-2 overflow-y-auto text-sm">
