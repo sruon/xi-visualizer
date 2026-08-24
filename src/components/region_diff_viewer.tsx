@@ -185,18 +185,26 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
   createEffect(() => scene().add(marker));
   onCleanup(() => cleanupNode(marker));
 
+  /**
+   * The scene carries zone coordinates and flips them on its scale, so anything added to it goes in
+   * raw -- as the region outlines do. The camera is not in the scene graph and works in world
+   * space, so a point handed to it has to be flipped. Mixing the two puts markers off the map while
+   * the camera still goes to the right place, which is exactly how it looked.
+   */
+  const toWorld = (v: THREE.Vector3) => new THREE.Vector3(v.x, -v.y, -v.z);
+
   /** Where a spawn actually stands on one side: its own point, or the middle of the region placing it. */
   const standsAt = (side: ZoneSide, id: string, regionName?: string | null) => {
     const spawn = side.spawns.find(sp => sp.id === id);
-    if (spawn?.at) return new THREE.Vector3(spawn.x, -spawn.y, -spawn.z);
+    if (spawn?.at) return new THREE.Vector3(spawn.x, spawn.y, spawn.z);
     const ring = regionName ? side.regions[regionName]?.rings[0] : undefined;
     if (!ring?.length) return null;
-    const middle = ring.reduce((sum, [x, y, z]) => sum.add(new THREE.Vector3(x, -y, -z)), new THREE.Vector3());
+    const middle = ring.reduce((sum, [x, y, z]) => sum.add(new THREE.Vector3(x, y, z)), new THREE.Vector3());
     return middle.divideScalar(ring.length);
   };
 
   const ringLine = (ring: readonly (readonly number[])[], colour: number) => {
-    const points = ring.map(([x, y, z]) => new THREE.Vector3(x, -y, -z));
+    const points = ring.map(([x, y, z]) => new THREE.Vector3(x, y, z));
     points.push(points[0].clone());
     return new THREE.Line(
       new THREE.BufferGeometry().setFromPoints(points),
@@ -204,12 +212,34 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
     );
   };
 
+  /** A round sprite, because a default point sprite is a square and a mob is not a cube. */
+  const roundDot = (() => {
+    let texture: THREE.Texture | undefined;
+    return () => {
+      if (texture) return texture;
+      const size = 64;
+      const canvas = document.createElement("canvas");
+      canvas.width = canvas.height = size;
+      const ctx = canvas.getContext("2d")!;
+      ctx.beginPath();
+      ctx.arc(size / 2, size / 2, size / 2 - 2, 0, Math.PI * 2);
+      ctx.fillStyle = "#fff";
+      ctx.fill();
+      texture = new THREE.CanvasTexture(canvas);
+      onCleanup(() => texture?.dispose());
+      return texture;
+    };
+  })();
+
   const pin = (at: THREE.Vector3, colour: number) => {
     const group = new THREE.Group();
     const stalk = new THREE.BufferGeometry().setFromPoints([at, at.clone().setY(at.y + 30)]);
     group.add(new THREE.Line(stalk, new THREE.LineBasicMaterial({ color: colour, depthTest: false })));
     const dot = new THREE.BufferGeometry().setFromPoints([at]);
-    group.add(new THREE.Points(dot, new THREE.PointsMaterial({ color: colour, size: 12, sizeAttenuation: false, depthTest: false })));
+    group.add(new THREE.Points(
+      dot,
+      new THREE.PointsMaterial({ color: colour, size: 12, sizeAttenuation: false, depthTest: false, map: roundDot(), transparent: true }),
+    ));
     return group;
   };
 
@@ -251,7 +281,7 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
         ));
         const dot = new THREE.Points(
           new THREE.BufferGeometry().setFromPoints([new THREE.Vector3()]),
-          new THREE.PointsMaterial({ color: 0xfff066, size: 16, sizeAttenuation: false, depthTest: false }),
+          new THREE.PointsMaterial({ color: 0xfff066, size: 16, sizeAttenuation: false, depthTest: false, map: roundDot(), transparent: true }),
         );
         marker.add(dot);
         walking = { from: from.clone().setY(from.y + 20), to: to.clone().setY(to.y + 20), dot, leaving, elapsed: 0 };
@@ -262,7 +292,7 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
       for (const ring of region.rings) {
         if (ring.length < 2) continue;
         marker.add(ringLine(ring, 0xfff066));
-        for (const [x, y, z] of ring) box.expandByPoint(new THREE.Vector3(x, -y, -z));
+        for (const [x, y, z] of ring) box.expandByPoint(new THREE.Vector3(x, y, z));
       }
     } else {
       return;
@@ -270,7 +300,7 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
 
     // Close enough that it fills the view rather than merely being in it, keeping whatever angle
     // the camera was already at. Both ends of a move have to fit, however far apart they are.
-    const centre = box.getCenter(new THREE.Vector3());
+    const centre = toWorld(box.getCenter(new THREE.Vector3()));
     // Neighbouring regions can be a few yalms apart, and framing exactly that puts the camera on
     // top of one spot with no ground around it to say where it is. A move needs its surroundings
     // more than it needs to fill the frame.
