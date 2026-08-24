@@ -7,6 +7,7 @@ import type { RegionsDiff, ZoneSide } from "../regions";
 import { loadZoneMesh } from "../zone_mesh";
 
 const DEFAULT_REPO = "sruon/server";
+const DEFAULT_BASE = "regions-master";
 const ZONES = "data/zones";
 
 const raw = (repo: string, ref: string, zone: string, file: string) => `https://raw.githubusercontent.com/${repo}/${ref}/${ZONES}/${zone}/${file}`;
@@ -20,27 +21,40 @@ async function side(repo: string, ref: string, zone: string): Promise<ZoneSide> 
 }
 
 export default function RegionsDiffPage() {
-  const [query, setQuery] = useSearchParams<{ repo?: string; base?: string; head?: string; zone?: string; }>();
+  // A pull request here is nearly always across forks: the base lives in the staging repository and
+  // the head on a contributor's own fork. Reading both refs out of one repository only ever worked
+  // for the maintainer, whose fork *is* the staging repository -- for anybody else the base branch
+  // does not exist on their fork, so every region read as newly added.
+  const [query, setQuery] = useSearchParams<
+    { repo?: string; head_repo?: string; base?: string; head?: string; zone?: string; }
+  >();
   const repo = () => query.repo || DEFAULT_REPO;
+  const headRepo = () => query.head_repo || repo();
   const [error, setError] = createSignal<string | undefined>();
   const [status, setStatus] = createSignal<string | undefined>();
   const [focus, setFocus] = createSignal<{ name: string; } | undefined>();
 
   // Branches to compare, and the zones each ref carries.
-  const [branches] = createResource(repo, async name => {
-    const [info, list] = await Promise.all([
-      fetch(`https://api.github.com/repos/${name}`).then(r => r.json()),
-      fetch(`https://api.github.com/repos/${name}/branches?per_page=100`).then(r => r.json()),
-    ]);
-    const names = (Array.isArray(list) ? list : []).map((b: any) => b.name as string).sort();
+  const branchesIn = async (name: string) => {
+    const list = await fetch(`https://api.github.com/repos/${name}/branches?per_page=100`).then(r => r.json());
+    return (Array.isArray(list) ? list : []).map((b: any) => b.name as string).sort();
+  };
+
+  const [baseBranches] = createResource(repo, branchesIn);
+  const [headBranches] = createResource(headRepo, async name => {
+    const names = await branchesIn(name);
     // Both in one call: two setQuery in a row race, and the second wins with a stale location.
-    const fallback = names.find(n => n.startsWith("regions/")) ?? names.find(n => n !== info.default_branch);
-    setQuery({ base: query.base ?? info.default_branch ?? "main", head: query.head ?? fallback }, { replace: true });
+    setQuery({
+      base: query.base ?? DEFAULT_BASE,
+      head: query.head ?? names.find(n => n.startsWith("regions/")),
+    }, { replace: true });
     return names;
   });
+  const branchesFor = (which: "base" | "head") => (which === "base" ? baseBranches() : headBranches()) ?? [];
 
+  // The zones worth offering are the ones the head carries, so this reads the head's repository.
   const [zoneList] = createResource(
-    () => (query.head ? { repo: repo(), ref: query.head } : undefined),
+    () => (query.head ? { repo: headRepo(), ref: query.head } : undefined),
     async ({ repo, ref }) => {
       const res = await fetch(`https://api.github.com/repos/${repo}/git/trees/${ref}?recursive=1`);
       const json = (await res.json()) as { tree?: { path: string; }[]; };
@@ -55,7 +69,7 @@ export default function RegionsDiffPage() {
       setError(undefined);
       setStatus(`Loading ${zone}…`);
       try {
-        const [a, b] = await Promise.all([side(repo(), base, zone), side(repo(), head, zone)]);
+        const [a, b] = await Promise.all([side(repo(), base, zone), side(headRepo(), head, zone)]);
         setStatus(undefined);
         return { base: a, head: b, diff: diffRegions(a, b) };
       } catch (e) {
@@ -76,7 +90,8 @@ export default function RegionsDiffPage() {
   const swatch = (kind: keyof typeof STATUS_COLOR) => `#${STATUS_COLOR[kind].toString(16)}`;
 
   createEffect(() => {
-    if (branches.error) setError(`${repo()}: ${branches.error}`);
+    if (baseBranches.error) setError(`${repo()}: ${baseBranches.error}`);
+    else if (headBranches.error) setError(`${headRepo()}: ${headBranches.error}`);
   });
 
   return (
@@ -87,8 +102,10 @@ export default function RegionsDiffPage() {
         <For each={["base", "head"] as const}>
           {which => (
             <label class="flex items-center gap-2">
-              <span class="text-slate-400">{which}</span>
-              <Picker options={branches() ?? []} value={query[which]} empty="pick a branch" onChange={v => setQuery({ [which]: v })} />
+              <span class="text-slate-400" title={which === "base" ? repo() : headRepo()}>
+                {which} <span class="text-slate-600">{which === "base" ? repo() : headRepo()}</span>
+              </span>
+              <Picker options={branchesFor(which)} value={query[which]} empty="pick a branch" onChange={v => setQuery({ [which]: v })} />
             </label>
           )}
         </For>

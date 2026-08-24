@@ -588,8 +588,12 @@ export default function RegionsPage() {
     if (where?.state !== "ready") return undefined;
     const editor = `${location.origin}${location.pathname}`;
     const zone = files()?.folder ?? "";
+    // Both sides, named separately: the base is on the staging repository and the head on this
+    // contributor's fork. Pointing both at one repository only ever worked for whoever owns the
+    // staging repository, and read every region as newly added for everybody else.
     const diffFor = (name: string) =>
-      `${editor}#/regions-diff?repo=${where.repo}&base=${ref()}&head=${branchName()}&zone=${name}`;
+      `${editor}#/regions-diff?repo=${repo()}&base=${ref()}`
+      + `&head_repo=${where.repo}&head=${branchName()}&zone=${name}`;
 
     // Every zone on the branch, not whichever one is open: a sitting's pull request covers all of
     // them, and a reviewer wants a diff link per zone rather than one into the middle of it.
