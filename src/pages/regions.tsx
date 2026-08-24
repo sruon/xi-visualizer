@@ -6,7 +6,7 @@ import type { ZoneData } from "../components/zone_model";
 import zones from "../data/zones";
 import { compareUrl, deleteBranch, fillTemplate, findFork, findSitting, type ForkState, forkUrl, grantedOn, installUrl, prTitle, save, type Sitting, whoAmI } from "../github";
 import { canSignIn, completeSignIn, isCallback, signOut, startSignIn as beginSignIn, storedToken } from "../github_auth";
-import { emitRegionsBlock, mergeZone, parseMobsYaml, parseRegionsYaml, patchMobsYaml, patchRegionsYaml, placementsOf, zoneOfMobId } from "../regions";
+import { emitRegionsBlock, mergeZone, parseMobsYaml, parsePastedZone, parseRegionsYaml, patchMobsYaml, patchRegionsYaml, placementsOf, zoneOfMobId } from "../regions";
 import type { Patrol, Placements, RegionSet, Spawn } from "../regions";
 import type { ZoneOnBranch } from "../github";
 import { decompress, fetchProgress } from "../util";
@@ -204,6 +204,9 @@ export default function RegionsPage() {
   const [status, setStatus] = createSignal<string | undefined>();
   const [dirty, setDirty] = createSignal(false);
   const [showYaml, setShowYaml] = createSignal(false);
+  /** The paste box, for work somebody kept in a text file before any of this committed anywhere. */
+  const [pasting, setPasting] = createSignal(false);
+  const [pasted, setPasted] = createSignal("");
   // Bumped on every edit so the yaml panel can follow along. Patching is a few milliseconds, and
   // this only runs while the panel is open.
   const [edits, setEdits] = createSignal(0);
@@ -440,6 +443,47 @@ export default function RegionsPage() {
     } catch (e) {
       setStatus(undefined);
       setError(`save: ${e}`);
+    }
+  };
+
+  /**
+   * Loads a zone out of pasted text, through the same door a restored draft comes in by.
+   *
+   * Refuses a paste from another zone rather than mixing them: the spawn ids say which zone they
+   * belong to, and quietly loading Ronfaure's placements over Konschtat would be the kind of mess
+   * that is only noticed much later.
+   */
+  const loadPasted = () => {
+    const f = files();
+    if (!f) return;
+    try {
+      const { regions: theirs, spawns: theirSpawns } = parsePastedZone(pasted());
+      if (!Object.keys(theirs).length && !theirSpawns?.length) throw new Error("no regions and no spawns in that");
+
+      const wrong = theirSpawns?.find(sp => zoneOfMobId(sp.id) !== zoneId());
+      if (wrong) {
+        throw new Error(
+          `that is ${zones[zoneOfMobId(wrong.id)]?.name ?? "another zone"}, and this is ${zones[zoneId()!]?.name}`,
+        );
+      }
+
+      // Placement only moves when the paste actually carried a mobs.yaml; a regions.yaml on its own
+      // says nothing about it, and taking that as "nothing is placed" would wipe the assignments.
+      const placed = theirSpawns
+        ? {
+          assign: Object.fromEntries(theirSpawns.filter(sp => sp.region).map(sp => [sp.id, sp.region!])),
+          paths: Object.fromEntries(theirSpawns.filter(sp => sp.path).map(sp => [sp.id, { legs: sp.path!, loop: sp.loop }])),
+        }
+        : { assign: pending?.assign ?? {}, paths: pending?.paths ?? {} };
+
+      setRestored({ at: Date.now(), regions: theirs, ...placed });
+      setEditorKey(`${f.folder}:pasted:${Date.now()}`);
+      setPasting(false);
+      setPasted("");
+      setError(undefined);
+      setStatus(`Loaded ${count(Object.keys(theirs).length, "region")} from the clipboard`);
+    } catch (e) {
+      setError(`that paste did not load: ${e}`);
     }
   };
 
@@ -701,6 +745,13 @@ export default function RegionsPage() {
           </button>
           <button class={BTN_PLAIN} onClick={copyPatched}>Copy YAML</button>
           <button
+            class={BTN_PLAIN}
+            title="Load a zone back out of yaml kept in a file"
+            onClick={() => setPasting(v => !v)}
+          >
+            Paste YAML
+          </button>
+          <button
             class={BTN}
             classList={{ "bg-slate-600 text-white": showYaml(), "bg-slate-700 hover:bg-slate-600 text-white": !showYaml() }}
             title="Show the files as they would be written"
@@ -860,6 +911,26 @@ export default function RegionsPage() {
               docs/github-sign-in.md to point a build at a relay.
             </span>
           </Show>
+        </div>
+      </Show>
+
+      <Show when={pasting()}>
+        <div class="mt-3 flex flex-col gap-2 text-sm bg-slate-800 border border-slate-600 rounded px-3 py-2">
+          <span class="text-slate-400">
+            Paste what <b>Copy YAML</b> gave you, or a regions.yaml on its own. It loads into{" "}
+            <b>{files()?.folder}</b> without committing anything, so Save is still what puts it anywhere.
+          </span>
+          <textarea
+            class="w-full h-40 px-2 py-1 bg-slate-900 rounded font-mono text-xs"
+            placeholder={"# --- regions.yaml ---\nregions:\n  ..."}
+            value={pasted()}
+            onInput={e => setPasted(e.currentTarget.value)}
+          />
+          <div class="flex items-center gap-2">
+            <button class={BTN_GO} disabled={!pasted().trim()} onClick={loadPasted}>Load it</button>
+            <button class={BTN_QUIET} onClick={() => (setPasting(false), setPasted(""))}>Cancel</button>
+            <span class="text-slate-500">Replaces the regions on screen. Undo puts them back.</span>
+          </div>
         </div>
       </Show>
 

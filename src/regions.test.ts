@@ -5,6 +5,7 @@ import {
   diffRegions,
   emitRegionsBlock,
   mergeZone,
+  parsePastedZone,
   placementsOf,
   floorYAt,
   parseMobsYaml,
@@ -386,6 +387,36 @@ assert.ok(has("1 spawns have no position, region or route"), "spawn left with no
 
 /** Two regions are the same shape when the canonical emitter cannot tell them apart. */
 const sameShape = (a: Region, b: Region) => emitRegionsBlock({ x: a }) === emitRegionsBlock({ x: b });
+
+// --- reading a zone back out of text somebody kept ---
+
+// What Copy YAML writes: both files, each under its own header.
+const copied = `# --- regions.yaml ---
+${patchRegionsYaml("", regions)}
+# --- mobs.yaml (spawns section) ---
+${assigned}`;
+let back = parsePastedZone(copied);
+assert.deepStrictEqual(Object.keys(back.regions).sort(), ["f1_hall", "f2_hall"], "both regions came back");
+assert.strictEqual(back.spawns?.length, 2, "and the spawns with them");
+assert.strictEqual(back.spawns?.find(s => s.id === "17186822")?.region, "f1_hall", "including where each is placed");
+
+// A regions.yaml on its own, with no header at all.
+back = parsePastedZone(patchRegionsYaml("", regions));
+assert.deepStrictEqual(Object.keys(back.regions).sort(), ["f1_hall", "f2_hall"]);
+assert.strictEqual(back.spawns, undefined, "nothing was said about placement, so nothing is claimed");
+
+// A mobs.yaml on its own is recognised by what is in it rather than by a name.
+back = parsePastedZone(assigned);
+assert.deepStrictEqual(back.regions, {}, "it carries no geometry");
+assert.strictEqual(back.spawns?.length, 2);
+
+// An older copy, from when regions lived in zone.yaml.
+back = parsePastedZone(`# --- zone.yaml ---\n${patchRegionsYaml("", regions)}`);
+assert.deepStrictEqual(Object.keys(back.regions).sort(), ["f1_hall", "f2_hall"], "zone.yaml is still where some copies keep them");
+
+// Nothing worth reading is not a crash.
+assert.deepStrictEqual(parsePastedZone(""), { regions: {} });
+assert.deepStrictEqual(parsePastedZone("# --- regions.yaml ---\n"), { regions: {}, spawns: undefined });
 
 // --- merging two people's work on one zone ---
 

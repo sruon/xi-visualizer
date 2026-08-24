@@ -154,6 +154,47 @@ function alignKeys(body: string[]): string[] {
   return out;
 }
 
+// --- reading back what the editor copied out ---
+
+export interface PastedZone {
+  regions: RegionSet;
+  /** Only when the paste carried a mobs.yaml, which is what holds the placements. */
+  spawns?: Spawn[];
+}
+
+/**
+ * Reads a zone back out of text somebody kept.
+ *
+ * Copy YAML writes both files under `# --- name.yaml ---` headers, but what comes back is whatever
+ * was saved: both files, one of them, an older copy whose regions lived in zone.yaml, or a bare
+ * file with no header at all. All of those are the same work and worth accepting, so the shape is
+ * worked out from the content rather than demanded of the person pasting.
+ */
+export function parsePastedZone(text: string): PastedZone {
+  const marker = /^#\s*-+\s*(\S+?\.ya?ml).*$/gim;
+  const sections: { name: string; body: string; }[] = [];
+  let last: { name: string; from: number; } | null = null;
+
+  for (const hit of text.matchAll(marker)) {
+    if (last) sections.push({ name: last.name, body: text.slice(last.from, hit.index) });
+    last = { name: hit[1].toLowerCase(), from: hit.index! + hit[0].length };
+  }
+  if (last) sections.push({ name: last.name, body: text.slice(last.from) });
+
+  // No headers at all: one file, and which one it is is written in it.
+  if (!sections.length) {
+    return /^spawns:/m.test(text) ? { regions: {}, spawns: parseMobsYaml(text) } : { regions: parseRegionsYaml(text) };
+  }
+
+  // zone.yaml is where regions lived before they moved to a file of their own.
+  const regionsIn = sections.find(s => s.name.includes("regions") || s.name.includes("zone"));
+  const mobsIn = sections.find(s => s.name.includes("mobs"));
+  return {
+    regions: regionsIn ? parseRegionsYaml(regionsIn.body) : {},
+    spawns: mobsIn ? parseMobsYaml(mobsIn.body) : undefined,
+  };
+}
+
 // --- merging two people's work on one zone ---
 
 /** How a spawn is placed, as the editor holds it: a region, a route, or its own fixed point. */
