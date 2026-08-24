@@ -353,7 +353,34 @@ const delta = diffRegions(before, after);
 assert.deepStrictEqual(delta.added, ["fresh"]);
 assert.deepStrictEqual(delta.removed, ["gone"]);
 assert.deepStrictEqual(delta.unchanged, ["kept"]);
-assert.deepStrictEqual(delta.reshaped, [{ name: "grown", fromVertices: 4, toVertices: 4, areaRatio: 2 }]);
+assert.deepStrictEqual(delta.reshaped, [
+  { name: "grown", fromVertices: 4, toVertices: 4, areaRatio: 2, fromHoles: 0, toHoles: 0 },
+]);
+
+// A region can change by nothing but its holes: the outline identical to the vertex, a piece cut
+// out of the middle. Reporting only the outline calls that no change, on the one row whose job is
+// to say what changed.
+const holed = diffRegions(
+  { regions: { pit: { rings: [[[0, 0, 0], [10, 0, 0], [10, 0, 10], [0, 0, 10]]] } }, spawns: [] },
+  {
+    regions: {
+      pit: {
+        rings: [
+          [[0, 0, 0], [10, 0, 0], [10, 0, 10], [0, 0, 10]],
+          [[4, 0, 4], [6, 0, 4], [6, 0, 6], [4, 0, 6]],
+        ],
+      },
+    },
+    spawns: [],
+  },
+);
+assert.strictEqual(holed.reshaped.length, 1, "a hole is a change");
+assert.strictEqual(holed.reshaped[0].fromVertices, holed.reshaped[0].toVertices, "and the outline is untouched");
+assert.deepStrictEqual(
+  [holed.reshaped[0].fromHoles, holed.reshaped[0].toHoles],
+  [0, 1],
+  "so the holes are the only thing that can explain it",
+);
 assert.deepStrictEqual(delta.moved, [
   { id: "2", name: "Bat", from: "gone", to: "grown" },
   { id: "3", name: "Worm", from: undefined, to: "fresh" },

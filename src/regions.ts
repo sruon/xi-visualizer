@@ -953,6 +953,11 @@ export interface RegionChange {
   toVertices: number;
   /** head area / base area, so 1.18 means the region grew by 18%. */
   areaRatio: number;
+  /** Holes each side has. A region can change by nothing but these -- the outline untouched to the
+   * vertex and a hole cut out of it -- and describing only the outline then reports no change at
+   * all on a row whose whole job is saying what changed. */
+  fromHoles: number;
+  toHoles: number;
 }
 
 export interface SpawnMove {
@@ -998,6 +1003,8 @@ export function diffRegions(base: ZoneSide, head: ZoneSide): RegionsDiff {
         fromVertices: before.rings[0]?.length ?? 0,
         toVertices: after.rings[0]?.length ?? 0,
         areaRatio: regionArea(before) ? regionArea(after) / regionArea(before) : Infinity,
+        fromHoles: Math.max(0, before.rings.length - 1),
+        toHoles: Math.max(0, after.rings.length - 1),
       });
     }
   }

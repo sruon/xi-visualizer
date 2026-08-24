@@ -260,8 +260,23 @@ export default function RegionsDiffPage() {
             <For each={pair()!.diff.reshaped}>
               {change => (
                 <DiffRow color={swatch("reshaped")} mark="~" onClick={() => setFocus({ name: change.name })}>
-                  <b>{change.name}</b> reshaped, {change.fromVertices}v to {change.toVertices}v, area {change.areaRatio >= 1 ? "+" : ""}
-                  {((change.areaRatio - 1) * 100).toFixed(0)}%
+                  <b>{change.name}</b>{" "}
+                  {/* Say the thing that changed. An outline untouched to the vertex with a hole cut
+                      out of it used to read "33v to 33v, area +0%", which is a way of saying
+                      nothing at all. */}
+                  <Show
+                    when={change.fromVertices !== change.toVertices || Math.abs(change.areaRatio - 1) > 0.005}
+                    fallback={<>outline unchanged</>}
+                  >
+                    reshaped, {change.fromVertices}v to {change.toVertices}v, area {change.areaRatio >= 1 ? "+" : ""}
+                    {((change.areaRatio - 1) * 100).toFixed(0)}%
+                  </Show>
+                  <Show when={change.toHoles !== change.fromHoles}>
+                    <span class="text-amber-300">
+                      , {change.toHoles > change.fromHoles ? "+" : "−"}
+                      {Math.abs(change.toHoles - change.fromHoles)} hole{Math.abs(change.toHoles - change.fromHoles) === 1 ? "" : "s"}
+                    </span>
+                  </Show>
                 </DiffRow>
               )}
             </For>
