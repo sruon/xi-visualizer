@@ -2236,7 +2236,12 @@ export default function RegionEditor(props: RegionEditorProps) {
                       if (!renameRegion(r.name, e.currentTarget.value)) e.currentTarget.value = r.name;
                     }}
                   />
-                  <span class="text-xs text-slate-400">
+                  <span
+                    class="text-xs text-slate-400"
+                    title={`${vertexCount(r)} vertices${
+                      r.rings.length > 1 ? `, ${r.rings.length - 1} hole${r.rings.length > 2 ? "s" : ""}` : ""
+                    }, ${spawnCounts()[r.name] ?? 0} mobs placed here`}
+                  >
                     {vertexCount(r)}v{r.rings.length > 1 ? `+${r.rings.length - 1}h` : ""} · {spawnCounts()[r.name] ?? 0}
                   </span>
                   <Show when={coverage()[r.name] !== undefined}>

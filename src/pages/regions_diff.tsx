@@ -261,7 +261,7 @@ export default function RegionsDiffPage() {
                 <div class="text-slate-300 mt-1">
                   <Show when={pickedChange()} fallback={<>{pickedVertices()} vertices</>}>
                     <Show when={pickedChange()!.fromVertices !== pickedChange()!.toVertices} fallback={<>outline unchanged</>}>
-                      {pickedChange()!.fromVertices}v → {pickedChange()!.toVertices}v
+                      {pickedChange()!.fromVertices} → {pickedChange()!.toVertices} vertices
                     </Show>
                     <Show when={Math.abs(pickedChange()!.areaRatio - 1) > 0.005}>
                       {" · "}area {pickedChange()!.areaRatio >= 1 ? "+" : ""}
@@ -334,7 +334,8 @@ export default function RegionsDiffPage() {
             <For each={pair()!.diff.added}>
               {name => (
                 <DiffRow color={swatch("added")} mark="+" onClick={() => setFocus({ name })}>
-                  <b>{name}</b> added, {pair()!.head.regions[name].rings[0]?.length ?? 0}v, {pair()!.head.spawns.filter(s => s.region === name).length} spawns
+                  <b>{name}</b> added, {pair()!.head.regions[name].rings[0]?.length ?? 0} vertices,{" "}
+                  {pair()!.head.spawns.filter(s => s.region === name).length} spawns
                 </DiffRow>
               )}
             </For>
@@ -350,13 +351,13 @@ export default function RegionsDiffPage() {
                 <DiffRow color={swatch("reshaped")} mark="~" onClick={() => setFocus({ name: change.name })}>
                   <b>{change.name}</b>{" "}
                   {/* Say the thing that changed. An outline untouched to the vertex with a hole cut
-                      out of it used to read "33v to 33v, area +0%", which is a way of saying
+                      out of it used to read "33 to 33 vertices, area +0%", which is a way of saying
                       nothing at all. */}
                   <Show
                     when={change.fromVertices !== change.toVertices || Math.abs(change.areaRatio - 1) > 0.005}
                     fallback={<>outline unchanged</>}
                   >
-                    reshaped, {change.fromVertices}v to {change.toVertices}v, area {change.areaRatio >= 1 ? "+" : ""}
+                    reshaped, {change.fromVertices} → {change.toVertices} vertices, area {change.areaRatio >= 1 ? "+" : ""}
                     {((change.areaRatio - 1) * 100).toFixed(0)}%
                   </Show>
                   <Show when={change.toHoles !== change.fromHoles}>
