@@ -164,6 +164,21 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
     }
   });
 
+  /**
+   * A move in progress: a dot walking from where the mob was to where it is now, on a loop.
+   *
+   * Two pins and a line say a move happened but leave which end is which to be worked out. A dot
+   * that sets off from one and arrives at the other says it without a legend, and the region it
+   * left is held bright while it goes and fades once it has gone.
+   */
+  let walking: {
+    from: THREE.Vector3;
+    to: THREE.Vector3;
+    dot: THREE.Object3D;
+    leaving: THREE.Material[];
+    elapsed: number;
+  } | null = null;
+
   // Whatever is being looked at, drawn on top of everything so it is findable among the rest.
   const marker = new THREE.Group();
   marker.renderOrder = 6;
@@ -200,6 +215,7 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
 
   createEffect(() => {
     const want = props.focus;
+    walking = null;
     while (marker.children.length) cleanupNode(marker.children.pop()!);
     if (!want || !controls) return;
 
@@ -216,16 +232,29 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
 
       const fromRing = move?.from ? props.base.regions[move.from]?.rings[0] : undefined;
       const toRing = move?.to ? props.head.regions[move.to]?.rings[0] : undefined;
-      if (fromRing?.length) marker.add(ringLine(fromRing, STATUS_COLOR.removed));
+      const leaving: THREE.Material[] = [];
+      if (fromRing?.length) {
+        const line = ringLine(fromRing, STATUS_COLOR.removed);
+        (line.material as THREE.Material).transparent = true;
+        leaving.push(line.material as THREE.Material);
+        marker.add(line);
+      }
       if (toRing?.length) marker.add(ringLine(toRing, STATUS_COLOR.added));
       if (from) (marker.add(pin(from, STATUS_COLOR.removed)), box.expandByPoint(from));
       if (to) (marker.add(pin(to, STATUS_COLOR.added)), box.expandByPoint(to));
-      // The move itself, so which way it went is not a guess.
+
       if (from && to) {
+        // The path it took, faint, so the route is there even between passes of the dot.
         marker.add(new THREE.Line(
-          new THREE.BufferGeometry().setFromPoints([from.clone().setY(from.y + 30), to.clone().setY(to.y + 30)]),
-          new THREE.LineBasicMaterial({ color: 0xfff066, depthTest: false }),
+          new THREE.BufferGeometry().setFromPoints([from.clone().setY(from.y + 20), to.clone().setY(to.y + 20)]),
+          new THREE.LineBasicMaterial({ color: 0xfff066, depthTest: false, transparent: true, opacity: 0.35 }),
         ));
+        const dot = new THREE.Points(
+          new THREE.BufferGeometry().setFromPoints([new THREE.Vector3()]),
+          new THREE.PointsMaterial({ color: 0xfff066, size: 16, sizeAttenuation: false, depthTest: false }),
+        );
+        marker.add(dot);
+        walking = { from: from.clone().setY(from.y + 20), to: to.clone().setY(to.y + 20), dot, leaving, elapsed: 0 };
       }
     } else if (want.name) {
       const region = props.head.regions[want.name] ?? props.base.regions[want.name];
@@ -242,7 +271,11 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
     // Close enough that it fills the view rather than merely being in it, keeping whatever angle
     // the camera was already at. Both ends of a move have to fit, however far apart they are.
     const centre = box.getCenter(new THREE.Vector3());
-    const radius = Math.max(box.getBoundingSphere(new THREE.Sphere()).radius, 12);
+    // Neighbouring regions can be a few yalms apart, and framing exactly that puts the camera on
+    // top of one spot with no ground around it to say where it is. A move needs its surroundings
+    // more than it needs to fill the frame.
+    const floor = want.spawn ? 70 : 12;
+    const radius = Math.max(box.getBoundingSphere(new THREE.Sphere()).radius, floor);
     const distance = (radius * 2.2) / Math.tan((camera().fov * Math.PI) / 360);
     const direction = new THREE.Vector3().subVectors(camera().position, controls.target).normalize();
     if (!direction.lengthSq()) direction.set(0, 1, 0);
@@ -266,7 +299,19 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
     const projected = new THREE.Vector3();
     const clock = new THREE.Clock();
     renderer.setAnimationLoop(() => {
-      controls?.update(clock.getDelta());
+      const dt = clock.getDelta();
+      controls?.update(dt);
+      if (walking) {
+        const TRAVEL = 1.6, PAUSE = 0.7;
+        walking.elapsed = (walking.elapsed + dt) % (TRAVEL + PAUSE);
+        const t = Math.min(walking.elapsed / TRAVEL, 1);
+        // Eased, because something that sets off and arrives reads as going somewhere, where
+        // something at constant speed reads as a moving decoration.
+        const eased = t * t * (3 - 2 * t);
+        walking.dot.position.lerpVectors(walking.from, walking.to, eased);
+        // The region it left stays bright until it is most of the way there, then gives way.
+        for (const m of walking.leaving) (m as THREE.Material & { opacity: number; }).opacity = 1 - eased * 0.8;
+      }
       renderer.setSize(canvasElement.clientWidth, canvasElement.clientHeight, false);
       adjustCameraAspect(camera(), canvasElement);
       for (const m of lineMaterials) m.resolution.set(canvasElement.clientWidth, canvasElement.clientHeight);
