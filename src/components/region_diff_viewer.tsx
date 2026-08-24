@@ -27,8 +27,9 @@ interface DiffViewerProps {
   base: ZoneSide;
   head: ZoneSide;
   diff: RegionsDiff;
-  /** Region name to centre on; set it again with a new object to re-trigger. */
-  focus?: { name: string; };
+  /** What to go and look at: a region by name, or one spawn by id. Set it again with a new object
+   * to re-trigger, since asking for the same thing twice is a thing people do. */
+  focus?: { name?: string; spawn?: string; };
 }
 
 export default function RegionDiffViewer(props: DiffViewerProps) {
@@ -148,17 +149,52 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
     }
   });
 
+  // Whatever is being looked at, drawn on top of everything so it is findable among the rest.
+  const marker = new THREE.Group();
+  marker.renderOrder = 6;
+  createEffect(() => scene().add(marker));
+  onCleanup(() => cleanupNode(marker));
+
   createEffect(() => {
-    const name = props.focus?.name;
-    if (!name || !controls) return;
-    const region = props.head.regions[name] ?? props.base.regions[name];
-    if (!region?.rings[0]?.length) return;
+    const want = props.focus;
+    while (marker.children.length) cleanupNode(marker.children.pop()!);
+    if (!want || !controls) return;
+
+    // Scene coordinates are flipped on the scale, so points go in negated on y and z.
     const box = new THREE.Box3();
-    for (const [x, y, z] of region.rings[0]) box.expandByPoint(new THREE.Vector3(x, -y, -z)); // scene is flipped
-    const center = box.getCenter(new THREE.Vector3());
-    const offset = new THREE.Vector3().subVectors(camera().position, controls.target);
-    controls.target.copy(center);
-    camera().position.copy(center).add(offset);
+    const spawn = want.spawn ? (props.head.spawns.find(s => s.id === want.spawn) ?? props.base.spawns.find(s => s.id === want.spawn)) : undefined;
+    const region = want.name ? (props.head.regions[want.name] ?? props.base.regions[want.name]) : undefined;
+
+    if (spawn) {
+      const at = new THREE.Vector3(spawn.x, -spawn.y, -spawn.z);
+      box.expandByPoint(at);
+      // A dot alone is lost against terrain; a line up from it is visible from any angle.
+      const stalk = new THREE.BufferGeometry().setFromPoints([at, at.clone().setY(at.y + 30)]);
+      marker.add(new THREE.Line(stalk, new THREE.LineBasicMaterial({ color: 0xfff066, depthTest: false })));
+      const dot = new THREE.BufferGeometry().setFromPoints([at]);
+      marker.add(new THREE.Points(dot, new THREE.PointsMaterial({ color: 0xfff066, size: 12, sizeAttenuation: false, depthTest: false })));
+    } else if (region?.rings[0]?.length) {
+      for (const ring of region.rings) {
+        if (ring.length < 2) continue;
+        const points = ring.map(([x, y, z]) => new THREE.Vector3(x, -y, -z));
+        for (const p of points) box.expandByPoint(p);
+        points.push(points[0].clone());
+        const geo = new THREE.BufferGeometry().setFromPoints(points);
+        marker.add(new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xfff066, depthTest: false })));
+      }
+    } else {
+      return;
+    }
+
+    // Close enough that the thing fills the view rather than merely being somewhere in it, keeping
+    // whatever angle the camera was already at. A single spawn has no size of its own to fit.
+    const centre = box.getCenter(new THREE.Vector3());
+    const radius = Math.max(box.getBoundingSphere(new THREE.Sphere()).radius, 12);
+    const distance = (radius * 2.2) / Math.tan((camera().fov * Math.PI) / 360);
+    const direction = new THREE.Vector3().subVectors(camera().position, controls.target).normalize();
+    if (!direction.lengthSq()) direction.set(0, 1, 0);
+    controls.target.copy(centre);
+    camera().position.copy(centre).addScaledVector(direction, distance);
   });
 
   onMount(() => {

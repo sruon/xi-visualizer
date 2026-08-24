@@ -107,10 +107,12 @@ function dropStaleDrafts(folder: string, source: string) {
 export default function RegionsPage() {
   // /regions/<zone> picks the zone; ?repo=owner/name&ref=branch override where it comes from.
   const params = useParams<{ zone?: string; }>();
-  const [query] = useSearchParams<{ repo?: string; ref?: string; }>();
+  const [query] = useSearchParams<{ repo?: string; ref?: string; review?: string; }>();
   const navigate = useNavigate();
   const repo = () => query.repo || DEFAULT_REPO;
   const ref = () => query.ref || DEFAULT_REF;
+  /** Opened from a review link: somebody else's branch, for reading against the roam data. */
+  const reviewing = () => query.review === "1";
   // The only way in is signing in. api.github.com is CORS-enabled, so the token it yields is used
   // straight from here and needs no help from anybody.
   const [account, setAccount] = createSignal(storedToken());
@@ -735,6 +737,7 @@ export default function RegionsPage() {
           <span class="text-slate-400">
             {zones[zoneId()!]?.name ?? "?"} ({zoneId()}) · {spawns()?.length ?? 0} spawns
           </span>
+          <Show when={!reviewing()}>
           <button
             class={BTN}
             classList={{ "bg-emerald-600 hover:bg-emerald-500 text-white": dirty(), "bg-slate-700 text-slate-400": !dirty() }}
@@ -743,14 +746,17 @@ export default function RegionsPage() {
           >
             {dirty() ? "Save" : local() ? "Saved" : pushed() ? "Committed" : "No changes"}
           </button>
+          </Show>
           <button class={BTN_PLAIN} onClick={copyPatched}>Copy YAML</button>
-          <button
-            class={BTN_PLAIN}
-            title="Load a zone back out of yaml kept in a file"
-            onClick={() => setPasting(v => !v)}
-          >
-            Paste YAML
-          </button>
+          <Show when={!reviewing()}>
+            <button
+              class={BTN_PLAIN}
+              title="Load a zone back out of yaml kept in a file"
+              onClick={() => setPasting(v => !v)}
+            >
+              Paste YAML
+            </button>
+          </Show>
           <button
             class={BTN}
             classList={{ "bg-slate-600 text-white": showYaml(), "bg-slate-700 hover:bg-slate-600 text-white": !showYaml() }}
@@ -760,7 +766,7 @@ export default function RegionsPage() {
             {showYaml() ? "Hide YAML" : "View YAML"}
           </button>
           {/* Nothing to throw away until something is on the branch. */}
-          <Show when={sitting()?.ancestor}>
+          <Show when={sitting()?.ancestor && !reviewing()}>
             <button
               class={confirmReset() ? `${BTN} bg-red-700 hover:bg-red-600 text-white` : BTN_PLAIN}
               title={`Delete ${branchName()} from your fork. The work on it is not recoverable from here, and an open pull request for it would be left with nothing to merge.`}
@@ -773,7 +779,7 @@ export default function RegionsPage() {
             </button>
           </Show>
           {/* Only once something is actually on the branch: an empty compare page helps nobody. */}
-          <Show when={pushed() && prUrl()}>
+          <Show when={pushed() && prUrl() && !reviewing()}>
             <a class={BTN_GO} href={prUrl()} target="_blank" rel="noreferrer" title={`Opens a pull request against ${repo()}@${ref()}`}>
               Open pull request
             </a>
@@ -914,6 +920,16 @@ export default function RegionsPage() {
         </div>
       </Show>
 
+      <Show when={reviewing()}>
+        <div class="mt-3 flex flex-wrap items-center gap-2 text-sm bg-sky-900/40 border border-sky-700 rounded px-3 py-2">
+          <span>
+            Reviewing <b>{repo()}</b> at <b>{ref()}</b>. Nothing here writes anywhere, and the roam trails are the point:
+            they are what the regions were drawn from.
+          </span>
+          <a class={BTN_PLAIN} href={`#/regions/${files()?.folder ?? ""}`}>Leave review</a>
+        </div>
+      </Show>
+
       <Show when={pasting()}>
         <div class="mt-3 flex flex-col gap-2 text-sm bg-slate-800 border border-slate-600 rounded px-3 py-2">
           <span class="text-slate-400">
@@ -966,6 +982,7 @@ export default function RegionsPage() {
                 <Show when={editorKey()} keyed>
                   {_key => (
                     <RegionEditor
+                      readOnly={reviewing()}
                       zoneData={zoneMesh()!}
                       spawns={spawns()!}
                       regions={restored()?.regions ?? regions()}

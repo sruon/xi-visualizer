@@ -32,7 +32,7 @@ export default function RegionsDiffPage() {
   const headRepo = () => query.head_repo || repo();
   const [error, setError] = createSignal<string | undefined>();
   const [status, setStatus] = createSignal<string | undefined>();
-  const [focus, setFocus] = createSignal<{ name: string; } | undefined>();
+  const [focus, setFocus] = createSignal<{ name?: string; spawn?: string; } | undefined>();
 
   // Branches to compare, and the zones each ref carries.
   const branchesIn = async (name: string) => {
@@ -169,6 +169,15 @@ export default function RegionsDiffPage() {
           <span class="text-slate-400">
             {zones[zoneId()!]?.name ?? "?"} · {total(pair()!.diff) || "no"} changes
           </span>
+          {/* The diff says what moved; the editor says whether it should have. Roam trails are the
+              evidence the regions were drawn from, and they are only over there. */}
+          <a
+            class="px-2 py-1 rounded no-underline whitespace-nowrap bg-slate-700 hover:bg-slate-600 text-white"
+            href={`#/regions/${query.zone}?repo=${headRepo()}&ref=${query.head}&review=1`}
+            title="Open this zone's proposed version in the editor, over the roam data, without being able to change it"
+          >
+            Open in editor
+          </a>
         </Show>
         <Show when={status()}>
           <span class="text-slate-400">{status()}</span>
@@ -249,7 +258,7 @@ export default function RegionsDiffPage() {
               </div>
               <For each={pair()!.diff.moved}>
                 {move => (
-                  <DiffRow color={swatch("reshaped")} mark="~" onClick={() => move.to && setFocus({ name: move.to })}>
+                  <DiffRow color={swatch("reshaped")} mark="~" onClick={() => setFocus({ spawn: move.id })}>
                     <span class="text-slate-300">{move.name}</span> <span class="text-slate-500">{move.id}</span> {move.from ?? "unmapped"} →{" "}
                     {move.to ?? "unmapped"}
                   </DiffRow>

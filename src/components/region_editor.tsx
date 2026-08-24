@@ -29,6 +29,9 @@ interface Handle {
 }
 
 interface RegionEditorProps {
+  /** Looking rather than changing: the geometry tools go away and the canvas stops taking edits.
+   * Everything for reading a zone -- roam trails, floors, labels, the review list -- stays. */
+  readOnly?: boolean;
   zoneData: ZoneData;
   spawns: Spawn[];
   regions: RegionSet;
@@ -1330,6 +1333,8 @@ export default function RegionEditor(props: RegionEditorProps) {
     };
 
     const onMouseDown = (ev: MouseEvent) => {
+      // Reviewing: the camera, hovering and selection all still work; nothing moves under them.
+      if (props.readOnly) return;
       if (ev.button !== 0) return;
       downAt = { x: ev.clientX, y: ev.clientY };
       if (ev.altKey) return; // alt is for copying a position, never for dragging something
@@ -1430,6 +1435,7 @@ export default function RegionEditor(props: RegionEditorProps) {
     };
 
     const onClick = (ev: MouseEvent) => {
+      if (props.readOnly && mode() === "draw") return;
       setMenu(null);
       if (!downAt || Math.hypot(ev.clientX - downAt.x, ev.clientY - downAt.y) > 3) return;
       aim(ev);
@@ -2143,7 +2149,7 @@ export default function RegionEditor(props: RegionEditorProps) {
           <ReviewList findings={findings()} onJump={jumpTo} onRepair={repairShape} />
         </Show>
 
-        <Show when={tab() === "regions"}>
+        <Show when={tab() === "regions" && !props.readOnly}>
           <div class="flex gap-1 mb-2">
             <button class="flex-1 px-2 py-1 bg-slate-600 hover:bg-slate-500 rounded" onClick={addRegion}>+ Region</button>
             <button
