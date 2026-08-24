@@ -1028,13 +1028,36 @@ export default function RegionEditor(props: RegionEditorProps) {
     });
   });
 
+  // Materials are decided by a colour and a role, nothing else, so there are only ever a handful of
+  // distinct ones however many regions there are. Building them fresh on every rebuild meant a
+  // vertex drag allocated dozens a frame and made the renderer set up a program for each, which is
+  // work that shows up as a stall in the middle of the drag. Made once, kept, disposed at the end.
+  // The vertex handles are drawn with a custom shader, and it was built anew on every rebuild --
+  // so a vertex drag asked the renderer for a fresh shader program on every frame of the drag,
+  // which is the one thing in here that stalls rather than merely costs.
+  const handleMat = handleMaterial();
+  onCleanup(() => handleMat.dispose());
+
+  const overlayMaterials = new Map<string, THREE.Material>();
+  const materialFor = <T extends THREE.Material>(key: string, make: () => T): T => {
+    const had = overlayMaterials.get(key);
+    if (had) return had as T;
+    const made = make();
+    overlayMaterials.set(key, made);
+    return made;
+  };
+  onCleanup(() => {
+    for (const m of overlayMaterials.values()) m.dispose();
+    overlayMaterials.clear();
+  });
+
   createEffect(() => {
     const list = regions();
     const activeRegion = active();
     while (overlay.children.length) {
       const child = overlay.children.pop() as THREE.Mesh;
+      // Geometry is rebuilt every time and is this object's own; materials are shared and outlive it.
       child.geometry?.dispose();
-      (child.material as THREE.Material)?.dispose();
     }
     handleMap.length = 0;
     activeLineMaterials.length = 0;
@@ -1062,7 +1085,17 @@ export default function RegionEditor(props: RegionEditorProps) {
         geo.setIndex(faces.flat());
         const fill = new THREE.Mesh(
           geo,
-          new THREE.MeshBasicMaterial({ color, transparent: true, opacity: isActive ? 0.45 : 0.3, side: THREE.DoubleSide, depthTest: false }),
+          materialFor(
+            `fill:${color.getHex()}:${isActive}`,
+            () =>
+              new THREE.MeshBasicMaterial({
+                color,
+                transparent: true,
+                opacity: isActive ? 0.45 : 0.3,
+                side: THREE.DoubleSide,
+                depthTest: false,
+              }),
+          ),
         );
         fill.renderOrder = 1;
         overlay.add(fill);
@@ -1077,7 +1110,10 @@ export default function RegionEditor(props: RegionEditorProps) {
           pts.push(...ring[0]); // Line2 has no loop mode
           const geo = new LineGeometry();
           geo.setPositions(pts);
-          const mat = new LineMaterial({ color: color.getHex(), linewidth: 3, depthTest: false });
+          const mat = materialFor(
+            `outline:${color.getHex()}`,
+            () => new LineMaterial({ color: color.getHex(), linewidth: 3, depthTest: false }),
+          );
           mat.resolution.set(canvasElement.clientWidth, canvasElement.clientHeight);
           activeLineMaterials.push(mat);
           const line = new Line2(geo, mat);
@@ -1085,7 +1121,13 @@ export default function RegionEditor(props: RegionEditorProps) {
           overlay.add(line);
         } else {
           const geo = new THREE.BufferGeometry().setFromPoints(ring.map(([x, y, z]) => new THREE.Vector3(x, y, z)));
-          const line = new THREE.LineLoop(geo, new THREE.LineBasicMaterial({ color, depthTest: false, transparent: true, opacity: 0.85 }));
+          const line = new THREE.LineLoop(
+            geo,
+            materialFor(
+              `loop:${color.getHex()}`,
+              () => new THREE.LineBasicMaterial({ color, depthTest: false, transparent: true, opacity: 0.85 }),
+            ),
+          );
           line.renderOrder = 2;
           overlay.add(line);
         }
@@ -1104,7 +1146,10 @@ export default function RegionEditor(props: RegionEditorProps) {
       for (const [color, width, order] of [[0x0b0b12, 7, 2], [PATH_COLOR, 3.5, 3]] as const) {
         const geo = new LineGeometry();
         geo.setPositions(flat);
-        const mat = new LineMaterial({ color, linewidth: width, depthTest: false, transparent: true, opacity: editing ? 1 : 0.75 });
+        const mat = materialFor(
+          `route:${color}:${width}:${editing}`,
+          () => new LineMaterial({ color, linewidth: width, depthTest: false, transparent: true, opacity: editing ? 1 : 0.75 }),
+        );
         mat.resolution.set(canvasElement.clientWidth, canvasElement.clientHeight);
         activeLineMaterials.push(mat);
         const line = new Line2(geo, mat);
@@ -1115,7 +1160,10 @@ export default function RegionEditor(props: RegionEditorProps) {
       const dots = new THREE.BufferGeometry().setFromPoints(patrol.legs.map(([x, y, z]) => new THREE.Vector3(x, y, z)));
       const marks = new THREE.Points(
         dots,
-        new THREE.PointsMaterial({ color: PATH_COLOR, size: editing ? 7 : 5, sizeAttenuation: false, depthTest: false }),
+        materialFor(
+          `waypoints:${editing}`,
+          () => new THREE.PointsMaterial({ color: PATH_COLOR, size: editing ? 7 : 5, sizeAttenuation: false, depthTest: false }),
+        ),
       );
       marks.renderOrder = 3;
       overlay.add(marks);
@@ -1147,7 +1195,7 @@ export default function RegionEditor(props: RegionEditorProps) {
       geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pos), 3));
       geo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(col), 3));
       geo.setAttribute("mid", new THREE.BufferAttribute(new Float32Array(mid), 1));
-      handlePoints = new THREE.Points(geo, handleMaterial());
+      handlePoints = new THREE.Points(geo, handleMat);
       handlePoints.renderOrder = 5;
       overlay.add(handlePoints);
     }
@@ -1182,7 +1230,7 @@ export default function RegionEditor(props: RegionEditorProps) {
         geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pos), 3));
         geo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(col), 3));
         geo.setAttribute("mid", new THREE.BufferAttribute(new Float32Array(mid), 1));
-        handlePoints = new THREE.Points(geo, handleMaterial());
+        handlePoints = new THREE.Points(geo, handleMat);
         handlePoints.renderOrder = 5;
         overlay.add(handlePoints);
       }
@@ -1294,7 +1342,7 @@ export default function RegionEditor(props: RegionEditorProps) {
         if (!spawn) return;
         const start = new THREE.Vector3(spawn.x, spawn.y, spawn.z);
         const geo = new THREE.BufferGeometry().setFromPoints([start, start.clone()]);
-        const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xffffff, depthTest: false }));
+        const line = new THREE.Line(geo, materialFor("rubber", () => new THREE.LineBasicMaterial({ color: 0xffffff, depthTest: false })));
         line.renderOrder = 6;
         scene().add(line);
         spawnDrag = { spawn, line };
