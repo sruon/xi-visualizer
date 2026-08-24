@@ -130,6 +130,23 @@ export default function RegionsDiffPage() {
   const total = (d: RegionsDiff) => d.added.length + d.removed.length + d.reshaped.length + d.moved.length;
   const swatch = (kind: keyof typeof STATUS_COLOR) => `#${STATUS_COLOR[kind].toString(16)}`;
 
+  // What a maintainer wants off a glance is not the geometry, it is the blast radius: how many mobs
+  // this region places and where any of them went. A region that shrank by half with nothing in it
+  // is nothing; one that lost nine mobs to no region at all is worth stopping on.
+  const picked = () => focus()?.name;
+  const pickedKind = (): keyof typeof STATUS_COLOR => {
+    const name = picked(), d = pair()?.diff;
+    if (!name || !d) return "unchanged";
+    return d.added.includes(name) ? "added" : d.removed.includes(name) ? "removed" : "reshaped";
+  };
+  const pickedChange = () => pair()?.diff.reshaped.find(c => c.name === picked());
+  const pickedHeld = (side: "base" | "head") => pair()?.[side].spawns.filter(sp => sp.region === picked()).length ?? 0;
+  const pickedIn = () => pair()?.diff.moved.filter(m => m.to === picked()) ?? [];
+  const pickedOut = () => pair()?.diff.moved.filter(m => m.from === picked()) ?? [];
+  const pickedWentTo = () => [...new Set(pickedOut().map(m => m.to ?? "no region"))];
+  const pickedVertices = () =>
+    pair()?.[pickedKind() === "removed" ? "base" : "head"].regions[picked() ?? ""]?.rings[0]?.length ?? 0;
+
   createEffect(() => {
     if (baseBranches.error) setError(`${repo()}: ${baseBranches.error}`);
     else if (headBranches.error) setError(`${headRepo()}: ${headBranches.error}`);
@@ -222,7 +239,78 @@ export default function RegionsDiffPage() {
           }
         >
           <div class="flex-1 relative">
-            <RegionDiffViewer zoneData={mesh()!} base={pair()!.base} head={pair()!.head} diff={pair()!.diff} focus={focus()} />
+            <RegionDiffViewer
+              zoneData={mesh()!}
+              base={pair()!.base}
+              head={pair()!.head}
+              diff={pair()!.diff}
+              focus={focus()}
+              onPick={name => setFocus({ name })}
+            />
+            {/* What a maintainer wants off a glance is not the geometry, it is the blast radius:
+                how many mobs this region places and where any of them went. A region that shrank by
+                half with nothing in it is nothing; one that lost nine mobs to no region at all is
+                the thing worth stopping on. */}
+            <Show when={picked()}>
+              <div class="absolute top-2 left-2 bg-slate-900/90 rounded px-3 py-2 text-sm max-w-96">
+                <div class="flex items-baseline gap-2">
+                  <b style={{ color: swatch(pickedKind()) }}>{picked()}</b>
+                  <span class="text-slate-400">{pickedKind()}</span>
+                </div>
+
+                <div class="text-slate-300 mt-1">
+                  <Show when={pickedChange()} fallback={<>{pickedVertices()} vertices</>}>
+                    <Show when={pickedChange()!.fromVertices !== pickedChange()!.toVertices} fallback={<>outline unchanged</>}>
+                      {pickedChange()!.fromVertices}v → {pickedChange()!.toVertices}v
+                    </Show>
+                    <Show when={Math.abs(pickedChange()!.areaRatio - 1) > 0.005}>
+                      {" · "}area {pickedChange()!.areaRatio >= 1 ? "+" : ""}
+                      {((pickedChange()!.areaRatio - 1) * 100).toFixed(0)}%
+                    </Show>
+                    <Show when={pickedChange()!.toHoles !== pickedChange()!.fromHoles}>
+                      {" · "}
+                      <span class="text-amber-300">
+                        {pickedChange()!.toHoles > pickedChange()!.fromHoles ? "+" : "−"}
+                        {Math.abs(pickedChange()!.toHoles - pickedChange()!.fromHoles)} hole
+                        {Math.abs(pickedChange()!.toHoles - pickedChange()!.fromHoles) === 1 ? "" : "s"}
+                      </span>
+                    </Show>
+                  </Show>
+                </div>
+
+                {/* The part worth reading first. */}
+                <div class="mt-2 text-slate-200">
+                  <Show
+                    when={pickedKind() !== "removed"}
+                    fallback={
+                      <>
+                        held <b>{pickedHeld("base")}</b> mob{pickedHeld("base") === 1 ? "" : "s"}
+                        <Show when={pickedWentTo().length}>
+                          <span class="text-slate-400">, now in </span>
+                          <span style={{ color: swatch("added") }}>{pickedWentTo().join(", ")}</span>
+                        </Show>
+                      </>
+                    }
+                  >
+                    <b>{pickedHeld("head")}</b> mob{pickedHeld("head") === 1 ? "" : "s"} placed here
+                    <Show when={pickedIn().length || pickedOut().length}>
+                      <span class="text-slate-400">
+                        {" ("}
+                        <Show when={pickedIn().length}>
+                          <span style={{ color: swatch("added") }}>+{pickedIn().length} in</span>
+                        </Show>
+                        <Show when={pickedIn().length && pickedOut().length}>{", "}</Show>
+                        <Show when={pickedOut().length}>
+                          <span style={{ color: swatch("removed") }}>−{pickedOut().length} out</span>
+                        </Show>
+                        {")"}
+                      </span>
+                    </Show>
+                  </Show>
+                </div>
+              </div>
+            </Show>
+
             {/* Two pins and a line between them say a move happened; this says which way and whose. */}
             <Show when={focus()?.spawn && pair()!.diff.moved.find(m => m.id === focus()!.spawn)}>
               {found => (

@@ -30,6 +30,8 @@ interface DiffViewerProps {
   /** What to go and look at: a region by name, or one spawn by id. Set it again with a new object
    * to re-trigger, since asking for the same thing twice is a thing people do. */
   focus?: { name?: string; spawn?: string; };
+  /** Clicking a label on the map is the same act as clicking its row in the list. */
+  onPick?: (name: string) => void;
 }
 
 export default function RegionDiffViewer(props: DiffViewerProps) {
@@ -412,6 +414,8 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
   return (
     <div class="relative h-full">
       <canvas class="block w-full h-full outline-none" ref={canvasElement!} />
+      {/* The layer ignores the mouse so the camera still drags through it; the labels take it
+          back, since a name on the map is the most obvious thing to click. */}
       <div class="absolute inset-0 overflow-hidden pointer-events-none">
         <For each={labelled()}>
           {([name, kind]) => {
@@ -419,8 +423,10 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
             return (
               <div
                 ref={el => labelRefs.set(name, el)}
-                class="absolute top-0 left-0 hidden whitespace-nowrap text-xs font-bold px-1.5 py-0.5 rounded bg-slate-900/80"
+                class="absolute top-0 left-0 hidden whitespace-nowrap text-xs font-bold px-1.5 py-0.5 rounded bg-slate-900/80 pointer-events-auto cursor-pointer hover:bg-slate-800"
                 style={{ color: `#${STATUS_COLOR[kind].toString(16)}` }}
+                title={`Look at ${name}`}
+                onClick={() => props.onPick?.(name)}
               >
                 {name}
               </div>
