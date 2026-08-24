@@ -1493,14 +1493,17 @@ export default function RegionEditor(props: RegionEditorProps) {
     // Scene is flipped on y/z, so zone coordinates negate on the way to world space.
     const place = (el: HTMLDivElement, at: Vertex | null) => {
       if (!at) {
-        el.style.display = "none";
+        // Hundreds of these are hidden at any moment, and writing "none" over "none" sixty times a
+        // second for each of them is work nobody sees.
+        if (el.style.display !== "none") el.style.display = "none";
         return;
       }
       projected.set(at[0], -at[1], -at[2]).project(camera());
       // Behind the camera or off the side of it: no reason to place it, and with a label per mob
       // that is most of them most of the time.
       const onScreen = projected.z < 1 && Math.abs(projected.x) < 1.1 && Math.abs(projected.y) < 1.1;
-      el.style.display = onScreen ? "block" : "none";
+      const want = onScreen ? "block" : "none";
+      if (el.style.display !== want) el.style.display = want;
       if (!onScreen) return;
       el.style.transform = `translate(-50%, -50%) translate(${(projected.x * 0.5 + 0.5) * canvasElement.clientWidth}px, ${
         (-projected.y * 0.5 + 0.5) * canvasElement.clientHeight
@@ -1512,6 +1515,9 @@ export default function RegionEditor(props: RegionEditorProps) {
       for (const v of points) (x += v[0], y += v[1], z += v[2]);
       return [x / points.length, y / points.length, z / points.length];
     };
+
+    // Whether the mob labels are currently on screen, so the loop that hides them runs once.
+    let spawnLabelsShown = true;
 
     const placeLabels = () => {
       const only = activeName();
@@ -1534,6 +1540,11 @@ export default function RegionEditor(props: RegionEditorProps) {
       const perPixel = (2 * Math.tan((cam.fov * Math.PI) / 360) * cam.position.distanceTo(controls!.target))
         / canvasElement.clientHeight;
       const readable = !only && !walker() && perPixel < 0.5;
+      // Zoomed out, every one of several hundred is hidden and stays hidden. Hiding them once and
+      // then leaving the loop alone is the difference between a few hundred projections a frame
+      // and none at all.
+      if (!readable && !spawnLabelsShown) return;
+      spawnLabelsShown = readable;
       for (const s of labelledSpawns()) {
         const el = spawnLabelRefs.get(s.id);
         if (el) place(el, readable && spawnOnFloor(s) ? [s.x, s.y, s.z] : null);
