@@ -77,15 +77,31 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
    * follows nearly the same path, so the thin line sat underneath the thick one and there was
    * nothing to see -- the change looked like no change. Dashes read through an overlap.
    */
-  const outline = (region: Region, color: number, thick: boolean, opacity: number, dashed = false) => {
+  /** A ring's identity, independent of where it was written to start. */
+  const ringKey = (ring: readonly (readonly number[])[]) =>
+    ring.map(v => v.map(n => n.toFixed(2)).join()).sort().join("|");
+
+  const outline = (
+    region: Region,
+    color: number,
+    thick: boolean,
+    opacity: number,
+    dashed = false,
+    /** Rings not in this set are drawn in `only` instead: they exist on one side and not the other. */
+    shared?: { keys: Set<string>; only: number; },
+  ) => {
     for (const ring of region.rings) {
       if (ring.length < 2) continue;
+      // A region can change by nothing but a hole appearing in it, and a hole drawn in the same
+      // colour as the outline it was cut into is invisible. One that exists on one side only is
+      // coloured as the addition or removal it is.
+      const colour = shared && !shared.keys.has(ringKey(ring)) ? shared.only : color;
       if (thick) {
         const points = ring.flat();
         points.push(...ring[0]);
         const geo = new LineGeometry();
         geo.setPositions(points);
-        const mat = new LineMaterial({ color, linewidth: 3, depthTest: false, transparent: true, opacity });
+        const mat = new LineMaterial({ color: colour, linewidth: 3, depthTest: false, transparent: true, opacity });
         mat.resolution.set(canvasElement.clientWidth, canvasElement.clientHeight);
         lineMaterials.push(mat);
         const line = new Line2(geo, mat);
@@ -97,8 +113,8 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
         const line = new THREE.Line(
           geo,
           dashed
-            ? new THREE.LineDashedMaterial({ color, depthTest: false, transparent: true, opacity, dashSize: 4, gapSize: 3 })
-            : new THREE.LineBasicMaterial({ color, depthTest: false, transparent: true, opacity }),
+            ? new THREE.LineDashedMaterial({ color: colour, depthTest: false, transparent: true, opacity, dashSize: 4, gapSize: 3 })
+            : new THREE.LineBasicMaterial({ color: colour, depthTest: false, transparent: true, opacity }),
         );
         if (dashed) line.computeLineDistances();
         line.renderOrder = 2;
@@ -137,13 +153,26 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
       const after = props.head.regions[name];
 
       // What the old file said, faint underneath, so a reshape reads as a before and an after.
+      // Which rings the two sides have in common, so the ones only one of them has stand out.
+      const beforeKeys = new Set((before?.rings ?? []).map(ringKey));
+      const afterKeys = new Set((after?.rings ?? []).map(ringKey));
+
       if (kind === "removed" || kind === "reshaped") {
         // Dashed, and brighter than it was: a before nobody can pick out is not worth drawing.
-        if (before) outline(before, color, false, 0.9, true);
+        if (before) {
+          outline(before, color, false, 0.9, true, kind === "reshaped" ? { keys: afterKeys, only: STATUS_COLOR.removed } : undefined);
+        }
         if (before && kind === "removed") fill(before, color, 0.18);
       }
       if (after) {
-        outline(after, color, kind !== "unchanged", kind === "unchanged" ? 0.35 : 1);
+        outline(
+          after,
+          color,
+          kind !== "unchanged",
+          kind === "unchanged" ? 0.35 : 1,
+          false,
+          kind === "reshaped" ? { keys: beforeKeys, only: STATUS_COLOR.added } : undefined,
+        );
         if (kind !== "unchanged") fill(after, color, 0.22);
       }
     }
@@ -405,7 +434,7 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
             <span style={{ color: `#${color.toString(16)}` }}>
               {kind}
               <Show when={kind === "removed" || kind === "reshaped"}>
-                <span class="text-slate-500">(dashed = before)</span>
+                <span class="text-slate-500">(dashed = before, green/red rings = a hole gained or lost)</span>
               </Show>
             </span>
           )}
