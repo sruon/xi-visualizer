@@ -4,8 +4,8 @@ import { type JSX, Suspense } from "solid-js";
 const App = (props: { children?: JSX.Element; }) => {
   return (
     <div class="content">
-      <nav class="bg-slate-800 rounded-lg">
-        <ul class="flex space-x-4 font-bold items-center">
+      <nav class="bg-slate-800 rounded-lg flex items-center">
+        <ul class="flex space-x-4 font-bold items-center flex-1">
           <li class="py-2 px-4">
             <A href="/" class="no-underline hover:underline">
               Home
@@ -42,6 +42,11 @@ const App = (props: { children?: JSX.Element; }) => {
             </A>
           </li>
         </ul>
+        {/* Which build is actually running. A reload can keep an index.html pointing at the
+            previous chunk, and without this the only way to tell is the network panel. */}
+        <span class="ml-auto mr-4 self-center text-xs text-slate-500 font-mono" title="The commit this build came from">
+          {__BUILD__}
+        </span>
       </nav>
 
       <main>

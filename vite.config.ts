@@ -1,3 +1,4 @@
+import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { defineConfig, type Plugin } from "vite";
@@ -8,6 +9,21 @@ import solidPlugin from "vite-plugin-solid";
 // directory with XI_ZONES_DIR. The deployed build has none of this and reads GitHub instead.
 const ZONES_DIR = process.env.XI_ZONES_DIR
   ?? "C:/Users/sruon/Documents/GitHub/xi-regions-bootstrap/py/out/data/zones";
+
+/**
+ * The commit this build came from, shown in the corner of every page.
+ *
+ * "Have you got the fix?" has cost more than one round trip to answer, because a reload can keep an
+ * index.html that points at the previous chunk and nothing on screen says which one is running.
+ * Now it does.
+ */
+const BUILD = (() => {
+  try {
+    return execSync("git rev-parse --short HEAD", { stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
+  } catch {
+    return "dev";
+  }
+})();
 
 function localZones(): Plugin {
   return {
@@ -65,6 +81,7 @@ function localZones(): Plugin {
 
 export default defineConfig({
   plugins: [solidPlugin(), localZones()],
+  define: { __BUILD__: JSON.stringify(BUILD) },
   server: {
     port: 3000,
   },
