@@ -206,8 +206,9 @@ export default function RegionEditor(props: RegionEditorProps) {
     const set = asSet(settled());
     const a = assign();
     const data = props.roam;
+    const wanted = tab() === "review"; // the only place this number is shown
     clearTimeout(coverageTimer);
-    if (!data) return setCoverage({});
+    if (!data || !wanted) return;
     coverageTimer = setTimeout(() => {
       const acc: Record<string, [number, number]> = {};
       for (const [id, name] of Object.entries(a)) {
@@ -215,10 +216,10 @@ export default function RegionEditor(props: RegionEditorProps) {
         const range = data.ranges[id];
         if (!r || !range) continue;
         const [start, count] = range;
-        // Every point, not a sample of 120. This figure is what the review tab reports as "covers
-        // N% of its mobs' trails", and it was being estimated from a twentieth of the data -- fine
-        // for a rough sort, misleading for the one number a reviewer trusts. It runs debounced and
-        // off the drag path, so the extra work is not felt.
+        // Every point, not a sample of 120: this figure is what the review tab reports as "covers
+        // N% of its mobs' trails", and estimating it from a twentieth of the data is fine for a
+        // rough sort and misleading for the one number a reviewer trusts. Pashhow Marshlands has
+        // 2,268,933 of them, so it is only paid for while that tab is open.
         const tally = (acc[name] ??= [0, 0]);
         for (let i = 0; i < count; i++) {
           const o = (start + i) * 3;
@@ -231,7 +232,15 @@ export default function RegionEditor(props: RegionEditorProps) {
   });
   onCleanup(() => clearTimeout(coverageTimer));
 
-  const findings = createMemo<Finding[]>(() => {
+  /**
+   * Only while somebody is reading it, and once after a save.
+   *
+   * Checking every region for self-intersection is quadratic in its vertices, and the coverage
+   * figure walks every roam point in the zone; running both behind a tab badge meant paying for an
+   * answer nobody had asked for. Opening the tab computes it, and it stays live while it is open.
+   * The badge shows what was found last time, which is what it was showing anyway.
+   */
+  const findings = createMemo<Finding[]>(previous => {
     const thin: Finding[] = Object.entries(coverage())
       .filter(([, v]) => v < 0.9)
       .sort((a, b) => a[1] - b[1])
@@ -240,8 +249,9 @@ export default function RegionEditor(props: RegionEditorProps) {
         region: name,
         text: `${name} covers ${(v * 100).toFixed(0)}% of its mobs' trails`,
       }));
+    if (tab() !== "review") return previous;
     return [...thin, ...validate(asSet(settled()), props.spawns, assign())];
-  });
+  }, []);
 
   /**
    * Every recorded point of the given mobs. Not thinned.
@@ -2054,6 +2064,7 @@ export default function RegionEditor(props: RegionEditorProps) {
           <button
             class="flex-1 px-2 py-1 rounded"
             classList={{ "bg-slate-600": tab() === "review", "bg-slate-700 text-slate-400": tab() !== "review" }}
+            title="Checks every region and how well each covers its mobs' trails. Rechecked while this tab is open."
             onClick={() => setTab("review")}
           >
             Review ({findings().filter(f => f.level !== "info").length})
