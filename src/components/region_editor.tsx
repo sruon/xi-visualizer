@@ -180,12 +180,30 @@ export default function RegionEditor(props: RegionEditorProps) {
     setTab("paths");
   };
 
+  /**
+   * The regions as they were once the mouse stopped moving.
+   *
+   * Dragging a vertex replaces the set on every mouse move, and the two things that read it are
+   * far too expensive to run at that rate: checking every region for self-intersection is
+   * quadratic in its vertices, and measuring trail coverage walks every roam point in the zone --
+   * over two million of them in Pashhow Marshlands. Neither answer is wanted mid-drag anyway.
+   * Nothing that draws uses this; the picture still follows the mouse exactly as before.
+   */
+  const [settled, setSettled] = createSignal(regions());
+  let settleTimer: ReturnType<typeof setTimeout> | undefined;
+  createEffect(() => {
+    const now = regions();
+    clearTimeout(settleTimer);
+    settleTimer = setTimeout(() => setSettled(now), 400);
+  });
+  onCleanup(() => clearTimeout(settleTimer));
+
   // How much of a region's mobs' roam trails actually fall inside it: the objective version of
   // "does this polygon look right". Debounced and sampled, since it re-runs while dragging.
   const [coverage, setCoverage] = createSignal<Record<string, number>>({});
   let coverageTimer: ReturnType<typeof setTimeout> | undefined;
   createEffect(() => {
-    const set = asSet(regions());
+    const set = asSet(settled());
     const a = assign();
     const data = props.roam;
     clearTimeout(coverageTimer);
@@ -222,7 +240,7 @@ export default function RegionEditor(props: RegionEditorProps) {
         region: name,
         text: `${name} covers ${(v * 100).toFixed(0)}% of its mobs' trails`,
       }));
-    return [...thin, ...validate(asSet(regions()), props.spawns, assign())];
+    return [...thin, ...validate(asSet(settled()), props.spawns, assign())];
   });
 
   /**
