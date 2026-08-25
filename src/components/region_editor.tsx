@@ -769,7 +769,10 @@ export default function RegionEditor(props: RegionEditorProps) {
     at: (x: number, y: number, z: number) => number | null;
     perVertex: Uint8Array;
   }
-  const CELL = 12;
+  /** Roam points drawn at once. Above this a zone is sampled for display only; see where it is used. */
+const DRAWN_POINT_CAP = 600_000;
+
+const CELL = 12;
   const buildFloorIndex = (mesh: THREE.Mesh, prep: ReturnType<typeof prepareMeshData>): FloorIndex => {
     const perVertex = mapIdPerVertex(mesh, prep);
     const pos = mesh.geometry.getAttribute("position");
@@ -963,6 +966,20 @@ export default function RegionEditor(props: RegionEditorProps) {
     geo.setAttribute("big", new THREE.BufferAttribute(new Float32Array(data.count), 1));
     // Everything is on screen until a floor says otherwise.
     geo.setAttribute("shown", new THREE.BufferAttribute(new Float32Array(data.count).fill(1), 1));
+
+    // Draw every nth point once a zone has more of them than a screen can distinguish. Pashhow
+    // Marshlands records 2,268,933, against West Ronfaure's 682,000, and rasterising all of them
+    // every frame is what makes it drag. Which points are drawn is chosen by an index, so the
+    // buffers keep their original layout and everything that addresses a point by its position in
+    // them -- colours, floors, hover, and the coverage figure -- is untouched and still exact.
+    const stride = Math.max(1, Math.ceil(data.count / DRAWN_POINT_CAP));
+    if (stride > 1) {
+      const kept = Math.ceil(data.count / stride);
+      const index = new Uint32Array(kept);
+      for (let i = 0, at = 0; at < kept; i += stride) index[at++] = i;
+      geo.setIndex(new THREE.BufferAttribute(index, 1));
+    }
+
     const points = new THREE.Points(geo, roamMaterial());
     points.renderOrder = 0;
     roamPoints = points;
