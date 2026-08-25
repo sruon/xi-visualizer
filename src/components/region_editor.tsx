@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import { createEffect, on, untrack, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import * as THREE from "three";
 import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from "three-mesh-bvh";
 import { Line2, LineGeometry, LineMaterial, MapControls } from "three/examples/jsm/Addons.js";
@@ -240,6 +240,20 @@ export default function RegionEditor(props: RegionEditorProps) {
    * answer nobody had asked for. Opening the tab computes it, and it stays live while it is open.
    * The badge shows what was found last time, which is what it was showing anyway.
    */
+  /**
+   * Whether what the badge shows still describes the regions as they are.
+   *
+   * The check only runs while its tab is open, so between times the number is a memory of an
+   * older shape. Saying "?" is the honest version of that: a stale count that looks current is
+   * worse than no count, because it is the one a reviewer would act on.
+   */
+  const [reviewStale, setReviewStale] = createSignal(true);
+  // Only what was checked marks it stale. Reading the tab here as well would mean leaving the tab
+  // invalidated a perfectly good answer, purely by looking away from it.
+  createEffect(on([settled, assign, paths], () => {
+    if (untrack(tab) !== "review") setReviewStale(true);
+  }, { defer: true }));
+
   const findings = createMemo<Finding[]>(previous => {
     const thin: Finding[] = Object.entries(coverage())
       .filter(([, v]) => v < 0.9)
@@ -250,6 +264,7 @@ export default function RegionEditor(props: RegionEditorProps) {
         text: `${name} covers ${(v * 100).toFixed(0)}% of its mobs' trails`,
       }));
     if (tab() !== "review") return previous;
+    queueMicrotask(() => setReviewStale(false));
     return [...thin, ...validate(asSet(settled()), props.spawns, assign())];
   }, []);
 
@@ -2064,10 +2079,10 @@ export default function RegionEditor(props: RegionEditorProps) {
           <button
             class="flex-1 px-2 py-1 rounded"
             classList={{ "bg-slate-600": tab() === "review", "bg-slate-700 text-slate-400": tab() !== "review" }}
-            title="Checks every region and how well each covers its mobs' trails. Rechecked while this tab is open."
+            title="Checks every region and how well each covers its mobs' trails. Runs while this tab is open; ? means the regions have changed since the last check."
             onClick={() => setTab("review")}
           >
-            Review ({findings().filter(f => f.level !== "info").length})
+            Review ({reviewStale() ? "?" : findings().filter(f => f.level !== "info").length})
           </button>
           <button
             class="flex-1 px-2 py-1 rounded"
