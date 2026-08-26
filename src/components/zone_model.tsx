@@ -275,6 +275,20 @@ export default function ZoneModel(props: ZoneDataProps) {
     const labelRenderer = new CSS2DRenderer({ element: labelRendererElement });
 
     renderer.setAnimationLoop(() => animate(renderer, labelRenderer));
+
+    // Handle used by scripts/shot.mjs `points` to drop markers in and frame the camera headlessly.
+    (window as any).__zoneView = { THREE, scene: scene(), camera: camera(), controls: controls(), renderer };
+
+    onCleanup(() => {
+      renderer.setAnimationLoop(null);
+      renderer.dispose();
+      // dispose() releases what three.js allocated, but leaves the WebGL context itself alive: the
+      // canvas goes away, the context does not, and it holds its buffers on the GPU until the
+      // browser eventually collects it. Swapping zones a dozen times reaches the limit a browser
+      // keeps contexts for, and the only thing that frees them is restarting the browser.
+      renderer.forceContextLoss();
+      delete (window as any).__zoneView;
+    });
   });
 
   onCleanup(() => {

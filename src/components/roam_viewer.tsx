@@ -2,9 +2,10 @@ import * as THREE from "three";
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { MapControls } from "three/examples/jsm/Addons.js";
 import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from "three-mesh-bvh";
-import { addMapControls, adjustCameraAspect } from "../graphics/camera";
+import { createMapCamera } from "../graphics/camera";
 import { setupBaseScene } from "../graphics/scene";
 import { cleanupNode } from "../graphics/util";
+import { createViewer } from "../graphics/viewer";
 import { ColorKind, createZoneMesh, prepareMeshData } from "../graphics/ximesh";
 import { ZoneData } from "./zone_model";
 
@@ -89,12 +90,7 @@ export default function RoamViewer(props: RoamViewerProps) {
   let rendererRef: THREE.WebGLRenderer | undefined;
 
   const scene = createMemo(() => setupBaseScene());
-  const camera = createMemo(() => {
-    const cam = new THREE.PerspectiveCamera(30, 1, 0.1, 5000);
-    cam.position.set(0, 500, 0);
-    cam.lookAt(0, 0, 0);
-    return cam;
-  });
+  const camera = createMemo(() => createMapCamera());
 
   const [mobEntries, setMobEntries] = createSignal<MobEntry[]>([]);
   const [visibleMobs, setVisibleMobs] = createSignal<Set<string>>(new Set());
@@ -221,18 +217,10 @@ export default function RoamViewer(props: RoamViewerProps) {
   };
 
   onMount(() => {
-    const resizeCanvas = () => {
-      const parentRect = canvasElement.parentElement!.getBoundingClientRect();
-      canvasElement.width = parentRect.width;
-      canvasElement.height = parentRect.height;
-    };
-
-    window.addEventListener("resize", resizeCanvas);
-    resizeCanvas();
-
-    controls = addMapControls(camera(), canvasElement);
-    const renderer = new THREE.WebGLRenderer({ canvas: canvasElement, antialias: true, alpha: true, preserveDrawingBuffer: true });
-    rendererRef = renderer;
+    // preserveDrawingBuffer so the screenshot can read the canvas back after the frame.
+    const viewer = createViewer(canvasElement, { scene: scene(), camera: camera(), preserveDrawingBuffer: true });
+    controls = viewer.controls;
+    rendererRef = viewer.renderer;
 
     const raycaster = new THREE.Raycaster();
     raycaster.params.Points = { threshold: 5 };
@@ -294,28 +282,10 @@ export default function RoamViewer(props: RoamViewerProps) {
 
     canvasElement.addEventListener("click", onClick);
 
-    const clock = new THREE.Clock();
-    const animate = () => {
-      controls?.update(clock.getDelta());
-      renderer.setSize(canvasElement.clientWidth, canvasElement.clientHeight, false);
-      adjustCameraAspect(camera(), canvasElement);
-      renderer.render(scene(), camera());
-    };
-    renderer.setAnimationLoop(animate);
-
     onCleanup(() => {
-      window.removeEventListener("resize", resizeCanvas);
       canvasElement.removeEventListener("mousemove", onMouseMove);
       canvasElement.removeEventListener("click", onClick);
-      renderer.setAnimationLoop(null);
-      renderer.dispose();
-      // dispose() releases what three.js allocated, but leaves the WebGL context itself alive: the
-      // canvas goes away, the context does not, and it holds its buffers on the GPU until the
-      // browser eventually collects it. Swapping zones a dozen times reaches the limit a browser
-      // keeps contexts for, and the only thing that frees them is restarting the browser.
-      renderer.forceContextLoss();
-      controls?.dispose();
-      cleanupNode(scene());
+      viewer.dispose();
     });
   });
 

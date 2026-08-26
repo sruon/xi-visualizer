@@ -1,9 +1,10 @@
 import { createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import * as THREE from "three";
-import { addMapControls } from "../graphics/camera";
+import { createMapCamera } from "../graphics/camera";
 import { buildNavMeshGroup, NavMeshBuildOptions, parseNavMesh } from "../graphics/navmesh";
 import { setupBaseScene } from "../graphics/scene";
 import { cleanupNode } from "../graphics/util";
+import { createViewer } from "../graphics/viewer";
 
 interface CompareProps {
   navA: ArrayBuffer;
@@ -20,7 +21,7 @@ export default function NavMeshCompareViewer(props: CompareProps) {
   let leftCanvas!: HTMLCanvasElement;
   let rightCanvas!: HTMLCanvasElement;
   let wrapper!: HTMLDivElement;
-  let controls: ReturnType<typeof addMapControls> | undefined;
+  let controls: ReturnType<typeof createViewer>["controls"] | undefined;
 
   const parsedA = createMemo(() => parseNavMesh(props.navA));
   const parsedB = createMemo(() => parseNavMesh(props.navB));
@@ -34,12 +35,7 @@ export default function NavMeshCompareViewer(props: CompareProps) {
 
   const sceneA = createMemo(() => setupBaseScene());
   const sceneB = createMemo(() => setupBaseScene());
-  const camera = createMemo(() => {
-    const cam = new THREE.PerspectiveCamera(30, 1, 0.1, 5000);
-    cam.position.set(0, 500, 0);
-    cam.lookAt(0, 0, 0);
-    return cam;
-  });
+  const camera = createMemo(() => createMapCamera());
 
   const opts = (): NavMeshBuildOptions => ({
     showSurface: true,
@@ -105,41 +101,23 @@ export default function NavMeshCompareViewer(props: CompareProps) {
   };
 
   onMount(() => {
-    // preserveDrawingBuffer so the screenshot composite can read back both canvases.
-    const rendererA = new THREE.WebGLRenderer({ canvas: leftCanvas, antialias: true, alpha: true, preserveDrawingBuffer: true });
-    const rendererB = new THREE.WebGLRenderer({ canvas: rightCanvas, antialias: true, alpha: true, preserveDrawingBuffer: true });
-    // Controls live on the wrapper spanning both panes, so a drag on either syncs both.
-    controls = addMapControls(camera(), wrapper);
+    const viewer = createViewer(leftCanvas, {
+      scene: sceneA(),
+      camera: camera(),
+      // The right pane is a second canvas on the same camera, so a drag on either syncs both.
+      panes: [{ canvas: rightCanvas, scene: sceneB() }],
+      // Controls live on the wrapper spanning both panes, so either side takes the drag.
+      controlsElement: wrapper,
+      // preserveDrawingBuffer so the screenshot composite can read back both canvases.
+      preserveDrawingBuffer: true,
+      // Both canvases are sized by the loop off their own clientWidth, so nothing to do on resize.
+      autoResize: false,
+    });
+    controls = viewer.controls;
 
-    let raf = 0;
-    const clock = new THREE.Clock();
-    const loop = () => {
-      controls!.update(clock.getDelta());
-      const w = leftCanvas.clientWidth;
-      const h = leftCanvas.clientHeight;
-      if (w > 0 && h > 0) {
-        camera().aspect = w / h;
-        camera().updateProjectionMatrix();
-        rendererA.setSize(w, h, false);
-        rendererB.setSize(rightCanvas.clientWidth, rightCanvas.clientHeight, false);
-        rendererA.render(sceneA(), camera());
-        rendererB.render(sceneB(), camera());
-      }
-
-      raf = requestAnimationFrame(loop);
-    };
-
-    loop();
     queueMicrotask(() => fitToView(sceneA()));
 
-    onCleanup(() => {
-      cancelAnimationFrame(raf);
-      controls?.dispose();
-      rendererA.dispose();
-      rendererB.dispose();
-      cleanupNode(sceneA());
-      cleanupNode(sceneB());
-    });
+    onCleanup(() => viewer.dispose());
   });
 
   // Composite both panes + a caption (repo / ref A / ref B) into one PNG and download it.

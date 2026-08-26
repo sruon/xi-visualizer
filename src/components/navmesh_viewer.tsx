@@ -2,10 +2,11 @@ import { createEffect, createMemo, createResource, createSignal, onCleanup, onMo
 import * as THREE from "three";
 import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from "three-mesh-bvh";
 import { MapControls } from "three/examples/jsm/Addons.js";
-import { addMapControls, adjustCameraAspect } from "../graphics/camera";
+import { createMapCamera } from "../graphics/camera";
 import { buildNavMeshGroup, nearestIsland, parseNavMesh } from "../graphics/navmesh";
 import { setupBaseScene } from "../graphics/scene";
 import { cleanupNode } from "../graphics/util";
+import { createViewer } from "../graphics/viewer";
 import { ColorKind, createZoneMesh, prepareMeshData } from "../graphics/ximesh";
 import { decompress } from "../util";
 
@@ -37,12 +38,7 @@ export default function NavMeshViewer(props: NavMeshViewerProps) {
   const [ximeshStatus, setXimeshStatus] = createSignal("");
 
   const scene = createMemo(() => setupBaseScene());
-  const camera = createMemo(() => {
-    const cam = new THREE.PerspectiveCamera(30, 1, 0.1, 5000);
-    cam.position.set(0, 500, 0);
-    cam.lookAt(0, 0, 0);
-    return cam;
-  });
+  const camera = createMemo(() => createMapCamera());
 
   // Parse once per uploaded file.
   const parsed = createMemo(() => parseNavMesh(props.navData));
@@ -212,17 +208,8 @@ export default function NavMeshViewer(props: NavMeshViewerProps) {
   });
 
   onMount(() => {
-    const resizeCanvas = () => {
-      const rect = canvasElement.parentElement!.getBoundingClientRect();
-      canvasElement.width = rect.width;
-      canvasElement.height = rect.height;
-    };
-
-    window.addEventListener("resize", resizeCanvas);
-    resizeCanvas();
-
-    controls = addMapControls(camera(), canvasElement);
-    const renderer = new THREE.WebGLRenderer({ canvas: canvasElement, antialias: true, alpha: true });
+    const viewer = createViewer(canvasElement, { scene: scene(), camera: camera() });
+    controls = viewer.controls;
 
     const raycaster = new THREE.Raycaster();
     raycaster.firstHitOnly = true;
@@ -252,29 +239,12 @@ export default function NavMeshViewer(props: NavMeshViewerProps) {
 
     canvasElement.addEventListener("mousemove", onMouseMove);
 
-    const clock = new THREE.Clock();
-    renderer.setAnimationLoop(() => {
-      controls?.update(clock.getDelta());
-      renderer.setSize(canvasElement.clientWidth, canvasElement.clientHeight, false);
-      adjustCameraAspect(camera(), canvasElement);
-      renderer.render(scene(), camera());
-    });
-
     // The build effect already added the group; frame it now that controls exist.
     fitToView();
 
     onCleanup(() => {
-      window.removeEventListener("resize", resizeCanvas);
       canvasElement.removeEventListener("mousemove", onMouseMove);
-      renderer.setAnimationLoop(null);
-      renderer.dispose();
-      // dispose() releases what three.js allocated, but leaves the WebGL context itself alive: the
-      // canvas goes away, the context does not, and it holds its buffers on the GPU until the
-      // browser eventually collects it. Swapping zones a dozen times reaches the limit a browser
-      // keeps contexts for, and the only thing that frees them is restarting the browser.
-      renderer.forceContextLoss();
-      controls?.dispose();
-      cleanupNode(scene());
+      viewer.dispose();
     });
   });
 

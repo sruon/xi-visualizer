@@ -2,10 +2,11 @@ import { createEffect, on, untrack, createMemo, createSignal, For, onCleanup, on
 import * as THREE from "three";
 import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from "three-mesh-bvh";
 import { Line2, LineGeometry, LineMaterial, MapControls } from "three/examples/jsm/Addons.js";
-import { addMapControls, adjustCameraAspect, fitCameraToContents } from "../graphics/camera";
+import { createMapCamera, fitCameraToContents } from "../graphics/camera";
 import { beaconMaterial, cometMaterial, handleMaterial, roamMaterial, spawnMaterial } from "../graphics/region_points";
 import { setupBaseScene } from "../graphics/scene";
 import { cleanupNode } from "../graphics/util";
+import { createViewer } from "../graphics/viewer";
 import { ColorKind, colorMesh, createZoneMesh, mapIdPerVertex, prepareMeshData } from "../graphics/ximesh";
 import type { RoamData } from "../pages/regions";
 import { containsXZ, regionAt, regionHue, regionsFromPoints, repairRegion, routeFromTrail, selfIntersects, simplifyRing, validate } from "../regions";
@@ -51,12 +52,7 @@ export default function RegionEditor(props: RegionEditorProps) {
   let controls: MapControls | undefined;
 
   const scene = createMemo(() => setupBaseScene());
-  const camera = createMemo(() => {
-    const cam = new THREE.PerspectiveCamera(30, 1, 0.1, 20000);
-    cam.position.set(0, 500, 0);
-    cam.lookAt(0, 0, 0);
-    return cam;
-  });
+  const camera = createMemo(() => createMapCamera(20000));
 
   const [regions, setRegions] = createSignal<RegionEntry[]>(
     Object.entries(props.regions).map(([name, r]) => ({ name, ...r })),
@@ -1301,16 +1297,18 @@ const CELL = 12;
   });
 
   onMount(() => {
-    const resizeCanvas = () => {
-      const rect = canvasElement.parentElement!.getBoundingClientRect();
-      canvasElement.width = rect.width;
-      canvasElement.height = rect.height;
-    };
-    window.addEventListener("resize", resizeCanvas);
-    resizeCanvas();
-
-    controls = addMapControls(camera(), canvasElement);
-    const renderer = new THREE.WebGLRenderer({ canvas: canvasElement, antialias: true, alpha: true });
+    // The frame callbacks run from the next animation frame on, so they can close over the handlers
+    // and materials declared further down this function.
+    const viewer = createViewer(canvasElement, {
+      scene: scene(),
+      camera: camera(),
+      onFrame: dt => {
+        for (const m of [...activeLineMaterials, stalkMaterial]) m.resolution.set(canvasElement.clientWidth, canvasElement.clientHeight);
+        stepReplay(dt);
+      },
+      onAfterRender: () => placeLabels(),
+    });
+    controls = viewer.controls;
 
     const raycaster = new THREE.Raycaster();
     raycaster.params.Points = { threshold: 2 };
@@ -1602,7 +1600,6 @@ const CELL = 12;
 
     if (spawnPoints) fitCameraToContents(camera(), controls, fn => fn(spawnPoints!));
 
-    const clock = new THREE.Clock();
     const projected = new THREE.Vector3();
     // Scene is flipped on y/z, so zone coordinates negate on the way to world space.
     const place = (el: HTMLDivElement, at: Vertex | null) => {
@@ -1755,19 +1752,7 @@ const CELL = 12;
       arrowMaterial.resolution.set(canvasElement.clientWidth, canvasElement.clientHeight);
     };
 
-    renderer.setAnimationLoop(() => {
-      const dt = clock.getDelta();
-      controls?.update(dt);
-      renderer.setSize(canvasElement.clientWidth, canvasElement.clientHeight, false);
-      adjustCameraAspect(camera(), canvasElement);
-      for (const m of [...activeLineMaterials, stalkMaterial]) m.resolution.set(canvasElement.clientWidth, canvasElement.clientHeight);
-      stepReplay(dt);
-      renderer.render(scene(), camera());
-      placeLabels();
-    });
-
     onCleanup(() => {
-      window.removeEventListener("resize", resizeCanvas);
       window.removeEventListener("click", onAnyClick);
       window.removeEventListener("keydown", onKeyDown);
       canvasElement.removeEventListener("mousedown", onMouseDown);
@@ -1775,15 +1760,7 @@ const CELL = 12;
       canvasElement.removeEventListener("mouseup", onMouseUp);
       canvasElement.removeEventListener("click", onClick);
       canvasElement.removeEventListener("contextmenu", onContextMenu);
-      renderer.setAnimationLoop(null);
-      renderer.dispose();
-      // dispose() releases what three.js allocated, but leaves the WebGL context itself alive: the
-      // canvas goes away, the context does not, and it holds its buffers on the GPU until the
-      // browser eventually collects it. Swapping zones a dozen times reaches the limit a browser
-      // keeps contexts for, and the only thing that frees them is restarting the browser.
-      renderer.forceContextLoss();
-      controls?.dispose();
-      cleanupNode(scene());
+      viewer.dispose();
     });
   });
 

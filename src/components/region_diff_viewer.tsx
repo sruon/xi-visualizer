@@ -2,9 +2,10 @@ import { createEffect, createMemo, For, onCleanup, onMount, Show } from "solid-j
 import * as THREE from "three";
 import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from "three-mesh-bvh";
 import { Line2, LineGeometry, LineMaterial, MapControls } from "three/examples/jsm/Addons.js";
-import { addMapControls, adjustCameraAspect, fitCameraToContents } from "../graphics/camera";
+import { createMapCamera, fitCameraToContents } from "../graphics/camera";
 import { setupBaseScene } from "../graphics/scene";
 import { cleanupNode } from "../graphics/util";
+import { createViewer } from "../graphics/viewer";
 import { ColorKind, createZoneMesh, prepareMeshData } from "../graphics/ximesh";
 import type { Region, RegionsDiff, ZoneSide } from "../regions";
 import type { ZoneData } from "./zone_model";
@@ -39,12 +40,7 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
   let controls: MapControls | undefined;
 
   const scene = createMemo(() => setupBaseScene());
-  const camera = createMemo(() => {
-    const cam = new THREE.PerspectiveCamera(30, 1, 0.1, 20000);
-    cam.position.set(0, 500, 0);
-    cam.lookAt(0, 0, 0);
-    return cam;
-  });
+  const camera = createMemo(() => createMapCamera(20000));
 
   const statuses = createMemo(() => {
     const map: Record<string, ChangeStatus> = {};
@@ -345,67 +341,45 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
   });
 
   onMount(() => {
-    const resizeCanvas = () => {
-      const rect = canvasElement.parentElement!.getBoundingClientRect();
-      canvasElement.width = rect.width;
-      canvasElement.height = rect.height;
-    };
-    window.addEventListener("resize", resizeCanvas);
-    resizeCanvas();
-
-    controls = addMapControls(camera(), canvasElement);
-    const renderer = new THREE.WebGLRenderer({ canvas: canvasElement, antialias: true, alpha: true });
+    const projected = new THREE.Vector3();
+    const viewer = createViewer(canvasElement, {
+      scene: scene(),
+      camera: camera(),
+      onFrame: dt => {
+        if (walking) {
+          const TRAVEL = 1.6, PAUSE = 0.7;
+          walking.elapsed = (walking.elapsed + dt) % (TRAVEL + PAUSE);
+          const t = Math.min(walking.elapsed / TRAVEL, 1);
+          // Eased, because something that sets off and arrives reads as going somewhere, where
+          // something at constant speed reads as a moving decoration.
+          const eased = t * t * (3 - 2 * t);
+          walking.dot.position.lerpVectors(walking.from, walking.to, eased);
+          // The region it left stays bright until it is most of the way there, then gives way.
+          for (const m of walking.leaving) (m as THREE.Material & { opacity: number; }).opacity = 1 - eased * 0.8;
+        }
+        for (const m of lineMaterials) m.resolution.set(canvasElement.clientWidth, canvasElement.clientHeight);
+      },
+      onAfterRender: () => {
+        for (const [name, el] of labelRefs) {
+          const ring = (props.head.regions[name] ?? props.base.regions[name])?.rings[0];
+          if (!ring?.length) {
+            el.style.display = "none";
+            continue;
+          }
+          let x = 0, y = 0, z = 0;
+          for (const v of ring) (x += v[0], y += v[1], z += v[2]);
+          projected.set(x / ring.length, -y / ring.length, -z / ring.length).project(camera());
+          el.style.display = projected.z < 1 ? "block" : "none";
+          el.style.transform = `translate(-50%, -50%) translate(${(projected.x * 0.5 + 0.5) * canvasElement.clientWidth}px, ${
+            (-projected.y * 0.5 + 0.5) * canvasElement.clientHeight
+          }px)`;
+        }
+      },
+    });
+    controls = viewer.controls;
     fitCameraToContents(camera(), controls, fn => overlay.children.forEach(fn));
 
-    const projected = new THREE.Vector3();
-    const clock = new THREE.Clock();
-    renderer.setAnimationLoop(() => {
-      const dt = clock.getDelta();
-      controls?.update(dt);
-      if (walking) {
-        const TRAVEL = 1.6, PAUSE = 0.7;
-        walking.elapsed = (walking.elapsed + dt) % (TRAVEL + PAUSE);
-        const t = Math.min(walking.elapsed / TRAVEL, 1);
-        // Eased, because something that sets off and arrives reads as going somewhere, where
-        // something at constant speed reads as a moving decoration.
-        const eased = t * t * (3 - 2 * t);
-        walking.dot.position.lerpVectors(walking.from, walking.to, eased);
-        // The region it left stays bright until it is most of the way there, then gives way.
-        for (const m of walking.leaving) (m as THREE.Material & { opacity: number; }).opacity = 1 - eased * 0.8;
-      }
-      renderer.setSize(canvasElement.clientWidth, canvasElement.clientHeight, false);
-      adjustCameraAspect(camera(), canvasElement);
-      for (const m of lineMaterials) m.resolution.set(canvasElement.clientWidth, canvasElement.clientHeight);
-      renderer.render(scene(), camera());
-
-      for (const [name, el] of labelRefs) {
-        const ring = (props.head.regions[name] ?? props.base.regions[name])?.rings[0];
-        if (!ring?.length) {
-          el.style.display = "none";
-          continue;
-        }
-        let x = 0, y = 0, z = 0;
-        for (const v of ring) (x += v[0], y += v[1], z += v[2]);
-        projected.set(x / ring.length, -y / ring.length, -z / ring.length).project(camera());
-        el.style.display = projected.z < 1 ? "block" : "none";
-        el.style.transform = `translate(-50%, -50%) translate(${(projected.x * 0.5 + 0.5) * canvasElement.clientWidth}px, ${
-          (-projected.y * 0.5 + 0.5) * canvasElement.clientHeight
-        }px)`;
-      }
-    });
-
-    onCleanup(() => {
-      window.removeEventListener("resize", resizeCanvas);
-      renderer.setAnimationLoop(null);
-      renderer.dispose();
-      // dispose() releases what three.js allocated, but leaves the WebGL context itself alive: the
-      // canvas goes away, the context does not, and it holds its buffers on the GPU until the
-      // browser eventually collects it. Swapping zones a dozen times reaches the limit a browser
-      // keeps contexts for, and the only thing that frees them is restarting the browser.
-      renderer.forceContextLoss();
-      controls?.dispose();
-      cleanupNode(scene());
-    });
+    onCleanup(() => viewer.dispose());
   });
 
   // Only changed regions get a label; naming the unchanged ones would bury the ones that matter.
