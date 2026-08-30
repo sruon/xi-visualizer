@@ -1,98 +1,96 @@
 #!/usr/bin/env python3
 """
-Parse TurboPathLog CSVs from all captures and generate per-zone JSON files.
-For duplicate mob IDs, keeps the one with the most points.
+Parse TurboPathLog CSVs into the per-zone roam dataset.
+
+Takes capture directories on the command line; with none it walks every capture under ROAM_DIR.
+Writes <Zone>.json.gz, which is what the visualizer serves and what the region bootstrap reads.
+For a mob recorded in more than one capture, the longer trail wins.
 """
 
-import os
 import csv
+import gzip
 import json
+import sys
 from pathlib import Path
 from collections import defaultdict
 
 ROAM_DIR = Path(r"E:\XI\Roam")
-OUTPUT_DIR = Path(r"C:\Users\sruon\Documents\GitHub\xi-visualizer\public\pathdata")
+OUTPUT_DIR = Path(__file__).resolve().parent.parent / "public" / "pathdata_gz"
 
 
-def find_turbopath_dirs(roam_dir: Path):
-    """Find all TurboPathLog directories in captures."""
-    for capture_dir in roam_dir.iterdir():
+def find_turbopath_dirs(captures):
+    """Yields each <capture>/<char>/TurboPathLog/<char> directory, which holds the zone folders."""
+    for capture_dir in captures:
         if not capture_dir.is_dir():
             continue
-        # Look for TurboPathLog in any subfolder (Ijs, Nouuurs, etc)
+
         for char_dir in capture_dir.iterdir():
             if not char_dir.is_dir():
                 continue
+
             turbopath = char_dir / "TurboPathLog"
-            if turbopath.exists():
-                # TurboPathLog has another subfolder with the char name
-                for inner_dir in turbopath.iterdir():
-                    if inner_dir.is_dir():
-                        yield inner_dir
+            if not turbopath.exists():
+                continue
+
+            for inner_dir in turbopath.iterdir():
+                if inner_dir.is_dir():
+                    yield inner_dir
 
 
 def parse_csv(csv_path: Path) -> list[dict]:
-    """Parse a single mob CSV file."""
+    """One mob's trail. Heading and timestamp are carried through: the timestamp is what separates a
+    walk from a respawn downstream, and both are in the published dataset."""
     points = []
     with open(csv_path, "r", newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
+        for row in csv.DictReader(f):
             points.append({
                 "x": float(row["x"]),
                 "y": float(row["y"]),
                 "z": float(row["z"]),
+                "dir": int(row["dir"]),
+                "t": int(row["timestamp"]),
             })
+
     return points
 
 
 def main():
-    # Structure: zone_name -> mob_name -> mob_id -> points[]
-    zone_data: dict[str, dict[str, dict[str, list]]] = defaultdict(
-        lambda: defaultdict(dict)
-    )
+    captures = [Path(a) for a in sys.argv[1:]] or sorted(p for p in ROAM_DIR.iterdir() if p.is_dir())
 
-    # Collect all data
-    for turbopath_dir in find_turbopath_dirs(ROAM_DIR):
+    # zone -> mob name -> mob id -> points
+    zone_data: dict[str, dict[str, dict[str, list]]] = defaultdict(lambda: defaultdict(dict))
+
+    for turbopath_dir in find_turbopath_dirs(captures):
         print(f"Processing: {turbopath_dir.parent.parent.parent.name}")
 
         for zone_dir in turbopath_dir.iterdir():
             if not zone_dir.is_dir():
                 continue
-            zone_name = zone_dir.name
 
             for mob_dir in zone_dir.iterdir():
                 if not mob_dir.is_dir():
                     continue
-                mob_name = mob_dir.name
 
                 for csv_file in mob_dir.glob("*.csv"):
-                    mob_id = csv_file.stem
                     points = parse_csv(csv_file)
-
-                    # Keep the version with most points
-                    existing = zone_data[zone_name][mob_name].get(mob_id)
+                    existing = zone_data[zone_dir.name][mob_dir.name].get(csv_file.stem)
                     if existing is None or len(points) > len(existing):
-                        zone_data[zone_name][mob_name][mob_id] = points
+                        zone_data[zone_dir.name][mob_dir.name][csv_file.stem] = points
 
-    # Write per-zone JSON files
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     for zone_name, mobs in zone_data.items():
-        output_file = OUTPUT_DIR / f"{zone_name}.json"
-
-        # Flatten structure for output
         output = {}
         for mob_name, mob_ids in mobs.items():
             for mob_id, points in mob_ids.items():
-                output[mob_id] = {
-                    "name": mob_name,
-                    "points": points,
-                }
+                output[mob_id] = {"name": mob_name, "points": points}
 
-        with open(output_file, "w") as f:
+        out_file = OUTPUT_DIR / f"{zone_name}.json.gz"
+        with gzip.open(out_file, "wt", compresslevel=9, encoding="utf-8") as f:
             json.dump(output, f, separators=(",", ":"))
 
-        print(f"Wrote {output_file.name}: {len(output)} mobs")
+        total = sum(len(m["points"]) for m in output.values())
+        print(f"Wrote {out_file.name}: {len(output)} mobs, {total} points, {out_file.stat().st_size / 1e6:.1f} MB")
 
     print(f"\nTotal zones: {len(zone_data)}")
 
