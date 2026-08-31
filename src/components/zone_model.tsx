@@ -169,6 +169,30 @@ export default function ZoneModel(props: ZoneDataProps) {
 
   const [controls, setControls] = createSignal<MapControls>();
 
+  // Frame the zone we switched to. The camera otherwise stays where it was built, at (0, 1000, 0)
+  // with a 30 degree field of view, which sees roughly 700x540 units around the origin. That only
+  // happens to work for zones that are compact and centred there: Riverne - Site #A01 spans about
+  // 1900 with its islands ringing an empty middle, so the fixed view landed on the void between
+  // them and the zone looked like it had failed to load.
+  //
+  // Depends on controls() as well as the zone, because controls are only created in onMount, which
+  // runs after this effect: without that the first zone opened would never be framed.
+  createEffect(on([getSelectedZone, controls], ([zoneId, mapControls]) => {
+    const mesh = zoneMeshes()[zoneId];
+    if (!mesh || !mapControls) return;
+    fitCameraToContents(camera(), mapControls, fn => fn(mesh));
+
+    // The fit puts the widest zones measured (Western Altepa, Riverne) about 4000 out against a
+    // far plane of 5000, so a wider one would sit behind it and draw nothing. Keep near and far
+    // tight for the depth precision, and push far out only as far as this zone actually needs.
+    const distance = camera().position.distanceTo(mapControls.target);
+    const needed = distance * 1.5;
+    if (camera().far < needed) {
+      camera().far = needed;
+      camera().updateProjectionMatrix();
+    }
+  }));
+
   onMount(() => {
     window.addEventListener("resize", resizeCanvas);
 
