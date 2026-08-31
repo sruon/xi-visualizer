@@ -20,11 +20,11 @@ const roamZones: { [id: number]: RoamZone } = {};
 
 // Map zone names to pathdata filenames (underscore format)
 function zoneNameToPathFile(name: string): string {
+  // '#' is kept: the roam files are named for the zone, so Riverne is Riverne_-_Site_#A01.
   return name
     .replaceAll(" - ", "_-_")
     .replaceAll(" ", "_")
-    .replaceAll("'", "_")
-    .replaceAll("#", "");
+    .replaceAll("'", "_");
 }
 
 // Build roam zones lookup from zones data

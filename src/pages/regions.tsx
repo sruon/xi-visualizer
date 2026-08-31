@@ -663,11 +663,11 @@ export default function RegionsPage() {
   // On by default; a zone's trails are a few MB, so unticking it also stops the fetch.
   const [showRoam, setShowRoam] = createSignal(true);
   const [roam] = createResource(() => (showRoam() ? zoneId() : undefined), async (id): Promise<RoamData> => {
+    // '#' is kept: the roam files are named for the zone, so Riverne is Riverne_-_Site_#A01.
     const file = zones[id].name
       .replaceAll(" - ", "_-_")
       .replaceAll(" ", "_")
-      .replaceAll("'", "_")
-      .replaceAll("#", "");
+      .replaceAll("'", "_");
     const compressed = await fetchProgress(`${PATHDATA}/${encodeURIComponent(file)}.json.gz`, () => {});
     const data = JSON.parse(new TextDecoder().decode(await decompress(compressed, "gzip")));
 
