@@ -1,4 +1,4 @@
-import { createMemo, createSignal, For, Show } from "solid-js";
+import { createMemo, createSignal, For, onCleanup, Show } from "solid-js";
 import type { Patrol, Spawn } from "../regions";
 
 export type MobStatus = "region" | "route" | "fixed" | "nowhere";
@@ -47,6 +47,38 @@ export default function MobList(props: MobListProps) {
   const [filter, setFilter] = createSignal("");
   const [status, setStatus] = createSignal<MobStatus | "all">("all");
   const [open, setOpen] = createSignal(true);
+  const [copied, setCopied] = createSignal<string | null>(null);
+
+  let flash: ReturnType<typeof setTimeout> | undefined;
+  onCleanup(() => clearTimeout(flash));
+
+  // Alt-click a row to put its id on the clipboard. The id is the one thing here that gets typed
+  // back into the yaml or a query by hand, and reading nine digits off the screen invites the
+  // kind of typo nothing downstream would catch.
+  async function copyId(id: string) {
+    try {
+      await navigator.clipboard.writeText(id);
+    } catch {
+      // clipboard is refused without a secure context or when the document is not focused, so
+      // fall back to the selection trick, which only needs the click we are already inside.
+      const ta = document.createElement("textarea");
+      ta.value = id;
+      ta.setAttribute("readonly", "");
+      ta.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        if (!document.execCommand("copy")) return;
+      } catch {
+        return;
+      } finally {
+        ta.remove();
+      }
+    }
+    setCopied(id);
+    clearTimeout(flash);
+    flash = setTimeout(() => setCopied(null), 1000);
+  }
 
   const statusOfSpawn = (s: Spawn) => statusOf(s, props.assign[s.id], props.paths[s.id]);
 
@@ -134,10 +166,10 @@ export default function MobList(props: MobListProps) {
                 classList={{ "bg-slate-700": props.pinnedId === s.id }}
                 title={`${s.name} ${s.id}${
                   props.samples(s.id) ? `, ${props.samples(s.id)} roam points` : ", no roam trail"
-                }, click to keep its trail on screen, right-click for more`}
+                }, click to keep its trail on screen, alt-click to copy its id, right-click for more`}
                 onMouseEnter={() => props.onHover(s.id)}
                 onMouseLeave={() => props.onHover(null)}
-                onClick={() => props.onPin(s.id)}
+                onClick={e => (e.altKey ? copyId(s.id) : props.onPin(s.id))}
                 onContextMenu={e => (e.preventDefault(), props.onMenu(s, e.clientX, e.clientY))}
               >
                 <span
@@ -148,7 +180,12 @@ export default function MobList(props: MobListProps) {
                 <span class="flex-1 truncate">{s.name}</span>
                 <span class="truncate max-w-20" style={{ color: colorFor(s) }}>{label(s)}</span>
                 {/* Dim, because it is here to be read off against the yaml rather than scanned. */}
-                <span class="text-slate-600 tabular-nums">{s.id}</span>
+                <span
+                  class="tabular-nums"
+                  classList={{ "text-slate-600": copied() !== s.id, "text-emerald-400": copied() === s.id }}
+                >
+                  {s.id}
+                </span>
                 <Show when={props.activeName && props.assign[s.id] !== props.activeName}>
                   <button
                     class="px-1 leading-none text-slate-400 hover:text-white"
