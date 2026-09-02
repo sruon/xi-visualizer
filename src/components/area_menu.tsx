@@ -13,6 +13,9 @@ export interface AreaMenuProps {
   setSelectedSubPolygonIdx: (newIdx: number | undefined) => any;
   selectedVertexIdx: number | undefined;
   setSelectedVertexIdx: (newIdx: number | undefined) => any;
+  /** While on, left-dragging the map pulls out a rectangle instead of moving the camera. */
+  rectMode: boolean;
+  setRectMode: (on: boolean) => any;
 }
 
 export interface Point {
@@ -244,6 +247,48 @@ export default function AreaMenu(ps: AreaMenuProps) {
     );
   };
 
+  const [triggerTimers, setTriggerTimers] = createStore<{ [idx: number]: ReturnType<typeof setTimeout>; }>({});
+
+  /**
+   * The same area written the way a zone script takes it:
+   * zone:registerCuboidTriggerArea(id, xMin, yMin, zMin, xMax, yMax, zMax).
+   *
+   * A cuboid is the bounding box either way, so this works on any area, not only the rectangles
+   * the drag tool makes. The id is the area number, which is a guess: trigger area ids are
+   * per-zone and the script may already use some.
+   */
+  const triggerAreaToClipboard = (index?: number) => {
+    const idxToUse = index ?? ps.selectedAreaIdx;
+    const area = ps.areas[idxToUse];
+    if (!area?.polygon?.length) {
+      return;
+    }
+
+    const xs = area.polygon.map(p => p.x);
+    const zs = area.polygon.map(p => p.z);
+    const ys = deriveAreaYs(area);
+
+    let line = `zone:registerCuboidTriggerArea(${idxToUse + 1}, ${Math.min(...xs)}, ${ys.yMin}, ${Math.min(...zs)}, `
+      + `${Math.max(...xs)}, ${ys.yMax}, ${Math.max(...zs)})`;
+    // Without y bounds the derived range is the +/-1000 placeholder, which would look deliberate
+    // once pasted.
+    if (ys.unlimited) {
+      line += " -- y bounds not set, these are placeholders";
+    }
+
+    navigator.clipboard.writeText(line);
+
+    if (triggerTimers[idxToUse] !== undefined) {
+      clearTimeout(triggerTimers[idxToUse]);
+    }
+    setTriggerTimers(
+      idxToUse,
+      setTimeout(() => {
+        setTriggerTimers(idxToUse, undefined);
+      }, 1000),
+    );
+  };
+
   const importAreas = (str: string) => {
     const newAreas = parseAreasDef(str);
     if (newAreas) {
@@ -340,6 +385,18 @@ export default function AreaMenu(ps: AreaMenuProps) {
                       title="Copy area to clipboard"
                     >
                     </IoCopy>
+                  </Show>
+                  <Show
+                    when={triggerTimers[ps.selectedAreaIdx] === undefined}
+                    fallback={<IoCheckmarkDoneSharp size={18} class="font-bold inline-block ml-2 text-green-300"></IoCheckmarkDoneSharp>}
+                  >
+                    <span
+                      class="inline-block ml-2 text-xs align-middle text-blue-300 cursor-pointer border px-1 rounded-sm"
+                      onClick={() => triggerAreaToClipboard()}
+                      title="Copy as zone:registerCuboidTriggerArea(...)"
+                    >
+                      cuboid
+                    </span>
                   </Show>
                   <Show when={ps.selectedSubPolygonIdx !== undefined}>
                     <span class="ml-1">Hole {ps.selectedSubPolygonIdx + 1}</span>
@@ -642,11 +699,21 @@ export default function AreaMenu(ps: AreaMenuProps) {
                 )}
               </For>
             </ul>
-            <div
-              class="cursor-pointer hover:underline font-bold border px-2 my-1 rounded-sm text-blue-300"
-              onClick={() => addNewArea()}
-            >
-              Add area
+            <div class="flex gap-1 my-1">
+              <div
+                class="flex-1 text-center cursor-pointer hover:underline font-bold border px-2 rounded-sm text-blue-300"
+                onClick={() => addNewArea()}
+              >
+                Add area
+              </div>
+              <div
+                class="flex-1 text-center cursor-pointer hover:underline font-bold border px-2 rounded-sm"
+                classList={{ "text-blue-300": !ps.rectMode, "bg-yellow-300 text-black": ps.rectMode }}
+                onClick={() => ps.setRectMode(!ps.rectMode)}
+                title="Drag on the map to pull out a rectangle. The camera stays put while this is on."
+              >
+                {ps.rectMode ? "Drawing…" : "Draw rect"}
+              </div>
             </div>
             <textarea
               class="font-bold border px-2 my-1 rounded-sm w-full h-7 overflow-hidden"

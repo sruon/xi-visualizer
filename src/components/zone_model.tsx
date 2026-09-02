@@ -3,7 +3,7 @@ import Stats from "three/addons/libs/stats.module.js";
 import * as THREE from "three";
 
 import { IoHelpCircle, IoSettings } from "solid-icons/io";
-import { createEffect, createMemo, createSignal, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
+import { batch, createEffect, createMemo, createSignal, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
 import { createMutable, createStore, produce, SetStoreFunction, unwrap } from "solid-js/store";
 import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from "three-mesh-bvh";
 import { MapControls } from "three/examples/jsm/Addons.js";
@@ -209,6 +209,92 @@ export default function ZoneModel(props: ZoneDataProps) {
       coordLabelRef.style.display = "none";
     });
 
+    // Dragging out a trigger area rectangle. The corners are picked off the terrain rather than
+    // read from screen pixels, so the rectangle stays where it was drawn when the camera is
+    // orbited: a screen-space box is only the same thing while looking straight down.
+    canvasElement.addEventListener("mousedown", event => {
+      if (!generalSettings.showAreaManager || !getRectMode() || event.button !== 0) {
+        return;
+      }
+      const point = pickGamePoint(event);
+      if (!point) {
+        return;
+      }
+      event.preventDefault();
+      controls().enabled = false;
+
+      rectAnchor = { x: point.x, z: point.z };
+      // Committing the area now means the existing draw effect renders the drag for free.
+      setAreas(areas.length, { polygon: rectCorners(rectAnchor, rectAnchor) });
+      rectIdx = areas.length - 1;
+      batch(() => {
+        setSelectedAreaIdx(rectIdx);
+        setSelectedSubPolygonIdx(undefined);
+        setSelectedVertexIdx(undefined);
+      });
+    });
+
+    canvasElement.addEventListener("mousemove", event => {
+      if (rectAnchor === undefined || rectIdx === undefined) {
+        return;
+      }
+      const point = pickGamePoint(event);
+      if (point) {
+        setAreas(rectIdx, "polygon", rectCorners(rectAnchor, point));
+      }
+    });
+
+    // On window, so releasing outside the canvas still finishes the rectangle.
+    window.addEventListener("mouseup", () => {
+      if (rectIdx === undefined) {
+        return;
+      }
+      const idx = rectIdx;
+      rectAnchor = undefined;
+      rectIdx = undefined;
+      if (controls()) {
+        controls().enabled = true;
+      }
+
+      const polygon = areas[idx]?.polygon ?? [];
+      const xs = polygon.map(p => p.x);
+      const zs = polygon.map(p => p.z);
+      // A click that never became a drag would otherwise leave a zero-width area behind.
+      if (Math.max(...xs) - Math.min(...xs) < 1 || Math.max(...zs) - Math.min(...zs) < 1) {
+        batch(() => {
+          setAreas(produce<Area[]>(list => {
+            list.splice(idx, 1);
+          }));
+          setSelectedAreaIdx(undefined);
+        });
+        return;
+      }
+
+      // Seed the height band off the ground under the corners and the middle. It is a starting
+      // point, not an answer: the y inputs are there because only the author knows how much
+      // headroom the trigger wants.
+      const zoneMesh = zoneMeshes()[getSelectedZone()];
+      if (zoneMesh) {
+        const range = { yMin: Infinity, yMax: -Infinity };
+        const origin = new THREE.Vector3(0, 1000, 0);
+        const direction = new THREE.Vector3(0, -1, 0);
+        const middle = {
+          x: (Math.min(...xs) + Math.max(...xs)) / 2,
+          z: (Math.min(...zs) + Math.max(...zs)) / 2,
+        };
+        for (const point of [...polygon, middle]) {
+          updateYRangeForPoint(range, point, zoneMesh, origin, direction);
+        }
+        if (range.yMin !== Infinity) {
+          // Sampled ys are in display space, so they flip back the way the corners did.
+          batch(() => {
+            setAreas(idx, "yMin", Math.floor(-range.yMax) - 5);
+            setAreas(idx, "yMax", Math.ceil(-range.yMin) + 10);
+          });
+        }
+      }
+    });
+
     // Area details clicking
     canvasElement.addEventListener("click", event => {
       if (!generalSettings.showAreaManager || !getShowAreaDetails() || !event.ctrlKey) {
@@ -400,6 +486,26 @@ export default function ZoneModel(props: ZoneDataProps) {
     return intersections[0].point.y;
   }
 
+  /**
+   * Where the pointer is, in game coordinates. The scene draws with scale (1, -1, -1), so a hit
+   * comes back flipped on y and z and has to be put back before it is stored or written out.
+   */
+  function pickGamePoint(event: MouseEvent): { x: number; y: number; z: number; } | undefined {
+    cameraMouse.x = (2 * event.offsetX) / canvasElement.offsetWidth - 1;
+    cameraMouse.y = (-2 * event.offsetY) / canvasElement.offsetHeight + 1;
+    const hits = castRayOntoMesh();
+    if (!hits?.length) {
+      return undefined;
+    }
+    const hit = hits[0];
+    return { x: Math.round(hit.x), y: Math.round(-hit.y), z: Math.round(-hit.z) };
+  }
+
+  /** The four corners of the axis-aligned rectangle spanned by two opposite points. */
+  function rectCorners(a: Point, b: Point): Point[] {
+    return [{ x: a.x, z: a.z }, { x: b.x, z: a.z }, { x: b.x, z: b.z }, { x: a.x, z: b.z }];
+  }
+
   function updateYRangeForPoint(
     range: { yMin: number, yMax: number },
     point: Point,
@@ -452,6 +558,12 @@ export default function ZoneModel(props: ZoneDataProps) {
   const [getSelectedSubPolygonIdx, setSelectedSubPolygonIdx] = createSignal<number | undefined>();
   const [getSelectedVertexIdx, setSelectedVertexIdx] = createSignal<number | undefined>();
   const [getShowAreaDetails, setShowAreaDetails] = createSignal<boolean>(false);
+
+  // Dragging out a trigger area. Plain left-drag, because ctrl already adds a vertex and shift is
+  // the node marquee, so this needs a mode of its own rather than another modifier.
+  const [getRectMode, setRectMode] = createSignal<boolean>(false);
+  let rectAnchor: Point | undefined;
+  let rectIdx: number | undefined;
 
   const areaMat = new THREE.MeshBasicMaterial({
     transparent: true,
@@ -936,6 +1048,14 @@ export default function ZoneModel(props: ZoneDataProps) {
             setSelectedSubPolygonIdx={setSelectedSubPolygonIdx}
             selectedVertexIdx={getSelectedVertexIdx()}
             setSelectedVertexIdx={setSelectedVertexIdx}
+            rectMode={getRectMode()}
+            setRectMode={on => {
+              setRectMode(on);
+              // Leaving the mode mid-drag would otherwise strand the camera disabled.
+              if (!on && controls()) {
+                controls().enabled = true;
+              }
+            }}
           >
           </AreaMenu>
         </Show>
