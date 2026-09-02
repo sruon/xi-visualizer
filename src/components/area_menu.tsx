@@ -36,6 +36,39 @@ export interface Area {
   description?: string;
   /** The id an imported registerCuboidTriggerArea call used, so exporting it again keeps it. */
   triggerId?: number;
+  /** Which call this area writes out as. Cuboid when unset. */
+  triggerShape?: "cuboid" | "cylinder";
+}
+
+/** Trim float noise without flattening a real decimal: -487.3 survives, 15.000000002 does not. */
+export function tidy(n: number): number {
+  return Number(n.toFixed(3));
+}
+
+/**
+ * A circle as a polygon, which is all the renderer and the vertex editor understand. 32 is
+ * divisible by 4, so there are vertices exactly on both axes and the bounding box is exactly the
+ * diameter: that is what lets the centre and radius be read back off the points without drift.
+ */
+export function circlePoints(cx: number, cz: number, radius: number, segments = 32): Point[] {
+  const points: Point[] = [];
+  for (let i = 0; i < segments; i++) {
+    const angle = (i / segments) * Math.PI * 2;
+    points.push({ x: tidy(cx + Math.cos(angle) * radius), z: tidy(cz + Math.sin(angle) * radius) });
+  }
+  return points;
+}
+
+/** Centre and radius of an area drawn as a circle, read back off its bounding box. */
+export function circleOf(polygon: Point[]): { cx: number; cz: number; radius: number; } {
+  const xs = polygon.map(p => p.x), zs = polygon.map(p => p.z);
+  const xMin = Math.min(...xs), xMax = Math.max(...xs);
+  const zMin = Math.min(...zs), zMax = Math.max(...zs);
+  return {
+    cx: tidy((xMin + xMax) / 2),
+    cz: tidy((zMin + zMax) / 2),
+    radius: tidy(((xMax - xMin) + (zMax - zMin)) / 4),
+  };
 }
 
 export default function AreaMenu(ps: AreaMenuProps) {
@@ -266,16 +299,26 @@ export default function AreaMenu(ps: AreaMenuProps) {
       return;
     }
 
-    const xs = area.polygon.map(p => p.x);
-    const zs = area.polygon.map(p => p.z);
-    const ys = deriveAreaYs(area);
+    const id = area.triggerId ?? idxToUse + 1;
+    let line: string;
 
-    let line = `zone:registerCuboidTriggerArea(${area.triggerId ?? idxToUse + 1}, ${Math.min(...xs)}, ${ys.yMin}, ${Math.min(...zs)}, `
-      + `${Math.max(...xs)}, ${ys.yMax}, ${Math.max(...zs)})`;
-    // Without y bounds the derived range is the +/-1000 placeholder, which would look deliberate
-    // once pasted.
-    if (ys.unlimited) {
-      line += " -- y bounds not set, these are placeholders";
+    if (area.triggerShape === "cylinder") {
+      // A cylinder is unbounded vertically, so the call takes no y at all and this area's y
+      // inputs, if it has any, are not written out.
+      const c = circleOf(area.polygon);
+      line = `zone:registerCylindricalTriggerArea(${id}, ${c.cx}, ${c.cz}, ${c.radius})`;
+    } else {
+      const xs = area.polygon.map(p => p.x);
+      const zs = area.polygon.map(p => p.z);
+      const ys = deriveAreaYs(area);
+
+      line = `zone:registerCuboidTriggerArea(${id}, ${Math.min(...xs)}, ${ys.yMin}, ${Math.min(...zs)}, `
+        + `${Math.max(...xs)}, ${ys.yMax}, ${Math.max(...zs)})`;
+      // Without y bounds the derived range is the +/-1000 placeholder, which would look deliberate
+      // once pasted.
+      if (ys.unlimited) {
+        line += " -- y bounds not set, these are placeholders";
+      }
     }
 
     navigator.clipboard.writeText(line);
@@ -289,6 +332,41 @@ export default function AreaMenu(ps: AreaMenuProps) {
         setTriggerTimers(idxToUse, undefined);
       }, 1000),
     );
+  };
+
+  /**
+   * Swap an area between the two call shapes, rewriting its points to match: a box becomes the
+   * circle that fits inside it, a circle becomes the box that fits around it. Going box, circle,
+   * box returns the box you started with, since both use the same bounding box.
+   */
+  const toggleShape = () => {
+    const idx = ps.selectedAreaIdx;
+    const area = ps.areas[idx];
+    if (!area?.polygon?.length) {
+      return;
+    }
+
+    if (area.triggerShape === "cylinder") {
+      const c = circleOf(area.polygon);
+      batch(() => {
+        ps.setAreas(idx, "triggerShape", "cuboid");
+        ps.setAreas(idx, "polygon", [
+          { x: tidy(c.cx - c.radius), z: tidy(c.cz - c.radius) },
+          { x: tidy(c.cx + c.radius), z: tidy(c.cz - c.radius) },
+          { x: tidy(c.cx + c.radius), z: tidy(c.cz + c.radius) },
+          { x: tidy(c.cx - c.radius), z: tidy(c.cz + c.radius) },
+        ]);
+        ps.setSelectedVertexIdx(undefined);
+      });
+      return;
+    }
+
+    const c = circleOf(area.polygon);
+    batch(() => {
+      ps.setAreas(idx, "triggerShape", "cylinder");
+      ps.setAreas(idx, "polygon", circlePoints(c.cx, c.cz, c.radius));
+      ps.setSelectedVertexIdx(undefined);
+    });
   };
 
   const importAreas = (str: string) => {
@@ -395,9 +473,18 @@ export default function AreaMenu(ps: AreaMenuProps) {
                     <span
                       class="inline-block ml-2 text-xs align-middle text-blue-300 cursor-pointer border px-1 rounded-sm"
                       onClick={() => triggerAreaToClipboard()}
-                      title="Copy as zone:registerCuboidTriggerArea(...)"
+                      title={`Copy as zone:register${selectedArea()?.triggerShape === "cylinder" ? "Cylindrical" : "Cuboid"}TriggerArea(...)`}
                     >
-                      cuboid
+                      {selectedArea()?.triggerShape === "cylinder" ? "cylinder" : "cuboid"}
+                    </span>
+                  </Show>
+                  <Show when={selectedArea()}>
+                    <span
+                      class="inline-block ml-1 text-xs align-middle text-slate-300 cursor-pointer border px-1 rounded-sm"
+                      onClick={() => toggleShape()}
+                      title="Switch between a box and a circle"
+                    >
+                      {selectedArea()?.triggerShape === "cylinder" ? "→ box" : "→ circle"}
                     </span>
                   </Show>
                   <Show when={ps.selectedSubPolygonIdx !== undefined}>
@@ -952,7 +1039,7 @@ function parseHoles(str: string, area: Area): number {
 }
 
 /**
- * Read zone:registerCuboidTriggerArea(id, xMin, yMin, zMin, xMax, yMax, zMax) calls, so an area
+ * Read registerCuboidTriggerArea and registerCylindricalTriggerArea calls, so an area
  * already in a zone script can be pulled back in and adjusted rather than retyped. Paste one line
  * or a whole onInitialize; anything that is not such a call is ignored.
  */
@@ -960,7 +1047,18 @@ export function parseTriggerAreas(str: string): Area[] | undefined {
   const N = String.raw`\s*(-?\d+(?:\.\d+)?)\s*`;
   const call = new RegExp(String.raw`registerCuboidTriggerArea\s*\(` + [N, N, N, N, N, N, N].join(",") + String.raw`\)`, "g");
 
+  const cylinder = new RegExp(String.raw`registerCylindricalTriggerArea\s*\(` + [N, N, N, N].join(",") + String.raw`\)`, "g");
+
   const areas: Area[] = [];
+  for (const m of str.matchAll(cylinder)) {
+    const [id, cx, cz, radius] = m.slice(1).map(Number);
+    areas.push({
+      triggerId: id,
+      triggerShape: "cylinder",
+      polygon: circlePoints(cx, cz, radius),
+    });
+  }
+
   for (const m of str.matchAll(call)) {
     const [id, xMin, yMin, zMin, xMax, yMax, zMax] = m.slice(1).map(Number);
     // The call takes opposite corners in either order; the box is the same box.
@@ -970,6 +1068,7 @@ export function parseTriggerAreas(str: string): Area[] | undefined {
       triggerId: id,
       yMin: Math.min(yMin, yMax),
       yMax: Math.max(yMin, yMax),
+      triggerShape: "cuboid",
       polygon: [{ x: x1, z: z1 }, { x: x2, z: z1 }, { x: x2, z: z2 }, { x: x1, z: z2 }],
     });
   }

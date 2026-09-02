@@ -12,7 +12,7 @@ import { addMapControls, adjustCameraAspect, fitCameraToContents } from "../grap
 import { setupBaseScene } from "../graphics/scene";
 import { cleanupNode, roundDecimals } from "../graphics/util";
 import { ByZone } from "../types";
-import AreaMenu, { Area, deriveAreaYs as deriveAreaYRange, Point } from "./area_menu";
+import AreaMenu, { Area, circleOf, circlePoints, deriveAreaYs as deriveAreaYRange, Point } from "./area_menu";
 import { ColorKind, colorMesh, createZoneMesh, getHitData, getMapId, markLineCollisions, prepareMeshData, RayHit } from "../graphics/ximesh";
 import { ZoneInfoBox, TargetInfo } from "./zone_info_box";
 import { ZoneRayTestingBox } from "./zone_ray_testing_box";
@@ -224,8 +224,9 @@ export default function ZoneModel(props: ZoneDataProps) {
       controls().enabled = false;
 
       rectAnchor = { x: point.x, z: point.z };
+      dragPlaneY = -point.y;
       // Committing the area now means the existing draw effect renders the drag for free.
-      setAreas(areas.length, { polygon: rectCorners(rectAnchor, rectAnchor) });
+      setAreas(areas.length, { triggerShape: "cuboid", polygon: rectCorners(rectAnchor, rectAnchor) });
       rectIdx = areas.length - 1;
       batch(() => {
         setSelectedAreaIdx(rectIdx);
@@ -238,7 +239,7 @@ export default function ZoneModel(props: ZoneDataProps) {
       if (dragVertex === undefined) {
         return;
       }
-      const point = pickGamePoint(event);
+      const point = pickGamePoint(event, dragPlaneY);
       if (point) {
         moveVertex(dragVertex, point.x, point.z);
       }
@@ -248,7 +249,7 @@ export default function ZoneModel(props: ZoneDataProps) {
       if (rectAnchor === undefined || rectIdx === undefined) {
         return;
       }
-      const point = pickGamePoint(event);
+      const point = pickGamePoint(event, dragPlaneY);
       if (point) {
         setAreas(rectIdx, "polygon", rectCorners(rectAnchor, point));
       }
@@ -258,6 +259,7 @@ export default function ZoneModel(props: ZoneDataProps) {
     window.addEventListener("mouseup", () => {
       if (dragVertex !== undefined) {
         dragVertex = undefined;
+        dragPlaneY = undefined;
         if (controls()) {
           controls().enabled = true;
         }
@@ -268,6 +270,7 @@ export default function ZoneModel(props: ZoneDataProps) {
       const idx = rectIdx;
       rectAnchor = undefined;
       rectIdx = undefined;
+      dragPlaneY = undefined;
       if (controls()) {
         controls().enabled = true;
       }
@@ -506,18 +509,32 @@ export default function ZoneModel(props: ZoneDataProps) {
    * Where the pointer is, in game coordinates. The scene draws with scale (1, -1, -1), so a hit
    * comes back flipped on y and z and has to be put back before it is stored or written out.
    */
-  function pickGamePoint(event: MouseEvent): { x: number; y: number; z: number; } | undefined {
+  function pickGamePoint(event: MouseEvent, planeY?: number): { x: number; y: number; z: number; } | undefined {
     // Off the canvas rect rather than offsetX/offsetY, because a vertex drag keeps tracking on
     // window once the pointer leaves the handle it started on.
     const rect = canvasElement.getBoundingClientRect();
     cameraMouse.x = (2 * (event.clientX - rect.left)) / rect.width - 1;
     cameraMouse.y = (-2 * (event.clientY - rect.top)) / rect.height + 1;
+
     const hits = castRayOntoMesh();
-    if (!hits?.length) {
+    if (hits?.length) {
+      const hit = hits[0];
+      return { x: Math.round(hit.x), y: Math.round(-hit.y), z: Math.round(-hit.z) };
+    }
+
+    // Nothing under the pointer. A trigger area routinely reaches past the edge of the mesh or
+    // over a gap in it, and a corner that stops moving there cannot be placed at all, so fall back
+    // to the flat plane the drag started on.
+    if (planeY === undefined) {
       return undefined;
     }
-    const hit = hits[0];
-    return { x: Math.round(hit.x), y: Math.round(-hit.y), z: Math.round(-hit.z) };
+    raycaster.setFromCamera(cameraMouse, camera());
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -planeY);
+    const onPlane = new THREE.Vector3();
+    if (!raycaster.ray.intersectPlane(plane, onPlane)) {
+      return undefined;
+    }
+    return { x: Math.round(onPlane.x), y: Math.round(-onPlane.y), z: Math.round(-onPlane.z) };
   }
 
   /**
@@ -537,6 +554,17 @@ export default function ZoneModel(props: ZoneDataProps) {
     const points = subIdx !== undefined ? areas[areaIdx].holes?.[subIdx] : areas[areaIdx].polygon;
     const from = points?.[index];
     if (!from) {
+      return;
+    }
+
+    // A circle has no corners to drag, only a radius: pulling any handle resizes it about its
+    // centre, rather than denting the ring and leaving the exported radius a guess.
+    if (subIdx === undefined && areas[areaIdx].triggerShape === "cylinder") {
+      const c = circleOf(points);
+      const radius = Math.hypot(x - c.cx, z - c.cz);
+      if (radius > 0.5) {
+        setAreas(areaIdx, "polygon", circlePoints(c.cx, c.cz, radius, points.length));
+      }
       return;
     }
 
@@ -624,6 +652,8 @@ export default function ZoneModel(props: ZoneDataProps) {
   let rectAnchor: Point | undefined;
   let rectIdx: number | undefined;
   let dragVertex: number | undefined;
+  /** Display-space height the current drag fell back to when the pointer left the mesh. */
+  let dragPlaneY: number | undefined;
 
   const areaMat = new THREE.MeshBasicMaterial({
     transparent: true,
@@ -832,6 +862,7 @@ export default function ZoneModel(props: ZoneDataProps) {
         event.preventDefault();
         event.stopPropagation();
         dragVertex = i;
+        dragPlaneY = mesh.position.y;
         setSelectedVertexIdx(i);
         if (controls()) {
           controls().enabled = false;
