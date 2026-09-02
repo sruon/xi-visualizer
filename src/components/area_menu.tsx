@@ -34,6 +34,8 @@ export interface Area {
   holes?: Point[][];
   hidden?: boolean;
   description?: string;
+  /** The id an imported registerCuboidTriggerArea call used, so exporting it again keeps it. */
+  triggerId?: number;
 }
 
 export default function AreaMenu(ps: AreaMenuProps) {
@@ -268,7 +270,7 @@ export default function AreaMenu(ps: AreaMenuProps) {
     const zs = area.polygon.map(p => p.z);
     const ys = deriveAreaYs(area);
 
-    let line = `zone:registerCuboidTriggerArea(${idxToUse + 1}, ${Math.min(...xs)}, ${ys.yMin}, ${Math.min(...zs)}, `
+    let line = `zone:registerCuboidTriggerArea(${area.triggerId ?? idxToUse + 1}, ${Math.min(...xs)}, ${ys.yMin}, ${Math.min(...zs)}, `
       + `${Math.max(...xs)}, ${ys.yMax}, ${Math.max(...zs)})`;
     // Without y bounds the derived range is the +/-1000 placeholder, which would look deliberate
     // once pasted.
@@ -290,7 +292,7 @@ export default function AreaMenu(ps: AreaMenuProps) {
   };
 
   const importAreas = (str: string) => {
-    const newAreas = parseAreasDef(str);
+    const newAreas = parseTriggerAreas(str) ?? parseAreasDef(str);
     if (newAreas) {
       ps.setAreas(newAreas);
       ps.setSelectedAreaIdx(undefined);
@@ -721,7 +723,7 @@ export default function AreaMenu(ps: AreaMenuProps) {
                 importAreas(e.target.value);
                 e.target.value = "";
               }}
-              placeholder="Paste to import"
+              placeholder="Paste areas or registerCuboidTriggerArea lines"
             >
             </textarea>
           </div>
@@ -947,6 +949,32 @@ function parseHoles(str: string, area: Area): number {
   }
 
   return idx;
+}
+
+/**
+ * Read zone:registerCuboidTriggerArea(id, xMin, yMin, zMin, xMax, yMax, zMax) calls, so an area
+ * already in a zone script can be pulled back in and adjusted rather than retyped. Paste one line
+ * or a whole onInitialize; anything that is not such a call is ignored.
+ */
+export function parseTriggerAreas(str: string): Area[] | undefined {
+  const N = String.raw`\s*(-?\d+(?:\.\d+)?)\s*`;
+  const call = new RegExp(String.raw`registerCuboidTriggerArea\s*\(` + [N, N, N, N, N, N, N].join(",") + String.raw`\)`, "g");
+
+  const areas: Area[] = [];
+  for (const m of str.matchAll(call)) {
+    const [id, xMin, yMin, zMin, xMax, yMax, zMax] = m.slice(1).map(Number);
+    // The call takes opposite corners in either order; the box is the same box.
+    const x1 = Math.min(xMin, xMax), x2 = Math.max(xMin, xMax);
+    const z1 = Math.min(zMin, zMax), z2 = Math.max(zMin, zMax);
+    areas.push({
+      triggerId: id,
+      yMin: Math.min(yMin, yMax),
+      yMax: Math.max(yMin, yMax),
+      polygon: [{ x: x1, z: z1 }, { x: x2, z: z1 }, { x: x2, z: z2 }, { x: x1, z: z2 }],
+    });
+  }
+
+  return areas.length > 0 ? areas : undefined;
 }
 
 function parseAreasDef(str: string): Area[] | undefined {
