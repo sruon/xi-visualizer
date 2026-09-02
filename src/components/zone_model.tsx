@@ -213,7 +213,7 @@ export default function ZoneModel(props: ZoneDataProps) {
     // read from screen pixels, so the rectangle stays where it was drawn when the camera is
     // orbited: a screen-space box is only the same thing while looking straight down.
     canvasElement.addEventListener("mousedown", event => {
-      if (!generalSettings.showAreaManager || !getRectMode() || event.button !== 0) {
+      if (!generalSettings.showAreaManager || !getRectMode() || event.button !== 0 || dragVertex !== undefined) {
         return;
       }
       const point = pickGamePoint(event);
@@ -234,6 +234,16 @@ export default function ZoneModel(props: ZoneDataProps) {
       });
     });
 
+    window.addEventListener("mousemove", event => {
+      if (dragVertex === undefined) {
+        return;
+      }
+      const point = pickGamePoint(event);
+      if (point) {
+        moveVertex(dragVertex, point.x, point.z);
+      }
+    });
+
     canvasElement.addEventListener("mousemove", event => {
       if (rectAnchor === undefined || rectIdx === undefined) {
         return;
@@ -246,6 +256,12 @@ export default function ZoneModel(props: ZoneDataProps) {
 
     // On window, so releasing outside the canvas still finishes the rectangle.
     window.addEventListener("mouseup", () => {
+      if (dragVertex !== undefined) {
+        dragVertex = undefined;
+        if (controls()) {
+          controls().enabled = true;
+        }
+      }
       if (rectIdx === undefined) {
         return;
       }
@@ -491,14 +507,57 @@ export default function ZoneModel(props: ZoneDataProps) {
    * comes back flipped on y and z and has to be put back before it is stored or written out.
    */
   function pickGamePoint(event: MouseEvent): { x: number; y: number; z: number; } | undefined {
-    cameraMouse.x = (2 * event.offsetX) / canvasElement.offsetWidth - 1;
-    cameraMouse.y = (-2 * event.offsetY) / canvasElement.offsetHeight + 1;
+    // Off the canvas rect rather than offsetX/offsetY, because a vertex drag keeps tracking on
+    // window once the pointer leaves the handle it started on.
+    const rect = canvasElement.getBoundingClientRect();
+    cameraMouse.x = (2 * (event.clientX - rect.left)) / rect.width - 1;
+    cameraMouse.y = (-2 * (event.clientY - rect.top)) / rect.height + 1;
     const hits = castRayOntoMesh();
     if (!hits?.length) {
       return undefined;
     }
     const hit = hits[0];
     return { x: Math.round(hit.x), y: Math.round(-hit.y), z: Math.round(-hit.z) };
+  }
+
+  /**
+   * Move one vertex of the selected area, keeping a rectangle a rectangle.
+   *
+   * A corner of a four-point box shares its x with one neighbour and its z with the other, so
+   * dragging it has to carry those two along or the box turns into a quadrilateral. Matching on
+   * the shared coordinate rather than on index means it does not care which way round the corners
+   * were drawn, and a shape that is not an axis-aligned box moves the one vertex, as before.
+   */
+  function moveVertex(index: number, x: number, z: number) {
+    const areaIdx = getSelectedAreaIdx();
+    if (areaIdx === undefined) {
+      return;
+    }
+    const subIdx = getSelectedSubPolygonIdx();
+    const points = subIdx !== undefined ? areas[areaIdx].holes?.[subIdx] : areas[areaIdx].polygon;
+    const from = points?.[index];
+    if (!from) {
+      return;
+    }
+
+    const next = points.map(p => ({ x: p.x, z: p.z }));
+    next[index] = { x, z };
+    if (points.length === 4) {
+      for (const j of [(index + 1) % 4, (index + 3) % 4]) {
+        if (points[j].x === from.x) {
+          next[j].x = x;
+        }
+        if (points[j].z === from.z) {
+          next[j].z = z;
+        }
+      }
+    }
+
+    if (subIdx !== undefined) {
+      setAreas(areaIdx, "holes", subIdx, next);
+    } else {
+      setAreas(areaIdx, "polygon", next);
+    }
   }
 
   /** The four corners of the axis-aligned rectangle spanned by two opposite points. */
@@ -564,6 +623,7 @@ export default function ZoneModel(props: ZoneDataProps) {
   const [getRectMode, setRectMode] = createSignal<boolean>(false);
   let rectAnchor: Point | undefined;
   let rectIdx: number | undefined;
+  let dragVertex: number | undefined;
 
   const areaMat = new THREE.MeshBasicMaterial({
     transparent: true,
@@ -754,7 +814,7 @@ export default function ZoneModel(props: ZoneDataProps) {
 
       const div = document.createElement("div");
       div.textContent = String.fromCharCode("A".charCodeAt(0) + i);
-      div.className = "vertex-label noselect pointer-events-auto cursor-pointer text-sm font-mono";
+      div.className = "vertex-label noselect pointer-events-auto cursor-move text-sm font-mono";
       if (getSelectedVertexIdx() == i) {
         div.className += " font-bold bg-blue-800 underline";
       } else {
@@ -762,6 +822,21 @@ export default function ZoneModel(props: ZoneDataProps) {
           setSelectedVertexIdx(i);
         };
       }
+
+      // Drag the handle to move the corner. The label carries it rather than the sphere, which is
+      // radius 1 in a zone a thousand units across and so is not a target anyone can hit.
+      div.onmousedown = event => {
+        if (event.button !== 0) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        dragVertex = i;
+        setSelectedVertexIdx(i);
+        if (controls()) {
+          controls().enabled = false;
+        }
+      };
       elements.push(div);
 
       const label = new CSS2DObject(div);
