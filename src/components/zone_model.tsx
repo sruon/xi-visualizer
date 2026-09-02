@@ -12,7 +12,7 @@ import { addMapControls, adjustCameraAspect, fitCameraToContents } from "../grap
 import { setupBaseScene } from "../graphics/scene";
 import { cleanupNode, roundDecimals } from "../graphics/util";
 import { ByZone } from "../types";
-import AreaMenu, { Area, circleOf, circlePoints, deriveAreaYs as deriveAreaYRange, Point } from "./area_menu";
+import AreaMenu, { Area, centreOf, circleOf, circlePoints, deriveAreaYs as deriveAreaYRange, Point, rotateAbout } from "./area_menu";
 import { ColorKind, colorMesh, createZoneMesh, getHitData, getMapId, markLineCollisions, prepareMeshData, RayHit } from "../graphics/ximesh";
 import { ZoneInfoBox, TargetInfo } from "./zone_info_box";
 import { ZoneRayTestingBox } from "./zone_ray_testing_box";
@@ -565,6 +565,29 @@ export default function ZoneModel(props: ZoneDataProps) {
       if (radius > 0.5) {
         setAreas(areaIdx, "polygon", circlePoints(c.cx, c.cz, radius, points.length));
       }
+      return;
+    }
+
+    // A turned box is only a rectangle in its own frame, so the corner rule has to be applied
+    // there: un-turn, move, turn back about the same centre. Rotation is rigid, so the moved box
+    // still un-turns cleanly about its new centre when it is written out.
+    const rotation = areas[areaIdx].triggerRotation ?? 0;
+    if (subIdx === undefined && points.length === 4 && rotation) {
+      const { cx, cz } = centreOf(points);
+      const frame = points.map(p => rotateAbout(p, cx, cz, -rotation));
+      const target = rotateAbout({ x, z }, cx, cz, -rotation);
+      const moved = frame.map(p => ({ x: p.x, z: p.z }));
+      moved[index] = target;
+      for (const j of [(index + 1) % 4, (index + 3) % 4]) {
+        // Compared with a tolerance rather than for equality: these came back through a rotation.
+        if (Math.abs(frame[j].x - frame[index].x) < 1e-6) {
+          moved[j].x = target.x;
+        }
+        if (Math.abs(frame[j].z - frame[index].z) < 1e-6) {
+          moved[j].z = target.z;
+        }
+      }
+      setAreas(areaIdx, "polygon", moved.map(p => rotateAbout(p, cx, cz, rotation)));
       return;
     }
 

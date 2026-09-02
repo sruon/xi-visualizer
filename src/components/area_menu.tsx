@@ -38,6 +38,39 @@ export interface Area {
   triggerId?: number;
   /** Which call this area writes out as. Cuboid when unset. */
   triggerShape?: "cuboid" | "cylinder";
+  /** Radians the box is turned about its own centre in the xz plane. Absent or 0 is axis aligned. */
+  triggerRotation?: number;
+}
+
+/** Radians need more than the three decimals coordinates get: -2.3562 has to survive a round trip. */
+export function tidyAngle(n: number): number {
+  return Number(n.toFixed(5));
+}
+
+export function rotateAbout(p: Point, cx: number, cz: number, angle: number): Point {
+  const dx = p.x - cx, dz = p.z - cz;
+  const sin = Math.sin(angle), cos = Math.cos(angle);
+  return { x: cx + dx * cos - dz * sin, z: cz + dx * sin + dz * cos };
+}
+
+/** Centre of a box, which for four corners is their average whether or not it is turned. */
+export function centreOf(polygon: Point[]): { cx: number; cz: number; } {
+  const cx = polygon.reduce((sum, p) => sum + p.x, 0) / polygon.length;
+  const cz = polygon.reduce((sum, p) => sum + p.z, 0) / polygon.length;
+  return { cx, cz };
+}
+
+/**
+ * The corners in the box's own frame, which is what the call's min/max pair describes. The server
+ * turns the point by -rotation before comparing, so the drawn shape is the box turned by +rotation
+ * and undoing that is how the numbers to write out are recovered.
+ */
+export function boxFrame(polygon: Point[], rotation: number): Point[] {
+  if (!rotation) {
+    return polygon;
+  }
+  const { cx, cz } = centreOf(polygon);
+  return polygon.map(p => rotateAbout(p, cx, cz, -rotation));
 }
 
 /** Trim float noise without flattening a real decimal: -487.3 survives, 15.000000002 does not. */
@@ -308,12 +341,16 @@ export default function AreaMenu(ps: AreaMenuProps) {
       const c = circleOf(area.polygon);
       line = `zone:registerCylindricalTriggerArea(${id}, ${c.cx}, ${c.cz}, ${c.radius})`;
     } else {
-      const xs = area.polygon.map(p => p.x);
-      const zs = area.polygon.map(p => p.z);
+      const rotation = area.triggerRotation ?? 0;
+      const frame = boxFrame(area.polygon, rotation);
+      const xs = frame.map(p => p.x);
+      const zs = frame.map(p => p.z);
       const ys = deriveAreaYs(area);
 
-      line = `zone:registerCuboidTriggerArea(${id}, ${Math.min(...xs)}, ${ys.yMin}, ${Math.min(...zs)}, `
-        + `${Math.max(...xs)}, ${ys.yMax}, ${Math.max(...zs)})`;
+      line = `zone:registerCuboidTriggerArea(${id}, ${tidy(Math.min(...xs))}, ${ys.yMin}, ${tidy(Math.min(...zs))}, `
+        + `${tidy(Math.max(...xs))}, ${ys.yMax}, ${tidy(Math.max(...zs))}`
+        // The argument is optional and defaults to 0, so an unturned box does not carry it.
+        + `${rotation ? `, ${tidyAngle(rotation)}` : ""})`;
       // Without y bounds the derived range is the +/-1000 placeholder, which would look deliberate
       // once pasted.
       if (ys.unlimited) {
@@ -366,6 +403,28 @@ export default function AreaMenu(ps: AreaMenuProps) {
       ps.setAreas(idx, "triggerShape", "cylinder");
       ps.setAreas(idx, "polygon", circlePoints(c.cx, c.cz, c.radius));
       ps.setSelectedVertexIdx(undefined);
+    });
+  };
+
+  /**
+   * Turn the box about its own centre. The corners are moved by the difference rather than
+   * rebuilt, so an edited box keeps whatever size it was dragged to.
+   */
+  const setRotation = (radians: number) => {
+    const idx = ps.selectedAreaIdx;
+    const area = ps.areas[idx];
+    if (!area?.polygon?.length) {
+      return;
+    }
+    const next = Number.isFinite(radians) ? tidyAngle(radians) : 0;
+    const delta = next - (area.triggerRotation ?? 0);
+    if (delta === 0) {
+      return;
+    }
+    const { cx, cz } = centreOf(area.polygon);
+    batch(() => {
+      ps.setAreas(idx, "triggerRotation", next || undefined);
+      ps.setAreas(idx, "polygon", area.polygon.map(p => rotateAbout(p, cx, cz, delta)));
     });
   };
 
@@ -649,6 +708,21 @@ export default function AreaMenu(ps: AreaMenuProps) {
 
                 </Match>
               </Switch>
+
+              {/* Cylinders are round, so turning one is a no-op and the field would only mislead. */}
+              <Show when={selectedArea()?.triggerShape !== "cylinder"}>
+                <div class="pt-2">
+                  <span class="font-semibold">Rotation:</span>{" "}
+                  <input
+                    type="number"
+                    step="0.0001"
+                    class="p-1 font-mono text-lime-300 w-24 inline-block"
+                    value={selectedArea()?.triggerRotation ?? 0}
+                    onChange={e => setRotation(parseFloat(e.currentTarget.value))}
+                  ></input>{" "}
+                  <span class="text-xs text-slate-400">rad</span>
+                </div>
+              </Show>
 
               <div>
                 <div class="flex flex-row">
@@ -1045,7 +1119,7 @@ function parseHoles(str: string, area: Area): number {
  */
 export function parseTriggerAreas(str: string): Area[] | undefined {
   const N = String.raw`\s*(-?\d+(?:\.\d+)?)\s*`;
-  const call = new RegExp(String.raw`registerCuboidTriggerArea\s*\(` + [N, N, N, N, N, N, N].join(",") + String.raw`\)`, "g");
+  const call = new RegExp(String.raw`registerCuboidTriggerArea\s*\(` + [N, N, N, N, N, N, N].join(",") + String.raw`(?:,` + N + String.raw`)?\)`, "g");
 
   const cylinder = new RegExp(String.raw`registerCylindricalTriggerArea\s*\(` + [N, N, N, N].join(",") + String.raw`\)`, "g");
 
@@ -1060,16 +1134,27 @@ export function parseTriggerAreas(str: string): Area[] | undefined {
   }
 
   for (const m of str.matchAll(call)) {
-    const [id, xMin, yMin, zMin, xMax, yMax, zMax] = m.slice(1).map(Number);
+    const [id, xMin, yMin, zMin, xMax, yMax, zMax] = m.slice(1, 8).map(Number);
+    // The 8th argument is optional and defaults to 0 on the server.
+    const rotation = m[8] === undefined ? 0 : Number(m[8]);
+
     // The call takes opposite corners in either order; the box is the same box.
     const x1 = Math.min(xMin, xMax), x2 = Math.max(xMin, xMax);
     const z1 = Math.min(zMin, zMax), z2 = Math.max(zMin, zMax);
+    const corners = [{ x: x1, z: z1 }, { x: x2, z: z1 }, { x: x2, z: z2 }, { x: x1, z: z2 }];
+
+    // min/max describe the box in its own frame, so what gets drawn is those corners turned by
+    // +rotation about the centre. Left at full precision: rounding the drawn corners would drift
+    // back out through the un-rotation on export.
+    const cx = (x1 + x2) / 2, cz = (z1 + z2) / 2;
+
     areas.push({
       triggerId: id,
       yMin: Math.min(yMin, yMax),
       yMax: Math.max(yMin, yMax),
       triggerShape: "cuboid",
-      polygon: [{ x: x1, z: z1 }, { x: x2, z: z1 }, { x: x2, z: z2 }, { x: x1, z: z2 }],
+      triggerRotation: rotation || undefined,
+      polygon: rotation ? corners.map(p => rotateAbout(p, cx, cz, rotation)) : corners,
     });
   }
 
