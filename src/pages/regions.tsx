@@ -110,6 +110,20 @@ export default function RegionsPage() {
   const [query] = useSearchParams<{ repo?: string; ref?: string; review?: string; }>();
   const navigate = useNavigate();
   const repo = () => query.repo || DEFAULT_REPO;
+
+  /**
+   * Where the zone picker goes. The repository, branch and review flag live in the query, so
+   * navigating without them silently dropped whoever was reviewing a branch back onto staging,
+   * still looking like a review.
+   */
+  const zoneHref = (zone: string) => {
+    const carried = new URLSearchParams();
+    for (const [key, value] of Object.entries({ repo: query.repo, ref: query.ref, review: query.review })) {
+      if (value) carried.set(key, value);
+    }
+    const rest = carried.toString();
+    return `/regions/${zone}${rest ? `?${rest}` : ""}`;
+  };
   const ref = () => query.ref || DEFAULT_REF;
   /** Opened from a review link: somebody else's branch, for reading against the roam data. */
   const reviewing = () => query.review === "1";
@@ -729,7 +743,7 @@ export default function RegionsPage() {
           class="px-2 py-1 bg-slate-700 rounded max-w-64"
           value={folders().includes(params.zone ?? "") ? params.zone! : ""}
           title={local() ? "served from a local folder" : `${repo()}@${ref()}`}
-          onChange={e => navigate(`/regions/${e.currentTarget.value}`)}
+          onChange={e => navigate(zoneHref(e.currentTarget.value))}
         >
           <option value="">{folders().length ? `${folders().length} zones, pick one` : "no zones"}</option>
           <For each={folders()}>{f => <option value={f}>{f}</option>}</For>
@@ -930,11 +944,9 @@ export default function RegionsPage() {
 
       <Show when={reviewing()}>
         <div class="mt-3 flex flex-wrap items-center gap-2 text-sm bg-sky-900/40 border border-sky-700 rounded px-3 py-2">
-          <span>
-            Reviewing <b>{repo()}</b> at <b>{ref()}</b>. Nothing here writes anywhere, and the roam trails are the point:
-            they are what the regions were drawn from.
+          <span class="flex-grow">
+            Reviewing <b>{repo()}</b> at <b>{ref()}</b>, read only.
           </span>
-          <a class={BTN_PLAIN} href={`#/regions/${files()?.folder ?? ""}`}>Leave review</a>
         </div>
       </Show>
 
