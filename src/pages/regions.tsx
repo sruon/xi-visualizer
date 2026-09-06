@@ -309,16 +309,24 @@ export default function RegionsPage() {
       // recursively downloaded nearly 7MB to read a few hundred directory names, on every visit,
       // against a limit of 60 requests an hour for anyone not signed in. A large transfer that
       // gives up looks exactly like "Failed to fetch".
-      const res = await fetch(
-        `https://api.github.com/repos/${repo()}/git/trees/${ref()}:${ZONES}?recursive=1`,
-        // Being signed in raises that hourly limit from 60 to 5000, and costs nothing to send.
-        authToken() ? { headers: { Authorization: `Bearer ${authToken()}` } } : undefined,
-      );
+      const tree = `https://api.github.com/repos/${repo()}/git/trees/${ref()}:${ZONES}?recursive=1`;
+      // Being signed in raises that hourly limit from 60 to 5000, and costs nothing to send.
+      const authed = authToken() ? { headers: { Authorization: `Bearer ${authToken()}` } } : undefined;
+      let res = await fetch(tree, authed);
+
+      // A GitHub App user token only reaches repositories the app is installed on, and GitHub
+      // answers 404 rather than 403 for the rest, so a signed-in reviewer opening a branch on a
+      // repository they have not installed it on is told the branch does not exist. A stale token
+      // gets 401 the same way. Both read fine without the header, this being a public repository,
+      // so drop it and ask again rather than making somebody sign out to read a review link.
+      if (authed && (res.status === 404 || res.status === 401)) {
+        res = await fetch(tree);
+      }
       if (!res.ok) {
         if (res.status === 403 && res.headers.get("x-ratelimit-remaining") === "0") {
           throw new Error("GitHub's hourly limit for signed-out requests is used up on this network; signing in raises it from 60 to 5000");
         }
-        if (res.status === 404) throw new Error(`no ${ref()} branch, or it cannot be read`);
+        if (res.status === 404) throw new Error(`no ${ref()} branch on ${repo()}, or the repository is private`);
         throw new Error(`HTTP ${res.status}`);
       }
       const json = (await res.json()) as { tree?: { path: string; }[]; };
