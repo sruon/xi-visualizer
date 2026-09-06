@@ -5,7 +5,7 @@
 // GitHub is enough to hold all three honest.
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
-import { compareUrl, deleteBranch, fillTemplate, findFork, findSitting, prTitle, save, whoAmI } from "./github.ts";
+import { compareUrl, deleteBranch, fillTemplate, findFork, findSitting, freeBranchName, prTitle, save, whoAmI } from "./github.ts";
 
 const noHeaders = { get: () => null };
 
@@ -130,6 +130,15 @@ fakeGitHub({
   },
 });
 assert.strictEqual((await findSitting("t", FORK, UPSTREAM, "regions-master", TODAY)).branch, "regions/2026-08-23");
+
+// A new branch must not land on a name already in use: pointing an existing ref at the base and
+// rebuilding it is a reset of whatever pull request was open for it, not a new branch.
+assert.strictEqual(freeBranchName([], "regions/2026-09-01"), "regions/2026-09-01");
+assert.strictEqual(freeBranchName(["regions/2026-09-01"], "regions/2026-09-01"), "regions/2026-09-01-2");
+assert.strictEqual(
+  freeBranchName(["regions/2026-09-01", "regions/2026-09-01-2"], "regions/2026-09-01"),
+  "regions/2026-09-01-3",
+);
 
 // --- saving ---
 

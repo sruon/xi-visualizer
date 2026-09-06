@@ -329,6 +329,24 @@ export async function findSitting(
   return { branch: today, zones: [] };
 }
 
+/** Every regions/* branch on the fork, newest name first, which the date in the name gives. */
+export async function listRegionBranches(token: string, fork: string): Promise<string[]> {
+  const refs = (await ghMaybe(token, `/repos/${fork}/git/matching-refs/heads/regions/`)) ?? [];
+  return refs.map((r: any) => String(r.ref).replace("refs/heads/", "")).sort().reverse();
+}
+
+/**
+ * A branch name nothing on the fork is using yet. Reusing one would point an existing ref at the
+ * base and rebuild it, which is a reset of somebody's open pull request rather than a new branch.
+ */
+export function freeBranchName(taken: string[], wanted: string): string {
+  if (!taken.includes(wanted)) return wanted;
+  for (let n = 2;; n++) {
+    const name = `${wanted}-${n}`;
+    if (!taken.includes(name)) return name;
+  }
+}
+
 /**
  * Throws the sitting away. Its commits become unreachable and this cannot be undone from here, so
  * it is worth asking before calling. An open pull request for the branch is left with nothing to

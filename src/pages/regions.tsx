@@ -4,7 +4,7 @@ import RegionEditor from "../components/region_editor";
 import YamlView from "../components/yaml_view";
 import type { ZoneData } from "../components/zone_model";
 import zones from "../data/zones";
-import { compareUrl, deleteBranch, fillTemplate, findFork, findSitting, type ForkState, forkUrl, grantedOn, installUrl, prTitle, save, type Sitting, whoAmI } from "../github";
+import { compareUrl, deleteBranch, fillTemplate, findFork, findSitting, type ForkState, forkUrl, freeBranchName, grantedOn, installUrl, listRegionBranches, prTitle, save, type Sitting, whoAmI } from "../github";
 import { canSignIn, completeSignIn, isCallback, signOut, startSignIn as beginSignIn, storedToken } from "../github_auth";
 import { emitRegionsBlock, mergeZone, parseMobsYaml, parsePastedZone, parseRegionsYaml, patchMobsYaml, patchRegionsYaml, placementsOf, zoneOfMobId } from "../regions";
 import type { Patrol, Placements, RegionSet, Spawn } from "../regions";
@@ -45,8 +45,10 @@ interface Draft {
 // Everything funnels into one staging repository: contributors open pull requests against it, and
 // pushing from there up to LandSandBoat is done by hand, outside this editor. Zone data is read
 // from the same place, so a contributor sees the regions already accepted rather than redoing them.
-const DEFAULT_REPO = "sruon/server";
-const DEFAULT_REF = "regions-master";
+// Upstream itself. The pull request is opened through GitHub's compare form rather than the API,
+// so this repository does not need the app installed on it for that to work.
+const DEFAULT_REPO = "LandSandBoat/server";
+const DEFAULT_REF = "base";
 const ZONES = "data/zones"; // where the zone folders live inside the repo
 const LOCAL = "/local-zones"; // dev middleware over a folder on disk, see vite.config.ts
 // A branch per sitting, carrying one commit per zone touched in it. A branch per zone would mean a
@@ -146,7 +148,35 @@ export default function RegionsPage() {
    * staging after a commit shows the zone as it was before, which looks like the work vanished.
    */
   const [sitting, setSitting] = createSignal<Sitting | undefined>();
-  const branchName = () => sitting()?.branch ?? branchForToday();
+  /** Set by naming a branch by hand, or by starting a new one. Beats whatever is sitting. */
+  const [branchChosen, setBranchChosen] = createSignal<string | undefined>();
+  const branchName = () => branchChosen() ?? sitting()?.branch ?? branchForToday();
+
+  /** findSitting only looks under regions/, so a branch named outside it would never be found again. */
+  const asBranch = (raw: string) => {
+    const tail = raw.replace(/^regions\//, "").trim().replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+    return tail ? `regions/${tail}` : branchForToday();
+  };
+
+  /**
+   * Leaves the current branch where it is, with whatever pull request it has, and points the next
+   * save at a fresh one. Reset is the other half of this pair and throws the branch away instead.
+   */
+  const startNewBranch = async () => {
+    const where = fork();
+    if (where?.state !== "ready") return;
+    setStatus("Naming a new branch…");
+    try {
+      const taken = await listRegionBranches(authToken(), where.repo);
+      setBranchChosen(freeBranchName(taken, branchForToday()));
+      setSitting(undefined);
+      setPushed(false);
+      setStatus(`Next save starts ${branchName()}`);
+    } catch (e) {
+      setStatus(undefined);
+      setError(`${e}`);
+    }
+  };
   /** The zones sitting on the working branch, so the pull request can name what it actually holds. */
   const branchZones = () => sitting()?.zones ?? [];
 
@@ -526,6 +556,7 @@ export default function RegionsPage() {
       await deleteBranch(authToken(), where.repo, branchName());
       setSitting(undefined);
       setPushed(false);
+      setBranchChosen(undefined);
       setConfirmReset(false);
       setStatus(`Deleted ${branchName()}`);
       const showing = files()?.folder;
@@ -787,8 +818,15 @@ export default function RegionsPage() {
           >
             {showYaml() ? "Hide YAML" : "View YAML"}
           </button>
-          {/* Nothing to throw away until something is on the branch. */}
+          {/* Neither of these means anything until something is on the branch. */}
           <Show when={sitting()?.ancestor && !reviewing()}>
+            <button
+              class={BTN_PLAIN}
+              title={`Leave ${branchName()} and any pull request for it alone, and start the next save on a branch of its own.`}
+              onClick={startNewBranch}
+            >
+              Start a new branch
+            </button>
             <button
               class={confirmReset() ? `${BTN} bg-red-700 hover:bg-red-600 text-white` : BTN_PLAIN}
               title={`Delete ${branchName()} from your fork. The work on it is not recoverable from here, and an open pull request for it would be left with nothing to merge.`}
@@ -797,7 +835,7 @@ export default function RegionsPage() {
             >
               {confirmReset()
                 ? `Discard ${count(branchZones().length, "zone")}?`
-                : "Reset branch"}
+                : "Discard branch"}
             </button>
           </Show>
           {/* Only once something is actually on the branch: an empty compare page helps nobody. */}
@@ -824,8 +862,26 @@ export default function RegionsPage() {
         <Show when={error()}>
           <span class="text-red-500">{error()}</span>
         </Show>
-        <Show when={fork()?.state === "ready"}>
-          <span class="text-slate-500" title="Where Save commits to">→ {forkRepo()}@{branchName()}</span>
+        <Show when={fork()?.state === "ready" && !reviewing()}>
+          <span class="text-slate-500 flex items-center gap-1" title="Where Save commits to">
+            → {forkRepo()}@
+            <Show
+              when={!sitting()?.ancestor}
+              fallback={<span class="font-mono text-slate-400">{branchName()}</span>}
+            >
+              {/* Renaming is free until something is committed to it, and fixed once it is. */}
+              <input
+                class="px-1 py-0.5 bg-slate-700 rounded font-mono text-slate-200 w-44"
+                value={branchName()}
+                title="Name this branch, before anything is committed to it"
+                onChange={e => {
+                  const named = asBranch(e.currentTarget.value);
+                  setBranchChosen(named);
+                  e.currentTarget.value = named;
+                }}
+              />
+            </Show>
+          </span>
         </Show>
         <Show
           when={account()}
