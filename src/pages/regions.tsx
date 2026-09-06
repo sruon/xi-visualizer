@@ -38,7 +38,7 @@ interface ZoneFiles {
 interface Draft {
   at: number;
   regions: RegionSet;
-  assign: Record<string, string>;
+  assign: Record<string, string[]>;
   paths?: Record<string, Patrol>;
 }
 
@@ -233,7 +233,7 @@ export default function RegionsPage() {
   const [editorKey, setEditorKey] = createSignal("");
 
   // Latest editor state, written back on save.
-  let pending: { regions: RegionSet; assign: Record<string, string>; paths: Record<string, Patrol>; } | undefined;
+  let pending: { regions: RegionSet; assign: Record<string, string[]>; paths: Record<string, Patrol>; } | undefined;
   let draftTimer: ReturnType<typeof setTimeout> | undefined;
   let edited = false;
 
@@ -289,7 +289,7 @@ export default function RegionsPage() {
   // region strips `at:`, so re-parsing after a save would lose every assigned spawn's coordinates.
   const [spawns, setSpawns] = createSignal<Spawn[] | undefined>();
   const [regions, setRegions] = createSignal<RegionSet>({});
-  const [baseline, setBaseline] = createSignal({ block: "", assign: {} as Record<string, string>, paths: "" });
+  const [baseline, setBaseline] = createSignal({ block: "", assign: {} as Record<string, string[]>, paths: "" });
 
   // Coordinates as the file had them, so unassigning can put `at:` back.
   const positions = () => Object.fromEntries((spawns() ?? []).filter(s => s.at).map(s => [s.id, s.at!]));
@@ -408,7 +408,7 @@ export default function RegionsPage() {
     setRegions(regionSet);
     setBaseline({
       block: emitRegionsBlock(regionSet),
-      assign: Object.fromEntries(parsed.filter(s => s.region).map(s => [s.id, s.region!])),
+      assign: Object.fromEntries(parsed.filter(s => s.regions?.length).map(s => [s.id, s.regions!])),
       paths: JSON.stringify(Object.fromEntries(parsed.filter(s => s.path).map(s => [s.id, { legs: s.path, loop: s.loop }]))),
     });
     setDirty(false);
@@ -495,7 +495,7 @@ export default function RegionsPage() {
       // says nothing about it, and taking that as "nothing is placed" would wipe the assignments.
       const placed = theirSpawns
         ? {
-          assign: Object.fromEntries(theirSpawns.filter(sp => sp.region).map(sp => [sp.id, sp.region!])),
+          assign: Object.fromEntries(theirSpawns.filter(sp => sp.regions?.length).map(sp => [sp.id, sp.regions!])),
           paths: Object.fromEntries(theirSpawns.filter(sp => sp.path).map(sp => [sp.id, { legs: sp.path!, loop: sp.loop }])),
         }
         : { assign: pending?.assign ?? {}, paths: pending?.paths ?? {} };
@@ -603,7 +603,7 @@ export default function RegionsPage() {
           regionsYaml: patchRegionsYaml(moved.regionsNow, moved.merged.regions),
           mobsYaml: patchMobsYaml(
             moved.mobsNow,
-            Object.fromEntries(Object.entries(placements).filter(([, p]) => p.region).map(([id, p]) => [id, p.region!])),
+            Object.fromEntries(Object.entries(placements).filter(([, p]) => p.regions?.length).map(([id, p]) => [id, p.regions!])),
             Object.fromEntries(moved.theirSpawns.filter(s => s.at).map(s => [s.id, s.at!])),
             Object.fromEntries(Object.entries(placements).filter(([, p]) => p.patrol).map(([id, p]) => [id, p.patrol!])),
           ),

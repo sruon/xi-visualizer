@@ -140,7 +140,7 @@ export default function RegionsDiffPage() {
     return d.added.includes(name) ? "added" : d.removed.includes(name) ? "removed" : "reshaped";
   };
   const pickedChange = () => pair()?.diff.reshaped.find(c => c.name === picked());
-  const pickedHeld = (side: "base" | "head") => pair()?.[side].spawns.filter(sp => sp.region === picked()).length ?? 0;
+  const pickedHeld = (side: "base" | "head") => pair()?.[side].spawns.filter(sp => sp.regions?.includes(picked()!)).length ?? 0;
   const pickedIn = () => pair()?.diff.moved.filter(m => m.to === picked()) ?? [];
   const pickedOut = () => pair()?.diff.moved.filter(m => m.from === picked()) ?? [];
   const pickedWentTo = () => [...new Set(pickedOut().map(m => m.to ?? "no region"))];
@@ -335,14 +335,14 @@ export default function RegionsDiffPage() {
               {name => (
                 <DiffRow color={swatch("added")} mark="+" onClick={() => setFocus({ name })}>
                   <b>{name}</b> added, {pair()!.head.regions[name].rings[0]?.length ?? 0} vertices,{" "}
-                  {pair()!.head.spawns.filter(s => s.region === name).length} spawns
+                  {pair()!.head.spawns.filter(s => s.regions?.includes(name)).length} spawns
                 </DiffRow>
               )}
             </For>
             <For each={pair()!.diff.removed}>
               {name => (
                 <DiffRow color={swatch("removed")} mark="−" onClick={() => setFocus({ name })}>
-                  <b>{name}</b> removed, held {pair()!.base.spawns.filter(s => s.region === name).length} spawns
+                  <b>{name}</b> removed, held {pair()!.base.spawns.filter(s => s.regions?.includes(name)).length} spawns
                 </DiffRow>
               )}
             </For>

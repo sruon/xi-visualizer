@@ -13,7 +13,7 @@ const regions: RegionSet = {
     rings: [[[-317.41, -52.49, 308.69], [-290.11, -52.31, 283.01], [-285.31, -51.88, 279.85]]],
   },
 };
-const added = { "17186822": "rabbit_field", "17186823": "rabbit_field" };
+const added = { "17186822": ["rabbit_field"], "17186823": ["rabbit_field"] };
 
 // --- regions.yaml ---
 // the file as LSB wrote it has to survive a read and a rewrite untouched
@@ -30,7 +30,7 @@ assert.ok(regionsOut.startsWith("# yaml-language-server:"), "the schema header s
 const before = parseMobsYaml(mobsYaml);
 const positions = Object.fromEntries(before.filter(s => s.at).map(s => [s.id, s.at!]));
 // the file already places a dozen spawns by region; keeping those is what leaves it unchanged
-const assign = { ...Object.fromEntries(before.filter(s => s.region).map(s => [s.id, s.region!])), ...added };
+const assign = { ...Object.fromEntries(before.filter(s => s.regions?.length).map(s => [s.id, s.regions!])), ...added };
 assert.ok(Object.keys(assign).length > Object.keys(added).length, "the fixture has regions of its own");
 const mobsOut = patchMobsYaml(mobsYaml, assign, positions);
 assert.strictEqual(patchMobsYaml(mobsOut, assign, positions), mobsOut, "idempotent");
@@ -46,13 +46,13 @@ assert.strictEqual(
 );
 
 const spawns = parseMobsYaml(mobsOut);
-assert.strictEqual(spawns.find(s => s.id === "17186822")?.region, "rabbit_field");
+assert.strictEqual(spawns.find(s => s.id === "17186822")?.regions?.[0], "rabbit_field");
 assert.strictEqual(spawns.find(s => s.id === "17186822")?.at, undefined, "assigned spawn has no fixed point");
-assert.strictEqual(spawns.find(s => s.id === "17186824")?.region, undefined);
+assert.strictEqual(spawns.find(s => s.id === "17186824")?.regions?.[0], undefined);
 assert.deepStrictEqual(spawns.find(s => s.id === "17186824")?.at?.length, 4, "untouched spawns keep theirs");
 assert.strictEqual(spawns.length, 602, "every spawn still parses");
 // taking the two new assignments back off has to give the file back byte for byte
-const asFound = Object.fromEntries(before.filter(s => s.region).map(s => [s.id, s.region!]));
+const asFound = Object.fromEntries(before.filter(s => s.regions?.length).map(s => [s.id, s.regions!]));
 assert.strictEqual(patchMobsYaml(mobsOut, asFound, positions), mobsYaml, "unassigning restores the original file");
 
 console.log("ok");

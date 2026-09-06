@@ -37,11 +37,11 @@ interface RegionEditorProps {
   spawns: Spawn[];
   regions: RegionSet;
   /** Overrides the assignments carried on the spawns themselves, for restoring a draft. */
-  assign?: Record<string, string>;
+  assign?: Record<string, string[]>;
   /** Same, for patrol routes. */
   paths?: Record<string, Patrol>;
   roam?: RoamData;
-  onChange: (regions: RegionSet, assign: Record<string, string>, paths: Record<string, Patrol>) => void;
+  onChange: (regions: RegionSet, assign: Record<string, string[]>, paths: Record<string, Patrol>) => void;
 }
 
 const GOLDEN = 0.61803398875; // successive regions land far apart on the colour wheel
@@ -57,8 +57,8 @@ export default function RegionEditor(props: RegionEditorProps) {
   const [regions, setRegions] = createSignal<RegionEntry[]>(
     Object.entries(props.regions).map(([name, r]) => ({ name, ...r })),
   );
-  const [assign, setAssign] = createSignal<Record<string, string>>(
-    props.assign ?? Object.fromEntries(props.spawns.filter(s => s.region).map(s => [s.id, s.region!])),
+  const [assign, setAssign] = createSignal<Record<string, string[]>>(
+    props.assign ?? Object.fromEntries(props.spawns.filter(s => s.regions?.length).map(s => [s.id, s.regions!])),
   );
   const [activeName, setActiveName] = createSignal<string | null>(null);
   const [mode, setMode] = createSignal<"select" | "draw">("select");
@@ -136,7 +136,9 @@ export default function RegionEditor(props: RegionEditorProps) {
 
   const spawnCounts = createMemo(() => {
     const counts: Record<string, number> = {};
-    for (const name of Object.values(assign())) counts[name] = (counts[name] ?? 0) + 1;
+    for (const names of Object.values(assign())) {
+      for (const name of names) counts[name] = (counts[name] ?? 0) + 1;
+    }
     return counts;
   });
 
@@ -207,20 +209,23 @@ export default function RegionEditor(props: RegionEditorProps) {
     if (!data || !wanted) return;
     coverageTimer = setTimeout(() => {
       const acc: Record<string, [number, number]> = {};
-      for (const [id, name] of Object.entries(a)) {
-        const r = set[name];
+      for (const [id, names] of Object.entries(a)) {
         const range = data.ranges[id];
-        if (!r || !range) continue;
+        if (!range) continue;
         const [start, count] = range;
         // Every point, not a sample of 120: this figure is what the review tab reports as "covers
         // N% of its mobs' trails", and estimating it from a twentieth of the data is fine for a
         // rough sort and misleading for the one number a reviewer trusts. Pashhow Marshlands has
         // 2,268,933 of them, so it is only paid for while that tab is open.
-        const tally = (acc[name] ??= [0, 0]);
-        for (let i = 0; i < count; i++) {
-          const o = (start + i) * 3;
-          tally[1]++;
-          if (containsXZ(r, data.positions[o], data.positions[o + 2])) tally[0]++;
+        for (const name of names) {
+          const r = set[name];
+          if (!r) continue;
+          const tally = (acc[name] ??= [0, 0]);
+          for (let i = 0; i < count; i++) {
+            const o = (start + i) * 3;
+            tally[1]++;
+            if (containsXZ(r, data.positions[o], data.positions[o + 2])) tally[0]++;
+          }
         }
       }
       setCoverage(Object.fromEntries(Object.entries(acc).map(([n, [inside, total]]) => [n, inside / total])));
@@ -296,7 +301,7 @@ export default function RegionEditor(props: RegionEditorProps) {
    */
   interface Snapshot {
     regions: RegionEntry[];
-    assign: Record<string, string>;
+    assign: Record<string, string[]>;
     paths: Record<string, Patrol>;
     activeName: string | null;
     walker: string | null;
@@ -428,7 +433,7 @@ export default function RegionEditor(props: RegionEditorProps) {
    * just join up unrelated mobs. The region itself goes away because nothing is left in it.
    */
   const convertToPatrol = (name: string) => {
-    const members = props.spawns.filter(s => assign()[s.id] === name);
+    const members = props.spawns.filter(s => assign()[s.id]?.includes(name));
     if (!members.length) return flash(`${name} has no mobs to convert`);
     const candidates = members
       .map(s => ({ s, samples: props.roam?.ranges[s.id]?.[1] ?? 0 }))
@@ -527,7 +532,7 @@ export default function RegionEditor(props: RegionEditorProps) {
       setAssign(a => {
         const next = { ...a };
         for (const s of props.spawns) {
-          if (next[s.id] !== name) continue;
+          if (!next[s.id]?.includes(name)) continue;
           const trail = trailPoints([s.id]);
           const at = trail.length
             ? { x: trail.reduce((t, p) => t + p.x, 0) / trail.length, z: trail.reduce((t, p) => t + p.z, 0) / trail.length }
@@ -535,7 +540,7 @@ export default function RegionEditor(props: RegionEditorProps) {
             ? { x: s.x, z: s.z }
             : null;
           const piece = at && named.find(p => containsXZ(p, at.x, at.z));
-          if (piece) next[s.id] = piece.name;
+          if (piece) next[s.id] = next[s.id].map(n => (n === name ? piece.name : n));
         }
         return next;
       });
@@ -561,7 +566,7 @@ export default function RegionEditor(props: RegionEditorProps) {
     if (to === from) return true;
     checkpoint(`rename ${from} to ${to}`);
     setRegions(rs => rs.map(r => (r.name === from ? { ...r, name: to } : r)));
-    setAssign(a => Object.fromEntries(Object.entries(a).map(([id, n]) => [id, n === from ? to : n])));
+    setAssign(a => Object.fromEntries(Object.entries(a).map(([id, ns]) => [id, ns.map(n => (n === from ? to : n))])));
     if (activeName() === from) setActiveName(to);
     return true;
   };
@@ -569,7 +574,13 @@ export default function RegionEditor(props: RegionEditorProps) {
   const deleteRegion = (name: string) => {
     checkpoint(`delete ${name}`);
     setRegions(rs => rs.filter(r => r.name !== name));
-    setAssign(a => Object.fromEntries(Object.entries(a).filter(([, n]) => n !== name)));
+    setAssign(a =>
+      Object.fromEntries(
+        Object.entries(a)
+          .map(([id, ns]) => [id, ns.filter(n => n !== name)] as const)
+          .filter(([, ns]) => ns.length),
+      )
+    );
     if (activeName() === name) setActiveName(null);
   };
 
@@ -584,7 +595,7 @@ export default function RegionEditor(props: RegionEditorProps) {
         // A spawn whose region already replaced its `at:` has no position to test.
         if (!s.at || !matches(s) || regionAt(set, s.x, s.z, s.y) !== r.name) continue;
         if (remove) delete next[s.id];
-        else next[s.id] = r.name;
+        else next[s.id] = [r.name];
       }
       return next;
     });
@@ -612,14 +623,14 @@ export default function RegionEditor(props: RegionEditorProps) {
   const members = createMemo(() => {
     const name = activeName();
     if (!name) return [];
-    return props.spawns.filter(s => assign()[s.id] === name && matches(s));
+    return props.spawns.filter(s => assign()[s.id]?.includes(name) && matches(s));
   });
 
   /** Rebuilds the active region's shape from the roam trails of the mobs assigned to it. */
   const refitActive = () => {
     const r = active();
     if (!r) return;
-    const built = regionsFromPoints(trailPoints(Object.keys(assign()).filter(id => assign()[id] === r.name)));
+    const built = regionsFromPoints(trailPoints(Object.keys(assign()).filter(id => assign()[id]?.includes(r.name))));
     if (!built.length) return flash("no roam trails for that region's mobs");
     checkpoint(`refit ${r.name}`);
     setRegions(rs => rs.map(x => (x.name === r.name ? { name: r.name, rings: built[0].rings } : x)));
@@ -654,7 +665,7 @@ export default function RegionEditor(props: RegionEditorProps) {
             ? containsXZ(r, props.roam!.positions[trail[0] * 3], props.roam!.positions[trail[0] * 3 + 2])
             : s.at && containsXZ(r, s.x, s.z)
         );
-        if (home) next[s.id] = home.name;
+        if (home) next[s.id] = [home.name];
       }
       return next;
     });
@@ -911,8 +922,8 @@ const CELL = 12;
     const p = paths();
     for (const s of props.spawns) {
       const legs = p[s.id]?.legs;
-      out[s.id] = a[s.id]
-        ? byRegion[a[s.id]] ?? null
+      out[s.id] = a[s.id]?.length
+        ? byRegion[a[s.id][0]] ?? null
         : legs?.length
         ? floorIndex.at(legs[0][0], legs[0][1], legs[0][2])
         : s.at
@@ -997,11 +1008,11 @@ const CELL = 12;
     const colors = points.geometry.getAttribute("color") as THREE.BufferAttribute;
     // Cyan is the roam palette, kept clear of the white a spawn point uses. Trails fade back only
     // when the selected region has mobs to contrast against; dimming them all would leave specks.
-    const highlighting = !!act && Object.keys(data.ranges).some(id => a[id] === act);
+    const highlighting = !!act && Object.keys(data.ranges).some(id => a[id]?.includes(act));
     const dim = highlighting ? new THREE.Color(0.16, 0.34, 0.42) : new THREE.Color(0.3, 0.75, 0.9);
     const lit = act ? colorOf(act) : dim;
     for (const [mobId, [start, count]] of Object.entries(data.ranges)) {
-      const c = act && a[mobId] === act ? lit : dim;
+      const c = act && a[mobId]?.includes(act) ? lit : dim;
       for (let i = 0; i < count; i++) colors.setXYZ(start + i, c.r, c.g, c.b);
     }
     colors.needsUpdate = true;
@@ -1061,13 +1072,14 @@ const CELL = 12;
     const pos: number[] = [];
     const col: number[] = [];
     props.spawns.forEach((s, i) => {
-      const name = a[s.id];
+      const names = a[s.id];
       if (!s.at) return; // its region places it now, there is no dot to draw
-      if (name && hide) return;
+      if (names?.length && hide) return;
       if (!spawnOnFloor(s)) return;
       drawnSpawns.push(i);
       pos.push(s.x, s.y, s.z);
-      const c = name ? colorOf(name) : gray;
+      // Several regions means the server picks one at random; the dot takes the first one's colour.
+      const c = names?.length ? colorOf(names[0]) : gray;
       const dim = matches(s) ? 1 : 0.2;
       col.push(c.r * dim, c.g * dim, c.b * dim);
     });
@@ -1483,7 +1495,7 @@ const CELL = 12;
       const target = !p ? null : act ? (containsXZ(act, p.x, p.z) ? act.name : null) : regionAt(asSet(regions()), p.x, p.z, spawn.y);
       if (!target) return;
       checkpoint(`assign ${spawn.name} to ${target}`);
-      setAssign(a => ({ ...a, [spawn.id]: target }));
+      setAssign(a => ({ ...a, [spawn.id]: [target] }));
     };
 
     const onMouseUp = (ev: MouseEvent) => {
@@ -1530,8 +1542,20 @@ const CELL = 12;
         checkpoint(`assign ${spawn.name}`);
         setAssign(a => {
           const next = { ...a };
-          if (next[spawn.id] === name) delete next[spawn.id];
-          else next[spawn.id] = name;
+          const current = next[spawn.id] ?? [];
+          if (current.includes(name)) {
+            // Taking the last one away unassigns it, rather than leaving an empty list behind.
+            const rest = current.filter(n => n !== name);
+            if (rest.length) next[spawn.id] = rest;
+            else delete next[spawn.id];
+          } else if (ev.shiftKey) {
+            // More than one region means the server picks between them on every spawn. Rare
+            // enough to be worth a modifier rather than a mode: alt copies a position and
+            // ctrl is undo, so shift is what was left.
+            next[spawn.id] = [...current, name];
+          } else {
+            next[spawn.id] = [name];
+          }
           return next;
         });
         return;
@@ -1789,9 +1813,13 @@ const CELL = 12;
         onHover={setRowFocus}
         onPin={id => setPinnedId(current => (current === id ? null : id))}
         onCentre={s => flyTo(s.x, s.y, s.z)}
-        onAssign={s => {
+        onAssign={(s, add) => {
           checkpoint(`assign ${s.name} to ${activeName()}`);
-          setAssign(a => ({ ...a, [s.id]: activeName()! }));
+          setAssign(a => ({
+            ...a,
+            // Adding is idempotent: naming a region twice would be written out twice.
+            [s.id]: add ? [...(a[s.id] ?? []).filter(n => n !== activeName()), activeName()!] : [activeName()!],
+          }));
         }}
         onMenu={(spawn, x, y) => setMenu({ kind: "spawn", spawn, x, y })}
         visible={spawnOnFloor}
@@ -1972,7 +2000,7 @@ const CELL = 12;
                       class="block w-full text-left px-3 py-1 hover:bg-slate-700"
                       onClick={() => {
                         checkpoint(`assign ${spawn().name} to ${activeName()}`);
-                        setAssign(a => ({ ...a, [spawn().id]: activeName()! }));
+                        setAssign(a => ({ ...a, [spawn().id]: [activeName()!] }));
                         setMenu(null);
                       }}
                     >
@@ -2044,8 +2072,10 @@ const CELL = 12;
               {hover()!.spawn.x.toFixed(1)}, {hover()!.spawn.y.toFixed(1)}, {hover()!.spawn.z.toFixed(1)}
             </div>
             {/* A fixed point is not necessarily an oversight: plenty of mobs are meant to stand still. */}
-            <div style={{ color: assign()[hover()!.spawn.id] ? cssOf(assign()[hover()!.spawn.id]) : "#888" }}>
-              {assign()[hover()!.spawn.id] ?? (paths()[hover()!.spawn.id] ? "walks a route" : "unassigned or static")}
+            <div style={{ color: assign()[hover()!.spawn.id]?.length ? cssOf(assign()[hover()!.spawn.id][0]) : "#888" }}>
+              {/* "or", not "and": the server picks one of them each time the mob spawns. */}
+              {assign()[hover()!.spawn.id]?.join(" or ")
+                ?? (paths()[hover()!.spawn.id] ? "walks a route" : "unassigned or static")}
             </div>
             <Show when={props.roam?.ranges[hover()!.spawn.id]}>
               <div class="text-slate-400">{props.roam!.ranges[hover()!.spawn.id][1]} roam points</div>

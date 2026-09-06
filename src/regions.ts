@@ -21,7 +21,11 @@ export interface Spawn {
   z: number;
   /** Raw `at:` as written, [x, y, z, rot?]. Absent once a region or a path took over placement. */
   at?: number[];
-  region?: string;
+  /**
+   * Regions the mob spawns and roams in. More than one means the server picks one at random on
+   * every spawn, which is what `region:` taking a list means in mobs.schema.json.
+   */
+  regions?: string[];
   /** Patrol route. The mob spawns on the first leg, so this replaces `at:` too. */
   path?: Vertex[];
   /** Whether the route closes back on itself. Absent means true, which is yaml's `circuit:`. */
@@ -72,7 +76,9 @@ export function parseMobsYaml(text: string): Spawn[] {
     y: s?.at?.[1] ?? 0,
     z: s?.at?.[2] ?? 0,
     at: Array.isArray(s?.at) ? s.at.map(Number) : undefined,
-    region: s?.region ? String(s.region) : undefined,
+    // A single name or a list of them. Stringifying a list would have produced "a,b", a region
+    // name that exists nowhere, and written that back out over the real placement.
+    regions: regionNames(s?.region),
     // `circuit:` closes back on itself, `path:` is walked out and back along the same legs.
     path: legsOf(s?.circuit ?? s?.path),
     loop: Array.isArray(s?.path) ? false : undefined,
@@ -98,6 +104,15 @@ function canonicalRing(ring: Ring): Ring {
     if (ax < bx || (ax === bx && az < bz)) start = i;
   }
   return [...ring.slice(start), ...ring.slice(0, start)];
+}
+
+/** `region:` is a name or a list of names; everything downstream wants the list form. */
+function regionNames(value: unknown): string[] | undefined {
+  if (Array.isArray(value)) {
+    const names = value.map(String).filter(Boolean);
+    return names.length ? names : undefined;
+  }
+  return value ? [String(value)] : undefined;
 }
 
 export function emitRegionsBlock(regions: RegionSet): string {
@@ -199,7 +214,7 @@ export function parsePastedZone(text: string): PastedZone {
 
 /** How a spawn is placed, as the editor holds it: a region, a route, or its own fixed point. */
 export interface Placement {
-  region?: string;
+  regions?: string[];
   patrol?: Patrol;
 }
 
@@ -219,7 +234,7 @@ export interface MergeResult extends ZoneState {
 export const placementsOf = (spawns: Spawn[]): Placements =>
   Object.fromEntries(spawns.map(s => [
     s.id,
-    s.region ? { region: s.region } : s.path ? { patrol: { legs: s.path, loop: s.loop } } : {},
+    s.regions?.length ? { regions: s.regions } : s.path ? { patrol: { legs: s.path, loop: s.loop } } : {},
   ]));
 
 // Compared through the canonical emitter rather than field by field, so a ring that was rotated or
@@ -320,7 +335,7 @@ ${emitRegionsBlock(regions)}` : "";
  */
 export function patchMobsYaml(
   text: string,
-  assign: Record<string, string>,
+  assign: Record<string, string[]>,
   positions: Record<string, number[]> = {},
   paths: Record<string, Patrol> = {},
 ): string {
@@ -335,9 +350,9 @@ export function patchMobsYaml(
 
   const flush = () => {
     if (id === null) return;
-    const region = assign[id];
-    const patrol = region ? undefined : paths[id];
-    const placed = !!region || !!patrol;
+    const named = assign[id] ?? [];
+    const patrol = named.length ? undefined : paths[id];
+    const placed = named.length > 0 || !!patrol;
 
     // Drop whatever placement the file had: the keys, plus the list items under `path:`.
     const keep: string[] = [];
@@ -358,8 +373,12 @@ export function patchMobsYaml(
 
     // Placement sits where `at:` sat, right after the template, which is how LSB writes it.
     const where = keep.findLastIndex(l => /^ {4}(template|script):/.test(l)) + 1;
-    if (region) {
-      keep.splice(where, 0, `    region: ${region}`);
+    if (named.length) {
+      // A list means the server picks one of them at random on every spawn. Written inline, the
+      // way mobs.yaml already writes short string lists such as `type:` and `immune_status:`,
+      // which is what tools/yaml/format.py leaves alone.
+      const value = named.length === 1 ? named[0] : `[${named.join(", ")}]`;
+      keep.splice(where, 0, `    region: ${value}`);
     } else if (patrol) {
       const key = patrol.loop === false ? "path" : "circuit";
       keep.splice(where, 0, `    ${key}:`, ...patrol.legs.map(v => `      - [${v.map(n => n.toFixed(3)).join(", ")}]`));
@@ -1014,7 +1033,13 @@ export function diffRegions(base: ZoneSide, head: ZoneSide): RegionsDiff {
   for (const [id, after] of headSpawns) {
     const before = baseSpawns.get(id);
     if (!before) diff.addedSpawns.push(id);
-    else if (before.region !== after.region) diff.moved.push({ id, name: after.name, from: before.region, to: after.region });
+    else {
+      const was = (before.regions ?? []).join(", ");
+      const now = (after.regions ?? []).join(", ");
+      if (was !== now) {
+        diff.moved.push({ id, name: after.name, from: was || undefined, to: now || undefined });
+      }
+    }
   }
   for (const id of baseSpawns.keys()) {
     if (!headSpawns.has(id)) diff.removedSpawns.push(id);
@@ -1032,10 +1057,13 @@ export interface Finding {
   spawnId?: string;
 }
 
-export function validate(regions: RegionSet, spawns: Spawn[], assign: Record<string, string>): Finding[] {
+export function validate(regions: RegionSet, spawns: Spawn[], assign: Record<string, string[]>): Finding[] {
   const findings: Finding[] = [];
   const counts: Record<string, number> = {};
-  for (const name of Object.values(assign)) counts[name] = (counts[name] ?? 0) + 1;
+  // A spawn naming several regions counts towards each: it can be in any of them.
+  for (const names of Object.values(assign)) {
+    for (const name of names) counts[name] = (counts[name] ?? 0) + 1;
+  }
 
   for (const [name, r] of Object.entries(regions)) {
     r.rings.forEach((ring, i) => {
@@ -1049,20 +1077,26 @@ export function validate(regions: RegionSet, spawns: Spawn[], assign: Record<str
     if (s.path && s.path.length < 2) {
       findings.push({ level: "error", spawnId: s.id, text: `${s.name} has a patrol route with ${s.path.length} legs` });
     }
-    if (s.path && assign[s.id]) {
+    const named = assign[s.id] ?? [];
+    if (s.path && named.length) {
       findings.push({ level: "error", spawnId: s.id, text: `${s.name} has both a region and a patrol route` });
     }
-    const name = assign[s.id];
-    if (!name) continue;
-    if (!regions[name]) {
+    if (!named.length) continue;
+
+    const undefined_ = named.filter(n => !regions[n]);
+    for (const name of undefined_) {
       findings.push({ level: "error", spawnId: s.id, region: name, text: `${s.name} points at undefined region ${name}` });
-      continue;
     }
+    if (undefined_.length) continue;
     if (!s.at) continue; // placed by its region now, nothing to check against
+
+    // With several, standing outside is only worth saying when it is outside all of them: the
+    // server picks one at random, so being inside any one of them is the mob doing as it is told.
+    const name = named.find(n => containsXZ(regions[n], s.x, s.z)) ?? named[0];
     const nearest = regionAt(regions, s.x, s.z, s.y);
-    if (!containsXZ(regions[name], s.x, s.z)) {
-      findings.push({ level: "info", spawnId: s.id, region: name, text: `${s.name} stands outside ${name}` });
-    } else if (nearest && nearest !== name) {
+    if (!named.some(n => containsXZ(regions[n], s.x, s.z))) {
+      findings.push({ level: "info", spawnId: s.id, region: name, text: `${s.name} stands outside ${named.join(", ")}` });
+    } else if (named.length === 1 && nearest && nearest !== name) {
       findings.push({ level: "warn", spawnId: s.id, region: name, text: `${s.name} is nearer ${nearest}'s floor` });
     }
   }

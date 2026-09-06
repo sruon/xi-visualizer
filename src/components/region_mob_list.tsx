@@ -4,8 +4,8 @@ import type { Patrol, Spawn } from "../regions";
 export type MobStatus = "region" | "route" | "fixed" | "nowhere";
 
 /** What places this mob, which is the whole question the editor exists to answer. */
-export function statusOf(spawn: Spawn, region: string | undefined, patrol: Patrol | undefined): MobStatus {
-  if (region) return "region";
+export function statusOf(spawn: Spawn, region: string[] | undefined, patrol: Patrol | undefined): MobStatus {
+  if (region?.length) return "region";
   if (patrol) return "route";
   return spawn.at ? "fixed" : "nowhere";
 }
@@ -20,7 +20,7 @@ const FILTERS: { key: MobStatus | "all"; label: string; }[] = [
 
 interface MobListProps {
   spawns: Spawn[];
-  assign: Record<string, string>;
+  assign: Record<string, string[]>;
   paths: Record<string, Patrol>;
   /** Roam sample counts by spawn id, so it is obvious which mobs there is anything to go on for. */
   samples: (id: string) => number;
@@ -30,7 +30,8 @@ interface MobListProps {
   onHover: (id: string | null) => void;
   onPin: (id: string) => void;
   onCentre: (spawn: Spawn) => void;
-  onAssign: (spawn: Spawn) => void;
+  /** add is true when shift was held: keep the regions it already has and name another. */
+  onAssign: (spawn: Spawn, add: boolean) => void;
   onMenu: (spawn: Spawn, x: number, y: number) => void;
   /** Narrows the list to a floor when one is picked, so the counts answer what is left on it. */
   visible: (spawn: Spawn) => boolean;
@@ -101,14 +102,18 @@ export default function MobList(props: MobListProps) {
 
   const colorFor = (s: Spawn) => {
     const where = statusOfSpawn(s);
-    if (where === "region") return props.colorOf(props.assign[s.id]);
+    if (where === "region") return props.colorOf(props.assign[s.id][0]);
     if (where === "route") return "#a78bfa";
     return where === "fixed" ? "#94a3b8" : "#f87171";
   };
 
   const label = (s: Spawn) => {
     const where = statusOfSpawn(s);
-    if (where === "region") return props.assign[s.id];
+    if (where === "region") {
+      const names = props.assign[s.id];
+      // The whole list will not fit the column, and the count is the part worth noticing.
+      return names.length > 1 ? `${names[0]} +${names.length - 1}` : names[0];
+    }
     if (where === "route") return `${props.paths[s.id].legs.length} legs`;
     return where === "fixed" ? "fixed point" : "nowhere";
   };
@@ -186,11 +191,11 @@ export default function MobList(props: MobListProps) {
                 >
                   {s.id}
                 </span>
-                <Show when={props.activeName && props.assign[s.id] !== props.activeName}>
+                <Show when={props.activeName && !props.assign[s.id]?.includes(props.activeName)}>
                   <button
                     class="px-1 leading-none text-slate-400 hover:text-white"
-                    title={`Assign to ${props.activeName}`}
-                    onClick={e => (e.stopPropagation(), props.onAssign(s))}
+                    title={`Assign to ${props.activeName}, shift to add it to the ones it already has`}
+                    onClick={e => (e.stopPropagation(), props.onAssign(s, e.shiftKey))}
                   >
                     +
                   </button>

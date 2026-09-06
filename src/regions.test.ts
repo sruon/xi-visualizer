@@ -156,14 +156,14 @@ slots:
       17186822: {} # Wild_Rabbit
 `;
 const positions = Object.fromEntries(parseMobsYaml(mobsYaml).filter(s => s.at).map(s => [s.id, s.at!]));
-const assigned = patchMobsYaml(mobsYaml, { "17186822": "f1_hall" }, positions);
+const assigned = patchMobsYaml(mobsYaml, { "17186822": ["f1_hall"] }, positions);
 // the placement key takes the line at: had, and the entry stays aligned to its widest key
 assert.match(assigned, /template: Wild_Rabbit\n {4}region: {3}f1_hall\n {4}level: {4}\[1, 1\]\n/, "region replaces the fixed spawn point");
 assert.ok(!assigned.includes("-317.406"), "at: removed once a region places it");
 assert.ok(!assigned.includes("stale_region"), "assignment dropped when no longer assigned");
 assert.ok(assigned.includes("templates:\n\n  Wild_Rabbit:"), "templates untouched");
 assert.ok(assigned.includes("slots:\n  - members:\n      17186822: {} # Wild_Rabbit\n"), "later sections untouched");
-assert.strictEqual(patchMobsYaml(assigned, { "17186822": "f1_hall" }, positions), assigned, "patching is idempotent");
+assert.strictEqual(patchMobsYaml(assigned, { "17186822": ["f1_hall"] }, positions), assigned, "patching is idempotent");
 
 // unassigning puts the coordinates back exactly as they were
 assert.strictEqual(patchMobsYaml(assigned, {}, positions), mobsYaml.replace("    region:   stale_region\n", ""), "at: restored on unassign");
@@ -176,12 +176,31 @@ assert.deepStrictEqual(spawns[0], {
   y: 0,
   z: 0,
   at: undefined,
-  region: "f1_hall",
+  regions: ["f1_hall"],
   path: undefined,
   loop: undefined,
 });
 assert.deepStrictEqual(spawns[1].at, [1, 2, 3]);
-assert.strictEqual(spawns[1].region, undefined);
+assert.strictEqual(spawns[1].regions, undefined);
+
+// `region:` also takes a list, which mobs.schema.json calls a variant<string, vector<string>> and
+// documents as one being picked at random on every spawn. Stringifying that list produced the
+// region name "a,b", which exists nowhere, and wrote it back over the real placement.
+const pair = patchMobsYaml(mobsYaml, { "17186822": ["f1_hall", "f1_annex"] }, positions);
+assert.match(pair, /^ {4}region: {3}\[f1_hall, f1_annex\]$/m, "several regions are written inline");
+assert.strictEqual(
+  patchMobsYaml(pair, { "17186822": ["f1_hall", "f1_annex"] }, positions),
+  pair,
+  "patching a list is idempotent too",
+);
+
+const paired = parseMobsYaml(pair);
+assert.deepStrictEqual(paired[0].regions, ["f1_hall", "f1_annex"], "a list reads back as both names");
+assert.deepStrictEqual(
+  parseMobsYaml(patchMobsYaml(mobsYaml, { "17186822": ["only_one"] }, positions))[0].regions,
+  ["only_one"],
+  "one name is still written and read as a plain scalar",
+);
 
 // a route is `circuit:` when it closes and `path:` when it is walked out and back
 const legs: Vertex[] = [[0, -50, 0], [10, -50, 0], [10, -50, 10]];
@@ -312,15 +331,15 @@ assert.strictEqual(
 );
 assert.strictEqual(patchMobsYaml(patrolled, {}, positions), mobsYaml.replace("    region:   stale_region\n", ""), "dropping a route restores at:");
 assert.strictEqual(
-  patchMobsYaml(patrolled, { "17186822": "f1_hall" }, positions).match(/^ {4}(path|region):/gm)?.join(","),
+  patchMobsYaml(patrolled, { "17186822": ["f1_hall"] }, positions).match(/^ {4}(path|region):/gm)?.join(","),
   "    region:",
   "a region replaces a route, and only one placement survives",
 );
 
 const routeFindings = validate({}, [
   { id: "1", name: "Guard", x: 0, y: 0, z: 0, path: [[0, 0, 0]] },
-  { id: "2", name: "Patrol", x: 0, y: 0, z: 0, path: [[0, 0, 0], [1, 0, 1]], region: "somewhere" },
-], { "2": "somewhere" });
+  { id: "2", name: "Patrol", x: 0, y: 0, z: 0, path: [[0, 0, 0], [1, 0, 1]], regions: ["somewhere"] },
+], { "2": ["somewhere"] });
 assert.ok(routeFindings.some(f => f.text.includes("patrol route with 1 legs")), "a one-leg route is not a route");
 assert.ok(routeFindings.some(f => f.text.includes("both a region and a patrol route")), "two placements at once");
 
@@ -332,8 +351,8 @@ const before: ZoneSide = {
     gone: { rings: [[[50, -50, 50], [60, -50, 50], [60, -50, 60], [50, -50, 60]]] },
   },
   spawns: [
-    { id: "1", name: "Rabbit", x: 1, y: -50, z: 1, region: "kept" },
-    { id: "2", name: "Bat", x: 2, y: -50, z: 2, region: "gone" },
+    { id: "1", name: "Rabbit", x: 1, y: -50, z: 1, regions: ["kept"] },
+    { id: "2", name: "Bat", x: 2, y: -50, z: 2, regions: ["gone"] },
     { id: "3", name: "Worm", x: 3, y: -50, z: 3, at: [3, -50, 3] },
   ],
 };
@@ -344,9 +363,9 @@ const after: ZoneSide = {
     fresh: { rings: [[[70, -50, 70], [80, -50, 70], [80, -50, 80]]] },
   },
   spawns: [
-    { id: "1", name: "Rabbit", x: 1, y: -50, z: 1, region: "kept" },
-    { id: "2", name: "Bat", x: 2, y: -50, z: 2, region: "grown" },
-    { id: "3", name: "Worm", x: 3, y: -50, z: 3, region: "fresh" },
+    { id: "1", name: "Rabbit", x: 1, y: -50, z: 1, regions: ["kept"] },
+    { id: "2", name: "Bat", x: 2, y: -50, z: 2, regions: ["grown"] },
+    { id: "3", name: "Worm", x: 3, y: -50, z: 3, regions: ["fresh"] },
   ],
 };
 const delta = diffRegions(before, after);
@@ -401,7 +420,7 @@ const findings = validate(
     { id: "5", name: "Hare", x: 2, y: -50, z: 2, at: [2, -50, 2] },
     { id: "6", name: "Ghost", x: 0, y: 0, z: 0 },
   ],
-  { "1": "f1_hall", "2": "f1_hall", "3": "f1_hall", "4": "ghost_region" },
+  { "1": ["f1_hall"], "2": ["f1_hall"], "3": ["f1_hall"], "4": ["ghost_region"] },
 );
 const has = (t: string) => findings.some(f => f.text.includes(t));
 assert.ok(has("only 2 vertices"), "degenerate ring");
@@ -411,6 +430,29 @@ assert.ok(has("stands outside"), "assigned but outside");
 assert.ok(has("undefined region ghost_region"), "dangling reference");
 assert.ok(has("2 spawns on a fixed point"), "tally of the ones no region or route places");
 assert.ok(has("1 spawns have no position, region or route"), "spawn left with nowhere to go");
+
+// A mob that names several regions is in whichever one the server picks, so it counts towards
+// each of them and only stands "outside" when it is outside all of them.
+const shared = validate(
+  regions,
+  [
+    { id: "1", name: "Rabbit", x: 1, y: -49, z: 1, at: [1, -49, 1] },
+    { id: "2", name: "Bat", x: 99, y: -50, z: 99, at: [99, -50, 99] },
+  ],
+  { "1": ["f1_hall", "f2_hall"], "2": ["f1_hall", "f2_hall"] },
+);
+assert.ok(
+  !shared.some(f => f.text.includes("no spawns assigned")),
+  "both regions count the mob that names them, so neither reads as unused",
+);
+assert.ok(
+  !shared.some(f => f.spawnId === "1" && f.text.includes("stands outside")),
+  "inside one of them is not outside",
+);
+assert.ok(
+  shared.some(f => f.spawnId === "2" && f.text.includes("stands outside f1_hall, f2_hall")),
+  "outside all of them names all of them",
+);
 
 /** Two regions are the same shape when the canonical emitter cannot tell them apart. */
 const sameShape = (a: Region, b: Region) => emitRegionsBlock({ x: a }) === emitRegionsBlock({ x: b });
@@ -425,7 +467,7 @@ ${assigned}`;
 let back = parsePastedZone(copied);
 assert.deepStrictEqual(Object.keys(back.regions).sort(), ["f1_hall", "f2_hall"], "both regions came back");
 assert.strictEqual(back.spawns?.length, 2, "and the spawns with them");
-assert.strictEqual(back.spawns?.find(s => s.id === "17186822")?.region, "f1_hall", "including where each is placed");
+assert.strictEqual(back.spawns?.find(s => s.id === "17186822")?.regions?.[0], "f1_hall", "including where each is placed");
 
 // A regions.yaml on its own, with no header at all.
 back = parsePastedZone(patchRegionsYaml("", regions));
@@ -477,20 +519,20 @@ assert.deepStrictEqual(Object.keys(merged.regions), ["a"], "their deletion stand
 // Placement: two people assigning different mobs is not a disagreement.
 merged = mergeZone(
   state({}, { "1": {}, "2": {} }),
-  state({}, { "1": { region: "north" }, "2": {} }),
-  state({}, { "1": {}, "2": { region: "south" } }),
+  state({}, { "1": { regions: ["north"] }, "2": {} }),
+  state({}, { "1": {}, "2": { regions: ["south"] } }),
 );
 assert.deepStrictEqual(merged.conflicts, []);
-assert.deepStrictEqual(merged.placements, { "1": { region: "north" }, "2": { region: "south" } }, "both assignments kept");
+assert.deepStrictEqual(merged.placements, { "1": { regions: ["north"] }, "2": { regions: ["south"] } }, "both assignments kept");
 
 // The same mob sent to two different regions is.
 merged = mergeZone(
   state({}, { "1": {} }),
-  state({}, { "1": { region: "north" } }),
-  state({}, { "1": { region: "south" } }),
+  state({}, { "1": { regions: ["north"] } }),
+  state({}, { "1": { regions: ["south"] } }),
 );
 assert.deepStrictEqual(merged.conflicts, ["spawn 1"]);
-assert.deepStrictEqual(merged.placements["1"], { region: "south" }, "ours is kept so the editor still shows what it had");
+assert.deepStrictEqual(merged.placements["1"], { regions: ["south"] }, "ours is kept so the editor still shows what it had");
 
 // Both doing the same thing is agreement, not conflict.
 merged = mergeZone(state({ a: box(0) }), state({ a: box(9) }), state({ a: box(9) }));
@@ -498,11 +540,11 @@ assert.deepStrictEqual(merged.conflicts, []);
 
 // placementsOf reads all three ways a spawn can be placed
 const placed = placementsOf([
-  { id: "1", name: "a", x: 0, y: 0, z: 0, region: "north" },
+  { id: "1", name: "a", x: 0, y: 0, z: 0, regions: ["north"] },
   { id: "2", name: "b", x: 0, y: 0, z: 0, path: [[0, 0, 0], [1, 0, 1]], loop: false },
   { id: "3", name: "c", x: 1, y: 2, z: 3, at: [1, 2, 3] },
 ]);
-assert.deepStrictEqual(placed["1"], { region: "north" });
+assert.deepStrictEqual(placed["1"], { regions: ["north"] });
 assert.deepStrictEqual(placed["2"], { patrol: { legs: [[0, 0, 0], [1, 0, 1]], loop: false } });
 assert.deepStrictEqual(placed["3"], {}, "a fixed point is the absence of a placement, not a placement");
 
