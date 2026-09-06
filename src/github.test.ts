@@ -330,10 +330,10 @@ assert.deepStrictEqual(
 
 // --- the pull request title ---
 
-assert.strictEqual(prTitle([ZONE]), "[yaml] Roam regions for west_ronfaure");
-assert.strictEqual(prTitle(["a", "b", "c"]), "[yaml] Roam regions for a, b, c", "a few are worth naming");
-assert.strictEqual(prTitle(["a", "b", "c", "d"]), "[yaml] Roam regions for 4 zones", "more than a few are worth counting");
-assert.strictEqual(prTitle([]), "[yaml] Roam regions for several zones", "and nothing known is not an empty title");
+assert.strictEqual(prTitle([ZONE]), "Roam regions: west_ronfaure");
+assert.strictEqual(prTitle(["a", "b", "c"]), "Roam regions: a, b, c", "a few are worth naming");
+assert.strictEqual(prTitle(["a", "b", "c", "d"]), "Roam regions: 4 zones", "more than a few are worth counting");
+assert.strictEqual(prTitle([]), "Roam regions: several zones", "and nothing known is not an empty title");
 
 // --- the pull request body ---
 

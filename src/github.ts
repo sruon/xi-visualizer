@@ -191,7 +191,7 @@ export const compareUrl = (upstream: string, base: string, repo: string, branch:
  */
 export function prTitle(zones: string[]): string {
   const named = zones.length === 0 ? "several zones" : zones.length <= 3 ? zones.join(", ") : `${zones.length} zones`;
-  return `[yaml] Roam regions for ${named}`;
+  return `Roam regions: ${named}`;
 }
 
 /**
