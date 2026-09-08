@@ -94,7 +94,7 @@ fakeGitHub({
     ahead_by: 2,
     merge_base_commit: { sha: "cut-from" },
     commits: [
-      { commit: { message: "west_ronfaure: 1 region, 1 spawn placed" } },
+      { commit: { message: "west_ronfaure: 1 region, 1 spawn placed\n\nAdded: nw_1\nPlaced in nw_1: Orc 1" } },
       { commit: { message: "toraimarai_canal: 1 region, 0 spawns placed" } },
     ],
   },
@@ -106,7 +106,7 @@ assert.deepStrictEqual(await findSitting("t", FORK, UPSTREAM, "regions-master", 
     { zone: "toraimarai_canal", summary: "1 region, 0 spawns placed" },
     { zone: "west_ronfaure", summary: "1 region, 1 spawn placed" },
   ],
-}, "yesterday's unmerged branch continues, carrying what it already holds");
+}, "yesterday's unmerged branch continues, carrying what it already holds, the summary being the title alone");
 
 // Once it is merged it is no longer ahead, so the next save starts a new sitting.
 fakeGitHub({

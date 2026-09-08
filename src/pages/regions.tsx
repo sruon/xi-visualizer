@@ -6,7 +6,7 @@ import type { ZoneData } from "../components/zone_model";
 import zones from "../data/zones";
 import { compareUrl, deleteBranch, fillTemplate, findFork, findSitting, type ForkState, forkUrl, freeBranchName, grantedOn, installUrl, listRegionBranches, prTitle, save, type Sitting, whoAmI } from "../github";
 import { canSignIn, completeSignIn, isCallback, signOut, startSignIn as beginSignIn, storedToken } from "../github_auth";
-import { emitRegionsBlock, mergeZone, parseMobsYaml, parsePastedZone, parseRegionsYaml, patchMobsYaml, patchRegionsYaml, placementsOf, zoneOfMobId } from "../regions";
+import { commitMessage, emitRegionsBlock, mergeZone, parseMobsYaml, parsePastedZone, parseRegionsYaml, patchMobsYaml, patchRegionsYaml, placementsOf, zoneOfMobId } from "../regions";
 import type { Patrol, Placements, RegionSet, Spawn } from "../regions";
 import type { ZoneOnBranch } from "../github";
 import { decompress, fetchProgress } from "../util";
@@ -593,7 +593,9 @@ export default function RegionsPage() {
    * files as loaded would quietly revert their work: the diff would be against the newer tip, so it
    * would look clean. Both sides are structured, so most of it merges without anybody being asked.
    */
-  const reconcile = async (f: ZoneFiles) => {
+  const reconcile = async (
+    f: ZoneFiles,
+  ): Promise<{ regionsNow: string; mobsNow: string; merged?: ReturnType<typeof mergeZone>; theirSpawns?: Spawn[]; } | undefined> => {
     const at = (where: string, ref: string, name: string) =>
       fetch(`https://raw.githubusercontent.com/${where}/${ref}/${ZONES}/${f.folder}/${name}`).then(r => (r.ok ? r.text() : ""));
     const [regionsNow, mobsNow] = await Promise.all([at(repo(), ref(), "regions.yaml"), at(repo(), ref(), "mobs.yaml")]);
@@ -609,7 +611,7 @@ export default function RegionsPage() {
     // An ancestor we cannot read is no ancestor. Falling back to what was loaded is the old
     // behaviour, which is wrong in one direction; guessing at an empty one is wrong in every.
     if (!mobsWas) [regionsWas, mobsWas] = [f.regionsYaml, f.mobsYaml];
-    if (regionsNow === regionsWas && mobsNow === mobsWas) return undefined; // staging has not moved
+    if (regionsNow === regionsWas && mobsNow === mobsWas) return { regionsNow, mobsNow }; // staging has not moved
 
     const theirSpawns = parseMobsYaml(mobsNow);
     const merged = mergeZone(
@@ -636,25 +638,25 @@ export default function RegionsPage() {
 
     setStatus(`Committing ${f.folder}…`);
     try {
-      const moved = await reconcile(f);
-      if (moved) {
-        if (moved.merged.conflicts.length) {
+      const staged = await reconcile(f);
+      if (staged?.merged) {
+        if (staged.merged.conflicts.length) {
           setStatus(undefined);
           return setError(
             `${f.folder} changed on ${ref()} while you were editing, and ${
-              moved.merged.conflicts.join(", ")
+              staged.merged.conflicts.join(", ")
             } cannot be merged automatically. Reload the zone and redo that part.`,
           );
         }
         // Patch what is on the staging branch now, not what was loaded, so anything else that
         // arrived in these files while the zone was open survives.
-        const placements: Placements = moved.merged.placements;
+        const placements: Placements = staged.merged.placements;
         next = {
-          regionsYaml: patchRegionsYaml(moved.regionsNow, moved.merged.regions),
+          regionsYaml: patchRegionsYaml(staged.regionsNow, staged.merged.regions),
           mobsYaml: patchMobsYaml(
-            moved.mobsNow,
+            staged.mobsNow,
             Object.fromEntries(Object.entries(placements).filter(([, p]) => p.regions?.length).map(([id, p]) => [id, p.regions!])),
-            Object.fromEntries(moved.theirSpawns.filter(s => s.at).map(s => [s.id, s.at!])),
+            Object.fromEntries(staged.theirSpawns!.filter(s => s.at).map(s => [s.id, s.at!])),
             Object.fromEntries(Object.entries(placements).filter(([, p]) => p.patrol).map(([id, p]) => [id, p.patrol!])),
           ),
         };
@@ -666,9 +668,13 @@ export default function RegionsPage() {
         branch: branchName(),
         base: ref(),
         zone: f.folder,
-        message: `${f.folder}: ${count(Object.keys(pending!.regions).length, "region")}, ${
-          count(Object.keys(pending!.assign).length + Object.keys(pending!.paths).length, "spawn")
-        } placed`,
+        // Against what the commit's parent holds: the staging tip, or the files as loaded when
+        // the zone is not on staging yet.
+        message: commitMessage(
+          f.folder,
+          { regions: parseRegionsYaml(staged?.regionsNow ?? f.regionsYaml), spawns: parseMobsYaml(staged?.mobsNow ?? f.mobsYaml) },
+          { regions: parseRegionsYaml(next.regionsYaml), spawns: parseMobsYaml(next.mobsYaml) },
+        ),
         files: [
           { path: `${ZONES}/${f.folder}/regions.yaml`, content: next.regionsYaml },
           { path: `${ZONES}/${f.folder}/mobs.yaml`, content: next.mobsYaml },

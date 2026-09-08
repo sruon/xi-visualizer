@@ -1,6 +1,7 @@
 // node src/regions.test.ts
 import assert from "node:assert";
 import {
+  commitMessage,
   containsXZ,
   diffRegions,
   emitRegionsBlock,
@@ -395,6 +396,14 @@ const holed = diffRegions(
 );
 assert.strictEqual(holed.reshaped.length, 1, "a hole is a change");
 assert.strictEqual(holed.reshaped[0].fromVertices, holed.reshaped[0].toVertices, "and the outline is untouched");
+
+// The title says what was done; the names are underneath, where a reviewer can find them.
+const message = commitMessage("west_ronfaure", before, after);
+assert.strictEqual(message.split("\n")[0], "west_ronfaure: 1 region added, 1 region removed, 1 region reshaped, 2 spawns placed");
+assert.ok(message.includes("\n\nAdded: fresh\nRemoved: gone\nReshaped grown (area +100%)\nPlaced in grown: Bat 2 (was gone)\nPlaced in fresh: Worm 3"), message);
+assert.strictEqual(commitMessage("z", before, before), "z: regions updated", "nothing to say still gets a title");
+const walked = { ...before, spawns: before.spawns.map(s => (s.id === "3" ? { ...s, path: [[0, 0, 0], [5, 0, 5]] as Vertex[] } : s)) };
+assert.strictEqual(commitMessage("z", before, walked), "z: 1 patrol changed\n\nPatrols: Worm 3", "a route is a change too");
 assert.deepStrictEqual(
   [holed.reshaped[0].fromHoles, holed.reshaped[0].toHoles],
   [0, 1],

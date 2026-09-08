@@ -1048,6 +1048,52 @@ export function diffRegions(base: ZoneSide, head: ZoneSide): RegionsDiff {
   return diff;
 }
 
+/**
+ * The commit for a zone: a title that says what was done, and the changeset under it.
+ *
+ * The title used to count what the zone holds -- "3 regions, 42 spawns placed" -- which reads the
+ * same whether one vertex moved or the whole zone was redrawn. Reviewers read the title in a list
+ * of commits; the names go below, where whoever needs them can find them.
+ */
+export function commitMessage(zone: string, before: ZoneSide, after: ZoneSide): string {
+  const d = diffRegions(before, after);
+  const n = (count: number, thing: string) => `${count} ${thing}${count === 1 ? "" : "s"}`;
+
+  // Patrol changes are not a region diff, but they are what the commit did.
+  const was = new Map(before.spawns.map(s => [s.id, s]));
+  const routed = after.spawns.filter(s => {
+    const b = was.get(s.id);
+    return b && JSON.stringify([b.path, b.loop ?? false]) !== JSON.stringify([s.path, s.loop ?? false]);
+  });
+
+  const title: string[] = [];
+  if (d.added.length) title.push(`${n(d.added.length, "region")} added`);
+  if (d.removed.length) title.push(`${n(d.removed.length, "region")} removed`);
+  if (d.reshaped.length) title.push(`${n(d.reshaped.length, "region")} reshaped`);
+  if (d.moved.length) title.push(`${n(d.moved.length, "spawn")} placed`);
+  if (routed.length) title.push(`${n(routed.length, "patrol")} changed`);
+
+  const body: string[] = [];
+  if (d.added.length) body.push(`Added: ${d.added.join(", ")}`);
+  if (d.removed.length) body.push(`Removed: ${d.removed.join(", ")}`);
+  for (const c of d.reshaped) {
+    const notes: string[] = [];
+    if (c.fromVertices !== c.toVertices) notes.push(`${c.fromVertices} -> ${c.toVertices} vertices`);
+    if (Math.abs(c.areaRatio - 1) > 0.005) notes.push(`area ${c.areaRatio >= 1 ? "+" : ""}${((c.areaRatio - 1) * 100).toFixed(0)}%`);
+    if (c.toHoles !== c.fromHoles) notes.push(`${c.fromHoles} -> ${c.toHoles} holes`);
+    body.push(`Reshaped ${c.name}${notes.length ? ` (${notes.join(", ")})` : ""}`);
+  }
+  const into = new Map<string, string[]>();
+  for (const m of d.moved) {
+    const key = m.to ?? "no region";
+    into.set(key, [...(into.get(key) ?? []), `${m.name} ${m.id}${m.from ? ` (was ${m.from})` : ""}`]);
+  }
+  for (const [to, who] of into) body.push(`Placed in ${to}: ${who.join(", ")}`);
+  if (routed.length) body.push(`Patrols: ${routed.map(s => `${s.name} ${s.id}`).join(", ")}`);
+
+  return `${zone}: ${title.join(", ") || "regions updated"}${body.length ? `\n\n${body.join("\n")}` : ""}`;
+}
+
 // --- review ---
 
 export interface Finding {

@@ -226,9 +226,12 @@ export interface ZoneOnBranch {
   summary: string;
 }
 
-/** Commit messages are written `<zone>: <summary>`, which is the only place a summary survives for
- * zones committed in an earlier save. */
-const summaryOf = (message: string) => message.slice(message.indexOf(":") + 1).trim();
+/** Commit titles are written `<zone>: <summary>`, which is the only place a summary survives for
+ * zones committed in an earlier save. The body under it is the changeset, not the summary. */
+const summaryOf = (message: string) => {
+  const title = message.split("\n")[0];
+  return title.slice(title.indexOf(":") + 1).trim();
+};
 
 export interface SaveResult {
   /** The commit, absent when the files already matched the branch. */
