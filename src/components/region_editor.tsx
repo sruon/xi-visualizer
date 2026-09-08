@@ -620,6 +620,18 @@ export default function RegionEditor(props: RegionEditorProps) {
     setActiveName(name);
   };
 
+  // Walks the list one region at a time without touching the view angle, holding that region's
+  // first mob so its dot and trail are on screen. For sweeping a zone from a low angle for a
+  // vertex that landed on a wall, which is invisible from straight above.
+  const stepRegion = (dir: 1 | -1) => {
+    const list = regions().filter(onRegionFloor);
+    if (!list.length) return;
+    const i = list.findIndex(r => r.name === activeName());
+    const next = list[(i + dir + list.length) % list.length];
+    centerOn(next.name);
+    setPinnedId(props.spawns.find(s => assign()[s.id]?.includes(next.name))?.id ?? null);
+  };
+
   const members = createMemo(() => {
     const name = activeName();
     if (!name) return [];
@@ -1589,6 +1601,10 @@ const CELL = 12;
         if (key === "z" && !ev.shiftKey) return (ev.preventDefault(), undo());
         if (key === "y" || (key === "z" && ev.shiftKey)) return (ev.preventDefault(), redo());
         return;
+      }
+      if ((ev.key === "PageDown" || ev.key === "PageUp") && mode() !== "draw") {
+        ev.preventDefault();
+        return stepRegion(ev.key === "PageDown" ? 1 : -1);
       }
       if (ev.key !== "Escape" && ev.key !== "Enter") return;
       if (mode() !== "draw") {

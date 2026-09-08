@@ -37,6 +37,7 @@ const SHORTCUTS: { title: string; keys: [string, string][]; }[] = [
     keys: [
       ["alt+click", "copy !pos x y z"],
       ["drag", "pan · right-drag rotates · wheel zooms"],
+      ["pgdn / pgup", "next / previous region, keeping the view angle, with its first mob held"],
       ["ctrl+z", "undo · ctrl+shift+z redoes"],
     ],
   },
