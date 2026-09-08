@@ -4,6 +4,7 @@ import RegionDiffViewer, { STATUS_COLOR } from "../components/region_diff_viewer
 import zones from "../data/zones";
 import { diffRegions, parseMobsYaml, parseRegionsYaml, zoneOfMobId } from "../regions";
 import type { RegionsDiff, ZoneSide } from "../regions";
+import { loadRoam, trailOf } from "../roam";
 import { loadZoneMesh } from "../zone_mesh";
 
 const DEFAULT_REPO = "sruon/server";
@@ -126,6 +127,18 @@ export default function RegionsDiffPage() {
     return first ? zoneOfMobId(first.id) : undefined;
   };
   const [mesh] = createResource(zoneId, id => loadZoneMesh(id, setStatus));
+  const [roam] = createResource(zoneId, loadRoam);
+
+  // Where the mob being looked at was actually seen going, or every mob a picked region places.
+  // A move that reads as too far on the map is a question the trail answers at once.
+  const trail = () => {
+    const data = roam(), want = focus(), sides = pair();
+    if (!data || !want || !sides) return undefined;
+    const ids = want.spawn
+      ? [want.spawn]
+      : sides[sides.diff.removed.includes(want.name!) ? "base" : "head"].spawns.filter(s => s.regions?.includes(want.name!)).map(s => s.id);
+    return trailOf(data, ids);
+  };
 
   const total = (d: RegionsDiff) => d.added.length + d.removed.length + d.reshaped.length + d.moved.length;
   const swatch = (kind: keyof typeof STATUS_COLOR) => `#${STATUS_COLOR[kind].toString(16)}`;
@@ -199,6 +212,9 @@ export default function RegionsDiffPage() {
         <Show when={status()}>
           <span class="text-slate-400">{status()}</span>
         </Show>
+        <Show when={zoneId()}>
+          <span class="text-slate-500">{roam.error ? "no roam data for this zone" : roam.loading ? "loading roam data…" : ""}</span>
+        </Show>
         <Show when={error()}>
           <span class="text-red-500">{error()}</span>
         </Show>
@@ -245,6 +261,7 @@ export default function RegionsDiffPage() {
               head={pair()!.head}
               diff={pair()!.diff}
               focus={focus()}
+              trail={trail()}
               onPick={name => setFocus({ name })}
             />
             {/* What a maintainer wants off a glance is not the geometry, it is the blast radius:
@@ -321,6 +338,9 @@ export default function RegionsDiffPage() {
                     <span class="text-slate-400"> → </span>
                     <span style={{ color: swatch("added") }}>{found().to ?? "no region"}</span>
                   </div>
+                  <Show when={roam() && !roam()!.ranges[found().id]}>
+                    <div class="text-slate-500">no roam trail recorded for it</div>
+                  </Show>
                 </div>
               )}
             </Show>

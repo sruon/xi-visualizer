@@ -31,6 +31,8 @@ interface DiffViewerProps {
   /** What to go and look at: a region by name, or one spawn by id. Set it again with a new object
    * to re-trigger, since asking for the same thing twice is a thing people do. */
   focus?: { name?: string; spawn?: string; };
+  /** Recorded roam points, xyz flat, of whatever is in focus. */
+  trail?: Float32Array;
   /** Clicking a label on the map is the same act as clicking its row in the list. */
   onPick?: (name: string) => void;
 }
@@ -57,9 +59,11 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
 
   createMemo(() => {
     const prep = prepareMeshData(props.zoneData.mesh);
-    const mesh = createZoneMesh(props.zoneData.id, props.zoneData.mesh, prep, ColorKind.None);
+    // Coloured by material as the editor does: the mesh is unlit, so one flat grey has no walls,
+    // no water and no floor in it, and a region on the map might as well be on a blank page.
+    const mesh = createZoneMesh(props.zoneData.id, props.zoneData.mesh, prep, ColorKind.Materials);
     (mesh.geometry.getAttribute("color") as THREE.BufferAttribute).normalized = true;
-    (mesh.material as THREE.MeshBasicMaterial).color.setScalar(0.35); // quiet backdrop for the diff
+    (mesh.material as THREE.MeshBasicMaterial).color.setScalar(0.5); // quiet backdrop for the diff
     scene().add(mesh);
     scene().add(overlay);
     onCleanup(() => {
@@ -257,6 +261,30 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
       return texture;
     };
   })();
+
+  // The trail arrives on its own clock, after the focus and once the zone's roam file is down.
+  const trailDots = new THREE.Group();
+  trailDots.renderOrder = 5;
+  createEffect(() => scene().add(trailDots));
+  onCleanup(() => cleanupNode(trailDots));
+  const trailMaterial = new THREE.PointsMaterial({
+    color: 0x59f2ff,
+    size: 4,
+    sizeAttenuation: false,
+    depthTest: false,
+    map: roundDot(),
+    transparent: true,
+    opacity: 0.7,
+  });
+  onCleanup(() => trailMaterial.dispose());
+  createEffect(() => {
+    for (const old of trailDots.children as THREE.Points[]) old.geometry.dispose();
+    trailDots.clear();
+    if (!props.trail?.length) return;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(props.trail, 3));
+    trailDots.add(new THREE.Points(geo, trailMaterial));
+  });
 
   const pin = (at: THREE.Vector3, colour: number) => {
     const group = new THREE.Group();

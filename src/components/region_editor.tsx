@@ -8,7 +8,7 @@ import { setupBaseScene } from "../graphics/scene";
 import { cleanupNode } from "../graphics/util";
 import { createViewer } from "../graphics/viewer";
 import { ColorKind, colorMesh, createZoneMesh, mapIdPerVertex, prepareMeshData } from "../graphics/ximesh";
-import type { RoamData } from "../pages/regions";
+import type { RoamData } from "../roam";
 import { containsXZ, regionAt, regionHue, regionsFromPoints, repairRegion, routeFromTrail, selfIntersects, simplifyRing, validate } from "../regions";
 import type { Finding, Patrol, Region, RegionSet, Spawn, TrailPoint, Vertex } from "../regions";
 import MobList from "./region_mob_list";

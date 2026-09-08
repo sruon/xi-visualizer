@@ -12,16 +12,7 @@ import type { ZoneOnBranch } from "../github";
 import { decompress, fetchProgress } from "../util";
 // The wording of a pull request is prose, so it lives in a file that can be edited as prose.
 import prTemplate from "../pr_template.md?raw";
-
-const PATHDATA = import.meta.env.VITE_PATHDATA_URL || `${import.meta.env.BASE_URL}/pathdata_gz`;
-
-/** Flattened roam trails: one buffer for the whole zone, plus where each mob's points live in it. */
-export interface RoamData {
-  positions: Float32Array;
-  times: Float64Array;
-  ranges: Record<string, [number, number]>;
-  count: number;
-}
+import { loadRoam } from "../roam";
 
 // data/zones/<zone>/{regions.yaml,mobs.yaml} straight out of the LSB checkout.
 interface ZoneFiles {
@@ -148,34 +139,62 @@ export default function RegionsPage() {
    * staging after a commit shows the zone as it was before, which looks like the work vanished.
    */
   const [sitting, setSitting] = createSignal<Sitting | undefined>();
-  /** Set by naming a branch by hand, or by starting a new one. Beats whatever is sitting. */
-  const [branchChosen, setBranchChosen] = createSignal<string | undefined>();
-  const branchName = () => branchChosen() ?? sitting()?.branch ?? branchForToday();
-
-  /** findSitting only looks under regions/, so a branch named outside it would never be found again. */
-  const asBranch = (raw: string) => {
-    const tail = raw.replace(/^regions\//, "").trim().replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
-    return tail ? `regions/${tail}` : branchForToday();
-  };
-
-  /**
-   * Leaves the current branch where it is, with whatever pull request it has, and points the next
-   * save at a fresh one. Reset is the other half of this pair and throws the branch away instead.
-   */
-  const startNewBranch = async () => {
-    const where = fork();
-    if (where?.state !== "ready") return;
-    setStatus("Naming a new branch…");
-    try {
-      const taken = await listRegionBranches(authToken(), where.repo);
-      setBranchChosen(freeBranchName(taken, branchForToday()));
-      setSitting(undefined);
-      setPushed(false);
-      setStatus(`Next save starts ${branchName()}`);
-    } catch (e) {
-      setStatus(undefined);
-      setError(`${e}`);
-    }
+  /** Set by naming a branch by hand, or by starting a new one. Beats whatever is sitting. */
+
+  const [branchChosen, setBranchChosen] = createSignal<string | undefined>();
+
+  const branchName = () => branchChosen() ?? sitting()?.branch ?? branchForToday();
+
+
+
+  /** findSitting only looks under regions/, so a branch named outside it would never be found again. */
+
+  const asBranch = (raw: string) => {
+
+    const tail = raw.replace(/^regions\//, "").trim().replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+
+    return tail ? `regions/${tail}` : branchForToday();
+
+  };
+
+
+
+  /**
+
+   * Leaves the current branch where it is, with whatever pull request it has, and points the next
+
+   * save at a fresh one. Reset is the other half of this pair and throws the branch away instead.
+
+   */
+
+  const startNewBranch = async () => {
+
+    const where = fork();
+
+    if (where?.state !== "ready") return;
+
+    setStatus("Naming a new branch…");
+
+    try {
+
+      const taken = await listRegionBranches(authToken(), where.repo);
+
+      setBranchChosen(freeBranchName(taken, branchForToday()));
+
+      setSitting(undefined);
+
+      setPushed(false);
+
+      setStatus(`Next save starts ${branchName()}`);
+
+    } catch (e) {
+
+      setStatus(undefined);
+
+      setError(`${e}`);
+
+    }
+
   };
   /** The zones sitting on the working branch, so the pull request can name what it actually holds. */
   const branchZones = () => sitting()?.zones ?? [];
@@ -715,34 +734,7 @@ export default function RegionsPage() {
 
   // On by default; a zone's trails are a few MB, so unticking it also stops the fetch.
   const [showRoam, setShowRoam] = createSignal(true);
-  const [roam] = createResource(() => (showRoam() ? zoneId() : undefined), async (id): Promise<RoamData> => {
-    // '#' is kept: the roam files are named for the zone, so Riverne is Riverne_-_Site_#A01.
-    const file = zones[id].name
-      .replaceAll(" - ", "_-_")
-      .replaceAll(" ", "_")
-      .replaceAll("'", "_");
-    const compressed = await fetchProgress(`${PATHDATA}/${encodeURIComponent(file)}.json.gz`, () => {});
-    const data = JSON.parse(new TextDecoder().decode(await decompress(compressed, "gzip")));
-
-    let count = 0;
-    for (const mob of Object.values<any>(data)) count += mob.points.length;
-    const positions = new Float32Array(count * 3);
-    // Capture time, kept because the samples are not evenly spaced: minutes can pass between two of
-    // them, and a route must not draw a leg through a stretch where nobody was watching the mob.
-    const times = new Float64Array(count);
-    const ranges: Record<string, [number, number]> = {};
-    let o = 0;
-    for (const [mobId, mob] of Object.entries<any>(data)) {
-      ranges[mobId] = [o / 3, mob.points.length];
-      for (const p of mob.points) {
-        times[o / 3] = p.t ?? 0;
-        positions[o++] = p.x;
-        positions[o++] = p.y;
-        positions[o++] = p.z;
-      }
-    }
-    return { positions, times, ranges, count };
-  });
+  const [roam] = createResource(() => (showRoam() ? zoneId() : undefined), loadRoam);
 
   const [zoneMesh] = createResource(zoneId, async id => {
     const zone = zones[id];
