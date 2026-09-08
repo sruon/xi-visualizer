@@ -26,7 +26,7 @@ const SHORTCUTS: { title: string; keys: [string, string][]; }[] = [
     title: "Spawns",
     keys: [
       ["click", "a spawn dot to assign it to the selected region"],
-      ["shift+click", "a dot or a row's + to add the region to the ones it already has"],
+      ["shift+click", "a dot, or + in the Mobs panel on the left, to add the region to the ones it already has"],
       ["drag", "a spawn dot into a polygon to assign it there"],
       ["hover", "a dot or a list row to show its roam trail"],
       ["right-click", "a mob to replay its trail and see which way it walks"],
