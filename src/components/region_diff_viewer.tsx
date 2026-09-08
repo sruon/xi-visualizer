@@ -91,7 +91,9 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
     dashed = false,
     /** Rings not in this set are drawn in `only` instead: they exist on one side and not the other. */
     shared?: { keys: Set<string>; only: number; },
+    into: THREE.Group = overlay,
   ) => {
+    const made: THREE.Material[] = [];
     for (const ring of region.rings) {
       if (ring.length < 2) continue;
       // A region can change by nothing but a hole appearing in it, and a hole drawn in the same
@@ -105,10 +107,12 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
         geo.setPositions(points);
         const mat = new LineMaterial({ color: colour, linewidth: 3, depthTest: false, transparent: true, opacity });
         mat.resolution.set(canvasElement.clientWidth, canvasElement.clientHeight);
+        mat.userData.marker = into !== overlay;
         lineMaterials.push(mat);
+        made.push(mat);
         const line = new Line2(geo, mat);
         line.renderOrder = 3;
-        overlay.add(line);
+        into.add(line);
       } else {
         const points = ring.map(([x, y, z]) => new THREE.Vector3(x, y, z));
         const geo = new THREE.BufferGeometry().setFromPoints([...points, points[0].clone()]);
@@ -120,13 +124,15 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
         );
         if (dashed) line.computeLineDistances();
         line.renderOrder = 2;
-        overlay.add(line);
+        made.push(line.material as THREE.Material);
+        into.add(line);
       }
     }
+    return made;
   };
 
-  const fill = (region: Region, color: number, opacity: number) => {
-    if ((region.rings[0]?.length ?? 0) < 3) return;
+  const fill = (region: Region, color: number, opacity: number, into: THREE.Group = overlay) => {
+    if ((region.rings[0]?.length ?? 0) < 3) return undefined;
     const flat = [region.rings[0], ...region.rings.slice(1).filter(h => h.length >= 3)];
     const faces = THREE.ShapeUtils.triangulateShape(
       flat[0].map(([x, , z]) => new THREE.Vector2(x, -z)),
@@ -137,7 +143,8 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
     geo.setIndex(faces.flat());
     const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity, side: THREE.DoubleSide, depthTest: false }));
     mesh.renderOrder = 1;
-    overlay.add(mesh);
+    into.add(mesh);
+    return mesh.material;
   };
 
   createEffect(() => {
@@ -205,9 +212,14 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
   let walking: {
     /** One dot per pair of ends: a mob given several regions is going to each of them. */
     legs: { from: THREE.Vector3; to: THREE.Vector3; dot: THREE.Object3D; }[];
-    leaving: THREE.Material[];
+    /** The regions it left and the ones it was given, each material with the opacity it peaks at. */
+    leaving: Faded[];
+    arriving: Faded[];
     elapsed: number;
   } | null = null;
+  type Faded = { material: THREE.Material; peak: number; };
+  const faded = (materials: (THREE.Material | undefined)[]): Faded[] =>
+    materials.flatMap(m => (m ? [{ material: m, peak: (m as THREE.Material & { opacity: number; }).opacity }] : []));
   // What rides above each dot: who it is and which way this leg goes. The dot alone said a move
   // happened; with several legs, or several mobs in a row, it did not say whose or to where.
   const [legLabels, setLegLabels] = createSignal<string[]>([]);
@@ -314,6 +326,7 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
     walking = null;
     setLegLabels([]);
     while (marker.children.length) cleanupNode(marker.children.pop()!);
+    for (let i = lineMaterials.length; i--;) if (lineMaterials[i].userData.marker) lineMaterials.splice(i, 1);
     if (!want || !controls) return;
 
     // Scene coordinates are flipped on the scale, so points go in negated on y and z.
@@ -327,18 +340,20 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
       const tos = standsAt(props.head, want.spawn, move?.to);
       if (!froms.length && !tos.length) return;
 
-      const leaving: THREE.Material[] = [];
+      // Both ends drawn heavy, outline and fill, and handed to the frame loop to cross-fade: the
+      // region it left is loud while the dot sets off and gone by the time it arrives, when the
+      // one it was given is at full strength.
+      const leaving: Faded[] = [];
+      const arriving: Faded[] = [];
       for (const name of namesIn(move?.from)) {
-        const ring = props.base.regions[name]?.rings[0];
-        if (!ring?.length) continue;
-        const line = ringLine(ring, STATUS_COLOR.removed);
-        (line.material as THREE.Material).transparent = true;
-        leaving.push(line.material as THREE.Material);
-        marker.add(line);
+        const region = props.base.regions[name];
+        if (!region?.rings[0]?.length) continue;
+        leaving.push(...faded([...outline(region, STATUS_COLOR.removed, true, 1, false, undefined, marker), fill(region, STATUS_COLOR.removed, 0.35, marker)]));
       }
       for (const name of namesIn(move?.to)) {
-        const ring = props.head.regions[name]?.rings[0];
-        if (ring?.length) marker.add(ringLine(ring, STATUS_COLOR.added));
+        const region = props.head.regions[name];
+        if (!region?.rings[0]?.length) continue;
+        arriving.push(...faded([...outline(region, STATUS_COLOR.added, true, 1, false, undefined, marker), fill(region, STATUS_COLOR.added, 0.35, marker)]));
       }
       for (const { at } of froms) (marker.add(pin(at, STATUS_COLOR.removed)), box.expandByPoint(at));
       for (const { at } of tos) (marker.add(pin(at, STATUS_COLOR.added)), box.expandByPoint(at));
@@ -363,7 +378,7 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
         }
       }
       if (legs.length) {
-        walking = { legs, leaving, elapsed: 0 };
+        walking = { legs, leaving, arriving, elapsed: 0 };
         setLegLabels(labels);
       }
     } else if (want.name) {
@@ -407,8 +422,9 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
           // something at constant speed reads as a moving decoration.
           const eased = t * t * (3 - 2 * t);
           for (const leg of walking.legs) leg.dot.position.lerpVectors(leg.from, leg.to, eased);
-          // The region it left stays bright until it is most of the way there, then gives way.
-          for (const m of walking.leaving) (m as THREE.Material & { opacity: number; }).opacity = 1 - eased * 0.8;
+          // The region it left gives way as the dot goes; the one it was given takes over.
+          for (const { material, peak } of walking.leaving) (material as THREE.Material & { opacity: number; }).opacity = peak * (1 - eased * 0.9);
+          for (const { material, peak } of walking.arriving) (material as THREE.Material & { opacity: number; }).opacity = peak * (0.1 + eased * 0.9);
         }
         for (const m of lineMaterials) m.resolution.set(canvasElement.clientWidth, canvasElement.clientHeight);
       },
