@@ -357,16 +357,20 @@ export function patchMobsYaml(
     // Drop whatever placement the file had: the keys, plus the list items under `path:`.
     const keep: string[] = [];
     let inPath = false;
+    let hadPlacement = false;
     for (const line of body) {
       if (/^\s+(path|circuit):/.test(line)) {
-        inPath = true;
+        inPath = hadPlacement = true;
         continue;
       }
       if (inPath) {
         if (/^\s+-/.test(line)) continue;
         inPath = false;
       }
-      if (/^\s+region:/.test(line)) continue;
+      if (/^\s+region:/.test(line)) {
+        hadPlacement = true;
+        continue;
+      }
       if (placed && /^\s+at:/.test(line)) continue;
       keep.push(line);
     }
@@ -382,8 +386,12 @@ export function patchMobsYaml(
     } else if (patrol) {
       const key = patrol.loop === false ? "path" : "circuit";
       keep.splice(where, 0, `    ${key}:`, ...patrol.legs.map(v => `      - [${v.map(n => n.toFixed(3)).join(", ")}]`));
-    } else if (!keep.some(l => /^ {4}at:/.test(l)) && positions[id]) {
-      const at = positions[id].map((n, i) => (i < 3 ? n.toFixed(3) : String(n))).join(", ");
+    } else if (!keep.some(l => /^ {4}at:/.test(l)) && (positions[id] || hadPlacement)) {
+      // Its old spot if one is known. A mob the file only ever placed by region has none, and
+      // left with neither the server has nowhere to spawn it: a placeholder at the origin keeps
+      // it a valid entry, and stands out as the thing still to be placed. A mob the file never
+      // placed -- spawned by a script, say -- is left as it was.
+      const at = (positions[id] ?? [0, 0, 0.1]).map((n, i) => (i < 3 ? n.toFixed(3) : String(n))).join(", ");
       keep.splice(where, 0, `    at: [${at}]`);
     }
 

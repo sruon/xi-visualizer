@@ -215,6 +215,18 @@ assert.match(backAndForth, /^ {4}path:$/m, "an out-and-back route is a path");
 assert.strictEqual(parseMobsYaml(backAndForth)[0].loop, false);
 assert.strictEqual(patchMobsYaml(circuit, {}, positions, { "17186822": { legs } }), circuit, "routes patch idempotently");
 assert.strictEqual(patchMobsYaml(circuit, {}, positions), mobsYaml.replace("    region:   stale_region\n", ""), "dropping a route puts at: back");
+// A mob the file only ever placed by region has no spot to go back to. Left with neither the
+// server cannot spawn it, so it gets a placeholder that is obviously still to be placed.
+assert.match(
+  patchMobsYaml(assigned, {}, {}),
+  /^ {4}at: +\[0\.000, 0\.000, 0\.100\]$/m,
+  "unassigning with no known spot leaves a placeholder",
+);
+assert.doesNotMatch(
+  patchMobsYaml("spawns:\n  1:\n    template: Scripted\n    level: [1, 1]\n", {}, {}),
+  /at:/,
+  "a mob the file never placed is left alone",
+);
 assert.strictEqual(zoneOfMobId("17186822"), 100); // West Ronfaure
 
 // --- tracing a route out of a trail ---
