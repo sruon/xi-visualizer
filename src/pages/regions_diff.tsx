@@ -154,8 +154,10 @@ export default function RegionsDiffPage() {
   };
   const pickedChange = () => pair()?.diff.reshaped.find(c => c.name === picked());
   const pickedHeld = (side: "base" | "head") => pair()?.[side].spawns.filter(sp => sp.regions?.includes(picked()!)).length ?? 0;
-  const pickedIn = () => pair()?.diff.moved.filter(m => m.to === picked()) ?? [];
-  const pickedOut = () => pair()?.diff.moved.filter(m => m.from === picked()) ?? [];
+  // A move names its regions joined with ", ": a mob given several is in each of them.
+  const names = (joined?: string) => joined?.split(", ") ?? [];
+  const pickedIn = () => pair()?.diff.moved.filter(m => names(m.to).includes(picked()!)) ?? [];
+  const pickedOut = () => pair()?.diff.moved.filter(m => names(m.from).includes(picked()!)) ?? [];
   const pickedWentTo = () => [...new Set(pickedOut().map(m => m.to ?? "no region"))];
   const pickedVertices = () =>
     pair()?.[pickedKind() === "removed" ? "base" : "head"].regions[picked() ?? ""]?.rings[0]?.length ?? 0;

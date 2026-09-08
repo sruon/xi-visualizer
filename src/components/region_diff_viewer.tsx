@@ -1,4 +1,4 @@
-import { createEffect, createMemo, For, onCleanup, onMount, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import * as THREE from "three";
 import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from "three-mesh-bvh";
 import { Line2, LineGeometry, LineMaterial, MapControls } from "three/examples/jsm/Addons.js";
@@ -203,12 +203,15 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
    * left is held bright while it goes and fades once it has gone.
    */
   let walking: {
-    from: THREE.Vector3;
-    to: THREE.Vector3;
-    dot: THREE.Object3D;
+    /** One dot per pair of ends: a mob given several regions is going to each of them. */
+    legs: { from: THREE.Vector3; to: THREE.Vector3; dot: THREE.Object3D; }[];
     leaving: THREE.Material[];
     elapsed: number;
   } | null = null;
+  // What rides above each dot: who it is and which way this leg goes. The dot alone said a move
+  // happened; with several legs, or several mobs in a row, it did not say whose or to where.
+  const [legLabels, setLegLabels] = createSignal<string[]>([]);
+  const legRefs: HTMLDivElement[] = [];
 
   // Whatever is being looked at, drawn on top of everything so it is findable among the rest.
   const marker = new THREE.Group();
@@ -224,14 +227,22 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
    */
   const toWorld = (v: THREE.Vector3) => new THREE.Vector3(v.x, -v.y, -v.z);
 
-  /** Where a spawn actually stands on one side: its own point, or the middle of the region placing it. */
-  const standsAt = (side: ZoneSide, id: string, regionName?: string | null) => {
+  /** A move names its regions joined with ", ", the way the list reads them out. */
+  const namesIn = (joined?: string | null) => (joined ? joined.split(", ") : []);
+
+  /**
+   * Where a spawn actually stands on one side: its own point, or the middle of each region placing
+   * it. Several regions means the server picks one per spawn, so it stands in all of them.
+   */
+  const standsAt = (side: ZoneSide, id: string, regionNames?: string | null): { at: THREE.Vector3; name: string; }[] => {
     const spawn = side.spawns.find(sp => sp.id === id);
-    if (spawn?.at) return new THREE.Vector3(spawn.x, spawn.y, spawn.z);
-    const ring = regionName ? side.regions[regionName]?.rings[0] : undefined;
-    if (!ring?.length) return null;
-    const middle = ring.reduce((sum, [x, y, z]) => sum.add(new THREE.Vector3(x, y, z)), new THREE.Vector3());
-    return middle.divideScalar(ring.length);
+    if (spawn?.at) return [{ at: new THREE.Vector3(spawn.x, spawn.y, spawn.z), name: "its own spot" }];
+    return namesIn(regionNames).flatMap(name => {
+      const ring = side.regions[name]?.rings[0];
+      if (!ring?.length) return [];
+      const middle = ring.reduce((sum, [x, y, z]) => sum.add(new THREE.Vector3(x, y, z)), new THREE.Vector3());
+      return [{ at: middle.divideScalar(ring.length), name }];
+    });
   };
 
   const ringLine = (ring: readonly (readonly number[])[], colour: number) => {
@@ -301,6 +312,7 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
   createEffect(() => {
     const want = props.focus;
     walking = null;
+    setLegLabels([]);
     while (marker.children.length) cleanupNode(marker.children.pop()!);
     if (!want || !controls) return;
 
@@ -311,35 +323,48 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
       // A move has two ends and showing one of them explains nothing. A spawn placed by a region
       // has no point of its own -- the region replaced it -- so "where it is" means that region.
       const move = props.diff.moved.find(m => m.id === want.spawn);
-      const from = standsAt(props.base, want.spawn, move?.from);
-      const to = standsAt(props.head, want.spawn, move?.to);
-      if (!from && !to) return;
+      const froms = standsAt(props.base, want.spawn, move?.from);
+      const tos = standsAt(props.head, want.spawn, move?.to);
+      if (!froms.length && !tos.length) return;
 
-      const fromRing = move?.from ? props.base.regions[move.from]?.rings[0] : undefined;
-      const toRing = move?.to ? props.head.regions[move.to]?.rings[0] : undefined;
       const leaving: THREE.Material[] = [];
-      if (fromRing?.length) {
-        const line = ringLine(fromRing, STATUS_COLOR.removed);
+      for (const name of namesIn(move?.from)) {
+        const ring = props.base.regions[name]?.rings[0];
+        if (!ring?.length) continue;
+        const line = ringLine(ring, STATUS_COLOR.removed);
         (line.material as THREE.Material).transparent = true;
         leaving.push(line.material as THREE.Material);
         marker.add(line);
       }
-      if (toRing?.length) marker.add(ringLine(toRing, STATUS_COLOR.added));
-      if (from) (marker.add(pin(from, STATUS_COLOR.removed)), box.expandByPoint(from));
-      if (to) (marker.add(pin(to, STATUS_COLOR.added)), box.expandByPoint(to));
+      for (const name of namesIn(move?.to)) {
+        const ring = props.head.regions[name]?.rings[0];
+        if (ring?.length) marker.add(ringLine(ring, STATUS_COLOR.added));
+      }
+      for (const { at } of froms) (marker.add(pin(at, STATUS_COLOR.removed)), box.expandByPoint(at));
+      for (const { at } of tos) (marker.add(pin(at, STATUS_COLOR.added)), box.expandByPoint(at));
 
-      if (from && to) {
-        // The path it took, faint, so the route is there even between passes of the dot.
-        marker.add(new THREE.Line(
-          new THREE.BufferGeometry().setFromPoints([from.clone().setY(from.y + 20), to.clone().setY(to.y + 20)]),
-          new THREE.LineBasicMaterial({ color: 0xfff066, depthTest: false, transparent: true, opacity: 0.35 }),
-        ));
-        const dot = new THREE.Points(
-          new THREE.BufferGeometry().setFromPoints([new THREE.Vector3()]),
-          new THREE.PointsMaterial({ color: 0xfff066, size: 16, sizeAttenuation: false, depthTest: false, map: roundDot(), transparent: true }),
-        );
-        marker.add(dot);
-        walking = { from: from.clone().setY(from.y + 20), to: to.clone().setY(to.y + 20), dot, leaving, elapsed: 0 };
+      // A dot for every way it could have gone: one region to several is a dot to each of them.
+      const legs: NonNullable<typeof walking>["legs"] = [];
+      const labels: string[] = [];
+      for (const { at: from, name: fromName } of froms) {
+        for (const { at: to, name: toName } of tos) {
+          labels.push(`${move?.name ?? want.spawn} · ${fromName} → ${toName}`);
+          // The path it took, faint, so the route is there even between passes of the dot.
+          marker.add(new THREE.Line(
+            new THREE.BufferGeometry().setFromPoints([from.clone().setY(from.y + 20), to.clone().setY(to.y + 20)]),
+            new THREE.LineBasicMaterial({ color: 0xfff066, depthTest: false, transparent: true, opacity: 0.35 }),
+          ));
+          const dot = new THREE.Points(
+            new THREE.BufferGeometry().setFromPoints([new THREE.Vector3()]),
+            new THREE.PointsMaterial({ color: 0xfff066, size: 16, sizeAttenuation: false, depthTest: false, map: roundDot(), transparent: true }),
+          );
+          marker.add(dot);
+          legs.push({ from: from.clone().setY(from.y + 20), to: to.clone().setY(to.y + 20), dot });
+        }
+      }
+      if (legs.length) {
+        walking = { legs, leaving, elapsed: 0 };
+        setLegLabels(labels);
       }
     } else if (want.name) {
       const region = props.head.regions[want.name] ?? props.base.regions[want.name];
@@ -381,13 +406,23 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
           // Eased, because something that sets off and arrives reads as going somewhere, where
           // something at constant speed reads as a moving decoration.
           const eased = t * t * (3 - 2 * t);
-          walking.dot.position.lerpVectors(walking.from, walking.to, eased);
+          for (const leg of walking.legs) leg.dot.position.lerpVectors(leg.from, leg.to, eased);
           // The region it left stays bright until it is most of the way there, then gives way.
           for (const m of walking.leaving) (m as THREE.Material & { opacity: number; }).opacity = 1 - eased * 0.8;
         }
         for (const m of lineMaterials) m.resolution.set(canvasElement.clientWidth, canvasElement.clientHeight);
       },
       onAfterRender: () => {
+        // Each leg's label rides just above its dot, wherever the dot is this frame.
+        walking?.legs.forEach((leg, i) => {
+          const el = legRefs[i];
+          if (!el) return;
+          projected.copy(leg.dot.position).set(projected.x, -projected.y, -projected.z).project(camera());
+          el.style.display = projected.z < 1 ? "block" : "none";
+          el.style.transform = `translate(-50%, -100%) translate(${(projected.x * 0.5 + 0.5) * canvasElement.clientWidth}px, ${
+            (-projected.y * 0.5 + 0.5) * canvasElement.clientHeight - 12
+          }px)`;
+        });
         for (const [name, el] of labelRefs) {
           const ring = (props.head.regions[name] ?? props.base.regions[name])?.rings[0];
           if (!ring?.length) {
@@ -434,6 +469,16 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
               </div>
             );
           }}
+        </For>
+        <For each={legLabels()}>
+          {(text, i) => (
+            <div
+              ref={el => (legRefs[i()] = el)}
+              class="absolute top-0 left-0 hidden whitespace-nowrap text-xs px-1.5 py-0.5 rounded bg-slate-900/85 text-slate-100"
+            >
+              {text}
+            </div>
+          )}
         </For>
       </div>
       <div class="absolute top-2 left-2 flex gap-3 text-xs bg-slate-900/75 rounded px-2 py-1 pointer-events-none">
