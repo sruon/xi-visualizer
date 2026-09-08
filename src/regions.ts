@@ -1066,10 +1066,12 @@ export function commitMessage(zone: string, before: ZoneSide, after: ZoneSide): 
     return b && JSON.stringify([b.path, b.loop ?? false]) !== JSON.stringify([s.path, s.loop ?? false]);
   });
 
+  // Marks rather than words, as the diff page writes them: a title naming all three kinds of
+  // region change in full runs past what GitHub shows of a title.
   const title: string[] = [];
-  if (d.added.length) title.push(`${n(d.added.length, "region")} added`);
-  if (d.removed.length) title.push(`${n(d.removed.length, "region")} removed`);
-  if (d.reshaped.length) title.push(`${n(d.reshaped.length, "region")} reshaped`);
+  const marks = [[d.added.length, "+"], [d.removed.length, "-"], [d.reshaped.length, "~"]] as const;
+  const touched = marks.reduce((sum, [c]) => sum + c, 0);
+  if (touched) title.push(`${marks.filter(([c]) => c).map(([c, mark]) => `${mark}${c}`).join(" ")} region${touched === 1 ? "" : "s"}`);
   if (d.moved.length) title.push(`${n(d.moved.length, "spawn")} placed`);
   if (routed.length) title.push(`${n(routed.length, "patrol")} changed`);
 
