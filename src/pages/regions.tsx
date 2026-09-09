@@ -488,6 +488,22 @@ export default function RegionsPage() {
     return out && [{ name: "regions.yaml", text: out.regionsYaml }, { name: "mobs.yaml", text: out.mobsYaml }];
   });
 
+  /**
+   * Regions that cannot be written: an outline or a hole with fewer than three vertices is not a
+   * polygon, and one such was committed once. The review tab flags them, but a flag is advice
+   * and this is the one place it has to be a wall.
+   */
+  const degenerate = () =>
+    Object.entries(pending?.regions ?? {})
+      .filter(([, r]) => r.rings.some(ring => ring.length < 3))
+      .map(([name]) => name);
+  const refuseDegenerate = () => {
+    const names = degenerate();
+    if (!names.length) return (setError(undefined), false);
+    setError(`${names.join(", ")} ${names.length === 1 ? "has" : "have"} a ring with fewer than 3 vertices; fix or delete before saving`);
+    return true;
+  };
+
   const patched = () => {
     const f = files();
     if (!f || !pending) return undefined;
@@ -501,7 +517,7 @@ export default function RegionsPage() {
   const saveLocal = async () => {
     const f = files();
     const next = patched();
-    if (!f || !next) return;
+    if (!f || !next || refuseDegenerate()) return;
     setStatus(`Saving ${f.folder}…`);
     try {
       for (const [name, text] of [["regions.yaml", next.regionsYaml], ["mobs.yaml", next.mobsYaml]] as const) {
@@ -632,7 +648,7 @@ export default function RegionsPage() {
     const f = files();
     let next = patched();
     const where = fork();
-    if (!f || !next) return;
+    if (!f || !next || refuseDegenerate()) return;
     // Both dead ends are explained in the panel rather than in an error, since both are fixable.
     if (!authToken() || where?.state !== "ready") return setShowSignIn(true);
 
