@@ -57,6 +57,20 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
   const labelRefs = new Map<string, HTMLDivElement>();
   const lineMaterials: LineMaterial[] = [];
 
+  let zoneMesh: THREE.Mesh | undefined;
+  // Zone coordinates under the cursor, for reading a spot off the map and copying it.
+  const [cursor, setCursor] = createSignal<THREE.Vector3 | undefined>();
+  const [toast, setToast] = createSignal<string | undefined>();
+  const xyz = (p: THREE.Vector3) => [p.x, p.y, p.z].map(n => n.toFixed(3)).join(" ");
+  let toastTimer: ReturnType<typeof setTimeout> | undefined;
+  const copy = (text: string) => {
+    navigator.clipboard.writeText(text);
+    setToast(`copied ${text}`);
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => setToast(undefined), 2400);
+  };
+  onCleanup(() => clearTimeout(toastTimer));
+
   createMemo(() => {
     const prep = prepareMeshData(props.zoneData.mesh);
     // Coloured by material as the editor does: the mesh is unlit, so one flat grey has no walls,
@@ -64,11 +78,13 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
     const mesh = createZoneMesh(props.zoneData.id, props.zoneData.mesh, prep, ColorKind.Materials);
     (mesh.geometry.getAttribute("color") as THREE.BufferAttribute).normalized = true;
     (mesh.material as THREE.MeshBasicMaterial).color.setScalar(0.5); // quiet backdrop for the diff
+    zoneMesh = mesh;
     scene().add(mesh);
     scene().add(overlay);
     onCleanup(() => {
       scene().remove(mesh);
       cleanupNode(mesh);
+      if (zoneMesh === mesh) zoneMesh = undefined;
     });
   });
 
@@ -458,7 +474,35 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
     controls = viewer.controls;
     fitCameraToContents(camera(), controls, fn => overlay.children.forEach(fn));
 
-    onCleanup(() => viewer.dispose());
+    // Where the cursor meets terrain. Only a real mesh hit counts: empty space has no position.
+    const raycaster = new THREE.Raycaster();
+    raycaster.firstHitOnly = true;
+    const mouse = new THREE.Vector2();
+    const groundPoint = (ev: MouseEvent) => {
+      if (!zoneMesh) return undefined;
+      const rect = canvasElement.getBoundingClientRect();
+      mouse.set(((ev.clientX - rect.left) / rect.width) * 2 - 1, -((ev.clientY - rect.top) / rect.height) * 2 + 1);
+      raycaster.setFromCamera(mouse, camera());
+      const hit = raycaster.intersectObject(zoneMesh, true)[0];
+      return hit ? scene().worldToLocal(hit.point.clone()) : undefined;
+    };
+    const onMove = (ev: MouseEvent) => setCursor(groundPoint(ev));
+    const onLeave = () => setCursor(undefined);
+    const onClick = (ev: MouseEvent) => {
+      if (!ev.altKey) return;
+      const p = groundPoint(ev);
+      if (p) copy(`!pos ${xyz(p)}`);
+    };
+    canvasElement.addEventListener("mousemove", onMove);
+    canvasElement.addEventListener("mouseleave", onLeave);
+    canvasElement.addEventListener("click", onClick);
+
+    onCleanup(() => {
+      canvasElement.removeEventListener("mousemove", onMove);
+      canvasElement.removeEventListener("mouseleave", onLeave);
+      canvasElement.removeEventListener("click", onClick);
+      viewer.dispose();
+    });
   });
 
   // Only changed regions get a label; naming the unchanged ones would bury the ones that matter.
@@ -509,6 +553,18 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
           )}
         </For>
       </div>
+      <Show when={cursor()}>
+        <div
+          class="absolute bottom-2 left-2 font-mono text-xs text-slate-200 bg-slate-900/75 rounded px-2 py-1 cursor-pointer select-none"
+          title="Ground position under the cursor. Click to copy, or alt+click the map for !pos"
+          onClick={() => copy(xyz(cursor()!))}
+        >
+          {xyz(cursor()!)}
+        </div>
+      </Show>
+      <Show when={toast()}>
+        <div class="absolute bottom-2 right-2 text-xs text-slate-200 bg-slate-900/85 rounded px-2 py-1 pointer-events-none">{toast()}</div>
+      </Show>
     </div>
   );
 }
