@@ -122,6 +122,23 @@ export default function RegionsDiffPage() {
     },
   );
 
+  // Which zones of this comparison have been looked at, kept in the browser per branch, so a
+  // review that spans a sitting or two knows where it got to. A tick, not a verdict.
+  const reviewedKey = () => `reviewed:${headRepo()}:${query.head}`;
+  const [reviewed, setReviewed] = createSignal<string[]>([]);
+  createEffect(() => {
+    try {
+      setReviewed(JSON.parse(localStorage.getItem(reviewedKey()) ?? "[]"));
+    } catch {
+      setReviewed([]);
+    }
+  });
+  const toggleReviewed = (zone: string) => {
+    const next = reviewed().includes(zone) ? reviewed().filter(z => z !== zone) : [...reviewed(), zone];
+    setReviewed(next);
+    localStorage.setItem(reviewedKey(), JSON.stringify(next));
+  };
+
   const zoneId = () => {
     const first = pair()?.head.spawns[0] ?? pair()?.base.spawns[0];
     return first ? zoneOfMobId(first.id) : undefined;
@@ -230,19 +247,30 @@ export default function RegionsDiffPage() {
           <div class="w-60 shrink-0 flex flex-col bg-slate-800 rounded-lg p-2 overflow-y-auto text-sm">
             <div class="text-xs uppercase tracking-wide text-slate-500 px-1 pb-1">
               zones changed ({changed()!.length})
+              <Show when={reviewed().length}>
+                <span class="text-emerald-500"> · {changed()!.filter(z => reviewed().includes(z.zone)).length} reviewed</span>
+              </Show>
             </div>
             <For each={changed()}>
               {z => (
-                <button
-                  class="flex items-center gap-2 py-1 px-1 rounded text-left hover:bg-slate-700"
-                  classList={{ "bg-slate-700": query.zone === z.zone }}
+                <div
+                  class="flex items-center gap-2 py-1 px-1 rounded cursor-pointer hover:bg-slate-700"
+                  classList={{ "bg-slate-700": query.zone === z.zone, "text-slate-500": reviewed().includes(z.zone) }}
                   title={`${z.files} file${z.files === 1 ? "" : "s"} changed`}
                   onClick={() => setQuery({ zone: z.zone })}
                 >
+                  <input
+                    type="checkbox"
+                    class="shrink-0"
+                    checked={reviewed().includes(z.zone)}
+                    title="Mark as reviewed"
+                    onClick={e => e.stopPropagation()}
+                    onChange={() => toggleReviewed(z.zone)}
+                  />
                   <span class="flex-1 truncate">{z.zone}</span>
                   <span class="text-emerald-500 tabular-nums">+{z.additions}</span>
                   <span class="text-red-400 tabular-nums">−{z.deletions}</span>
-                </button>
+                </div>
               )}
             </For>
           </div>
