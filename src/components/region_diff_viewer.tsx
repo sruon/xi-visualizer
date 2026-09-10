@@ -189,7 +189,10 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
         outline(after, color, kind !== "unchanged", kind === "unchanged" ? 0.35 : 1);
         if (kind !== "unchanged") fill(after, color, 0.22);
       }
-      for (const child of overlay.children.slice(first)) child.userData.region = name;
+      for (const child of overlay.children.slice(first) as (THREE.Object3D & { material: THREE.Material & { color: THREE.Color; opacity: number; }; })[]) {
+        child.userData.region = name;
+        child.userData.look = { color: child.material.color.getHex(), opacity: child.material.opacity };
+      }
     }
     untrack(scope);
 
@@ -210,9 +213,8 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
   });
 
   /**
-   * With a region picked, only it is on screen: its before, its after, and the ground between
-   * them. The rest of the zone's regions are the thing being reviewed against, not the thing
-   * being reviewed, and a hundred outlines around one is noise. Escape brings them back.
+   * With a region or a move picked, everything else goes grey and faint: still there to be
+   * judged against, but not competing in colour with the thing being judged. Escape restores it.
    */
   /** A move names its regions joined with ", ", the way the list reads them out. */
   const namesIn = (joined?: string | null) => (joined ? joined.split(", ") : []);
@@ -226,10 +228,15 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
     }
     return undefined;
   };
+  const DIM = 0x64748b;
   const scope = () => {
     const keep = inScope();
-    for (const child of overlay.children) {
-      child.visible = !keep || !child.userData.region || keep.has(child.userData.region);
+    for (const child of overlay.children as (THREE.Object3D & { material: THREE.Material & { color: THREE.Color; opacity: number; }; })[]) {
+      const look = child.userData.look as { color: number; opacity: number; } | undefined;
+      if (!look) continue;
+      const dim = !!keep && !keep.has(child.userData.region);
+      child.material.color.setHex(dim ? DIM : look.color);
+      child.material.opacity = dim ? look.opacity * 0.4 : look.opacity;
     }
   };
   createEffect(scope);
@@ -470,7 +477,8 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
         const keep = inScope();
         for (const [name, el] of labelRefs) {
           const ring = (props.head.regions[name] ?? props.base.regions[name])?.rings[0];
-          if (!ring?.length || (keep && !keep.has(name))) {
+          el.style.opacity = keep && !keep.has(name) ? "0.35" : "";
+          if (!ring?.length) {
             el.style.display = "none";
             continue;
           }
