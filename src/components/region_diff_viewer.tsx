@@ -214,10 +214,22 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
    * them. The rest of the zone's regions are the thing being reviewed against, not the thing
    * being reviewed, and a hundred outlines around one is noise. Escape brings them back.
    */
+  /** A move names its regions joined with ", ", the way the list reads them out. */
+  const namesIn = (joined?: string | null) => (joined ? joined.split(", ") : []);
+
+  const inScope = (): Set<string> | undefined => {
+    const want = props.focus;
+    if (want?.name) return new Set([want.name]);
+    if (want?.spawn) {
+      const move = props.diff.moved.find(m => m.id === want.spawn);
+      return new Set([...namesIn(move?.from), ...namesIn(move?.to)]);
+    }
+    return undefined;
+  };
   const scope = () => {
-    const only = props.focus?.name;
+    const keep = inScope();
     for (const child of overlay.children) {
-      child.visible = !only || !child.userData.region || child.userData.region === only;
+      child.visible = !keep || !child.userData.region || keep.has(child.userData.region);
     }
   };
   createEffect(scope);
@@ -258,9 +270,6 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
    * the camera still goes to the right place, which is exactly how it looked.
    */
   const toWorld = (v: THREE.Vector3) => new THREE.Vector3(v.x, -v.y, -v.z);
-
-  /** A move names its regions joined with ", ", the way the list reads them out. */
-  const namesIn = (joined?: string | null) => (joined ? joined.split(", ") : []);
 
   /**
    * Where a spawn actually stands on one side: its own point, or the middle of each region placing
@@ -458,10 +467,10 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
             (-projected.y * 0.5 + 0.5) * canvasElement.clientHeight - 12
           }px)`;
         });
-        const only = props.focus?.name;
+        const keep = inScope();
         for (const [name, el] of labelRefs) {
           const ring = (props.head.regions[name] ?? props.base.regions[name])?.rings[0];
-          if (!ring?.length || (only && name !== only)) {
+          if (!ring?.length || (keep && !keep.has(name))) {
             el.style.display = "none";
             continue;
           }
