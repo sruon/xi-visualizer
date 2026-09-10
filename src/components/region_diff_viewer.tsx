@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, untrack } from "solid-js";
 import * as THREE from "three";
 import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from "three-mesh-bvh";
 import { Line2, LineGeometry, LineMaterial, MapControls } from "three/examples/jsm/Addons.js";
@@ -167,6 +167,8 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
       const color = STATUS_COLOR[kind];
       const before = props.base.regions[name];
       const after = props.head.regions[name];
+      // Everything drawn for this region is tagged with it, so picking one can hide the rest.
+      const first = overlay.children.length;
 
       if (kind === "removed" || kind === "reshaped") {
         // What the old file said, dashed in the region's own colour. It used to go red on a
@@ -187,7 +189,9 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
         outline(after, color, kind !== "unchanged", kind === "unchanged" ? 0.35 : 1);
         if (kind !== "unchanged") fill(after, color, 0.22);
       }
+      for (const child of overlay.children.slice(first)) child.userData.region = name;
     }
+    untrack(scope);
 
     // Spawns that changed region, at wherever the new file leaves them standing.
     const moved = props.diff.moved
@@ -204,6 +208,19 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
       overlay.add(points);
     }
   });
+
+  /**
+   * With a region picked, only it is on screen: its before, its after, and the ground between
+   * them. The rest of the zone's regions are the thing being reviewed against, not the thing
+   * being reviewed, and a hundred outlines around one is noise. Escape brings them back.
+   */
+  const scope = () => {
+    const only = props.focus?.name;
+    for (const child of overlay.children) {
+      child.visible = !only || !child.userData.region || child.userData.region === only;
+    }
+  };
+  createEffect(scope);
 
   /**
    * A move in progress: a dot walking from where the mob was to where it is now, on a loop.
@@ -441,9 +458,10 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
             (-projected.y * 0.5 + 0.5) * canvasElement.clientHeight - 12
           }px)`;
         });
+        const only = props.focus?.name;
         for (const [name, el] of labelRefs) {
           const ring = (props.head.regions[name] ?? props.base.regions[name])?.rings[0];
-          if (!ring?.length) {
+          if (!ring?.length || (only && name !== only)) {
             el.style.display = "none";
             continue;
           }

@@ -1,5 +1,5 @@
 import { useSearchParams } from "@solidjs/router";
-import { createEffect, createResource, createSignal, For, Show } from "solid-js";
+import { createEffect, createResource, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import RegionDiffViewer, { STATUS_COLOR } from "../components/region_diff_viewer";
 import zones from "../data/zones";
 import { diffRegions, parseMobsYaml, parseRegionsYaml, zoneOfMobId } from "../regions";
@@ -34,6 +34,14 @@ export default function RegionsDiffPage() {
   const [error, setError] = createSignal<string | undefined>();
   const [status, setStatus] = createSignal<string | undefined>();
   const [focus, setFocus] = createSignal<{ name?: string; spawn?: string; } | undefined>();
+  // Escape steps back out to the whole zone, from a region or a move.
+  onMount(() => {
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape" && (ev.target as HTMLElement)?.tagName !== "INPUT") setFocus(undefined);
+    };
+    window.addEventListener("keydown", onKey);
+    onCleanup(() => window.removeEventListener("keydown", onKey));
+  });
 
   // Branches to compare, and the zones each ref carries.
   const branchesIn = async (name: string) => {
