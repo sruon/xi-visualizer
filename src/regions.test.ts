@@ -15,6 +15,7 @@ import {
   patchRegionsYaml,
   regionArea,
   regionAt,
+  regionDifference,
   regionsFromPoints,
   repairRegion,
   routeFromTrail,
@@ -308,6 +309,15 @@ assert.strictEqual(repaired.length, 1, "one shape in, one shape out");
 assert.strictEqual(repaired[0].rings.length, 2, "the hole is still a hole");
 assert.ok(Math.abs(regionArea(repaired[0]) - regionArea(walled)) < 0.01, "and it still takes the same area out");
 assert.deepStrictEqual(repairRegion({ rings: [[[0, 0, 0], [1, 0, 1]]] }), [], "a line is not a shape");
+
+// What a reshape gave up and took in, as areas: a 20x20 square trimmed to 10x20 gave up half.
+const wide: Region = { rings: [[[0, -5, 0], [20, -5, 0], [20, -5, 20], [0, -5, 20]]] };
+const narrow: Region = { rings: [[[0, -5, 0], [10, -5, 0], [10, -5, 20], [0, -5, 20]]] };
+const givenUp = regionDifference(wide, narrow);
+assert.strictEqual(givenUp.length, 1, "one strip given up");
+assert.ok(Math.abs(regionArea(givenUp[0]) - 200) < 0.01, "and it is the right half");
+assert.ok(givenUp[0].rings[0].every(v => v[1] === -5), "at the region's height");
+assert.deepStrictEqual(regionDifference(narrow, wide), [], "nothing was taken in");
 
 // Visvalingam ranks the tip of an out-and-back as the most disposable point on the line, because the
 // triangle there is degenerate. Dropping it collapses the excursion, which is how a patrol traced

@@ -7,6 +7,7 @@ import { setupBaseScene } from "../graphics/scene";
 import { cleanupNode } from "../graphics/util";
 import { createViewer } from "../graphics/viewer";
 import { ColorKind, createZoneMesh, prepareMeshData } from "../graphics/ximesh";
+import { regionDifference } from "../regions";
 import type { Region, RegionsDiff, ZoneSide } from "../regions";
 import type { ZoneData } from "./zone_model";
 
@@ -187,7 +188,14 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
         if (before) {
           outline(before, color, false, 0.9, true, kind === "reshaped" ? { keys: afterKeys, only: STATUS_COLOR.removed } : undefined);
         }
-        if (before && kind === "removed") fill(before, color, 0.18);
+        if (before && kind === "removed") fill(before, color, 0.3);
+        // A reshape is what it gave up and what it took in, as ground rather than two outlines
+        // laid over each other: the strip cut off a region is what a reviewer is looking for,
+        // and a dashed line a few pixels from a solid one never said where it was.
+        if (before && after && kind === "reshaped") {
+          for (const lost of regionDifference(before, after)) fill(lost, STATUS_COLOR.removed, 0.45);
+          for (const gained of regionDifference(after, before)) fill(gained, STATUS_COLOR.added, 0.45);
+        }
       }
       if (after) {
         outline(
@@ -549,8 +557,8 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
           {([kind, color]) => (
             <span style={{ color: `#${color.toString(16)}` }}>
               {kind}
-              <Show when={kind === "removed" || kind === "reshaped"}>
-                <span class="text-slate-500">(dashed = before, green/red rings = a hole gained or lost)</span>
+              <Show when={kind === "reshaped"}>
+                <span class="text-slate-500">(dashed = before, red ground = cut away, green = taken in)</span>
               </Show>
             </span>
           )}

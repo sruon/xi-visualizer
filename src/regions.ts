@@ -916,13 +916,36 @@ export function regionsFromPoints(points: TrailPoint[], cell = 6, close = 2): Re
 export function repairRegion(r: Region): Region[] {
   const outline = r.rings[0] ?? [];
   if (outline.length < 3) return [];
-  const flat = (ring: Ring): Geom => [ring.map(v => [v[0], v[2]] as [number, number])];
-
   let shape = union(flat(outline));
   const holes = r.rings.slice(1).filter(hole => hole.length >= 3);
   if (holes.length) shape = difference(shape, ...holes.map(flat));
+  return regionsOf(shape, r.rings.flat());
+}
 
-  const known = r.rings.flat();
+/**
+ * The ground `a` covers that `b` does not, as regions of its own. Both ways round, this is what a
+ * reshape did: the area it gave up and the area it took in, which the two outlines drawn over
+ * each other only imply.
+ */
+export function regionDifference(a: Region, b: Region): Region[] {
+  if ((a.rings[0]?.length ?? 0) < 3) return [];
+  if ((b.rings[0]?.length ?? 0) < 3) return [a];
+  return regionsOf(difference(asGeom(a), asGeom(b)), [...a.rings.flat(), ...b.rings.flat()]);
+}
+
+const flat = (ring: Ring): Geom => [ring.map(v => [v[0], v[2]] as [number, number])];
+
+/** A region as the clipper sees it: its outline with its holes, flattened onto x/z. */
+function asGeom(r: Region): Geom {
+  const holes = r.rings.slice(1).filter(hole => hole.length >= 3);
+  return holes.length ? difference(flat(r.rings[0]), ...holes.map(flat)) : flat(r.rings[0]);
+}
+
+/**
+ * Clipper output back into regions. Heights come back from the nearest known vertex, since the
+ * corners the clipper invents where edges cross are new points that no sample ever stood on.
+ */
+function regionsOf(shape: Geom, known: Vertex[]): Region[] {
   const heightAt = (x: number, z: number) => {
     let best = known[0]?.[1] ?? 0;
     let nearest = Infinity;
@@ -932,8 +955,9 @@ export function repairRegion(r: Region): Region[] {
     }
     return best;
   };
-
-  return shape.map(polygon => ({
+  // A single polygon comes back as ring[], several as ring[][]; the clipper gives whichever fits.
+  const polygons = (typeof shape[0]?.[0]?.[0] === "number" ? [shape] : shape) as [number, number][][][];
+  return polygons.map(polygon => ({
     rings: polygon.map(ring => {
       // The clipper repeats the first vertex to close a ring; ours are closed by being rings.
       const open = ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]
