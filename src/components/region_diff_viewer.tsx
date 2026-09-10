@@ -399,15 +399,11 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
     // Close enough that it fills the view rather than merely being in it, keeping whatever angle
     // the camera was already at. Both ends of a move have to fit, however far apart they are.
     const centre = toWorld(box.getCenter(new THREE.Vector3()));
-    // Neighbouring regions can be a few yalms apart, and framing exactly that puts the camera on
-    // top of one spot with no ground around it to say where it is. A move needs its surroundings
-    // more than it needs to fill the frame.
-    // A region on its own is the thing being judged, so it fills the frame: a vertex on a wall
-    // is a metre wide and the whole point of looking.
-    const floor = want.spawn ? 70 : 12;
-    const margin = want.spawn ? 2.2 : 1.1;
-    const radius = Math.max(box.getBoundingSphere(new THREE.Sphere()).radius, floor);
-    const distance = (radius * margin) / Math.tan((camera().fov * Math.PI) / 360);
+    // Whatever is picked fills the frame: a vertex on a wall is a metre wide and the whole point
+    // of looking. The floor only stops a move between two spots a yalm apart from framing a
+    // patch of ground with nothing on it to say where it is.
+    const radius = Math.max(box.getBoundingSphere(new THREE.Sphere()).radius, want.spawn ? 20 : 12);
+    const distance = (radius * 1.1) / Math.tan((camera().fov * Math.PI) / 360);
     const direction = new THREE.Vector3().subVectors(camera().position, controls.target).normalize();
     if (!direction.lengthSq()) direction.set(0, 1, 0);
     controls.target.copy(centre);
