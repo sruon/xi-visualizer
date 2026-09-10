@@ -96,27 +96,17 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
    * follows nearly the same path, so the thin line sat underneath the thick one and there was
    * nothing to see -- the change looked like no change. Dashes read through an overlap.
    */
-  /** A ring's identity, independent of where it was written to start. */
-  const ringKey = (ring: readonly (readonly number[])[]) =>
-    ring.map(v => v.map(n => n.toFixed(2)).join()).sort().join("|");
-
   const outline = (
     region: Region,
-    color: number,
+    colour: number,
     thick: boolean,
     opacity: number,
     dashed = false,
-    /** Rings not in this set are drawn in `only` instead: they exist on one side and not the other. */
-    shared?: { keys: Set<string>; only: number; },
     into: THREE.Group = overlay,
   ) => {
     const made: THREE.Material[] = [];
     for (const ring of region.rings) {
       if (ring.length < 2) continue;
-      // A region can change by nothing but a hole appearing in it, and a hole drawn in the same
-      // colour as the outline it was cut into is invisible. One that exists on one side only is
-      // coloured as the addition or removal it is.
-      const colour = shared && !shared.keys.has(ringKey(ring)) ? shared.only : color;
       if (thick) {
         const points = ring.flat();
         points.push(...ring[0]);
@@ -178,16 +168,11 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
       const before = props.base.regions[name];
       const after = props.head.regions[name];
 
-      // What the old file said, faint underneath, so a reshape reads as a before and an after.
-      // Which rings the two sides have in common, so the ones only one of them has stand out.
-      const beforeKeys = new Set((before?.rings ?? []).map(ringKey));
-      const afterKeys = new Set((after?.rings ?? []).map(ringKey));
-
       if (kind === "removed" || kind === "reshaped") {
-        // Dashed, and brighter than it was: a before nobody can pick out is not worth drawing.
-        if (before) {
-          outline(before, color, false, 0.9, true, kind === "reshaped" ? { keys: afterKeys, only: STATUS_COLOR.removed } : undefined);
-        }
+        // What the old file said, dashed in the region's own colour. It used to go red on a
+        // reshape, which read as the whole region being removed; what was removed is painted
+        // as ground below, and a hole gained or lost is ground like any other.
+        if (before) outline(before, color, false, 0.9, true);
         if (before && kind === "removed") fill(before, color, 0.3);
         // A reshape is what it gave up and what it took in, as ground rather than two outlines
         // laid over each other: the strip cut off a region is what a reviewer is looking for,
@@ -199,14 +184,7 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
         }
       }
       if (after) {
-        outline(
-          after,
-          color,
-          kind !== "unchanged",
-          kind === "unchanged" ? 0.35 : 1,
-          false,
-          kind === "reshaped" ? { keys: beforeKeys, only: STATUS_COLOR.added } : undefined,
-        );
+        outline(after, color, kind !== "unchanged", kind === "unchanged" ? 0.35 : 1);
         if (kind !== "unchanged") fill(after, color, 0.22);
       }
     }
@@ -373,12 +351,12 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
       for (const name of namesIn(move?.from)) {
         const region = props.base.regions[name];
         if (!region?.rings[0]?.length) continue;
-        leaving.push(...faded([...outline(region, STATUS_COLOR.removed, true, 1, false, undefined, marker), fill(region, STATUS_COLOR.removed, 0.35, marker)]));
+        leaving.push(...faded([...outline(region, STATUS_COLOR.removed, true, 1, false, marker), fill(region, STATUS_COLOR.removed, 0.35, marker)]));
       }
       for (const name of namesIn(move?.to)) {
         const region = props.head.regions[name];
         if (!region?.rings[0]?.length) continue;
-        arriving.push(...faded([...outline(region, STATUS_COLOR.added, true, 1, false, undefined, marker), fill(region, STATUS_COLOR.added, 0.35, marker)]));
+        arriving.push(...faded([...outline(region, STATUS_COLOR.added, true, 1, false, marker), fill(region, STATUS_COLOR.added, 0.35, marker)]));
       }
       for (const { at } of froms) (marker.add(pin(at, STATUS_COLOR.removed)), box.expandByPoint(at));
       for (const { at } of tos) (marker.add(pin(at, STATUS_COLOR.added)), box.expandByPoint(at));
