@@ -193,8 +193,9 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
         // laid over each other: the strip cut off a region is what a reviewer is looking for,
         // and a dashed line a few pixels from a solid one never said where it was.
         if (before && after && kind === "reshaped") {
-          for (const lost of regionDifference(before, after)) fill(lost, STATUS_COLOR.removed, 0.45);
-          for (const gained of regionDifference(after, before)) fill(gained, STATUS_COLOR.added, 0.45);
+          // Solid, not a tint: a strip of red ground is the answer to "what did this take out".
+          for (const lost of regionDifference(before, after)) fill(lost, STATUS_COLOR.removed, 0.85);
+          for (const gained of regionDifference(after, before)) fill(gained, STATUS_COLOR.added, 0.7);
         }
       }
       if (after) {
