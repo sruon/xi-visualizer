@@ -318,6 +318,13 @@ assert.strictEqual(givenUp.length, 1, "one strip given up");
 assert.ok(Math.abs(regionArea(givenUp[0]) - 200) < 0.01, "and it is the right half");
 assert.ok(givenUp[0].rings[0].every(v => v[1] === -5), "at the region's height");
 assert.deepStrictEqual(regionDifference(narrow, wide), [], "nothing was taken in");
+// A notch vertex up a wall is dropped and the outline joins straight across. The sliver gained
+// is floor, and must stand at the new outline's height, not the notch's.
+const notched: Region = { rings: [[[0, -18, 0], [20, -18, 0], [20, -18, 20], [10, -24, 12], [0, -18, 20]]] };
+const straight: Region = { rings: [[[0, -18, 0], [20, -18, 0], [20, -18, 20], [0, -18, 20]]] };
+const sliver = regionDifference(straight, notched);
+assert.strictEqual(sliver.length, 1, "one sliver gained");
+assert.ok(sliver[0].rings[0].every(v => v[1] === -18), `at the floor, got ${sliver[0].rings[0].map(v => v[1])}`);
 
 // Visvalingam ranks the tip of an out-and-back as the most disposable point on the line, because the
 // triangle there is degenerate. Dropping it collapses the excursion, which is how a patrol traced

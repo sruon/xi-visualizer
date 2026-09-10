@@ -930,7 +930,9 @@ export function repairRegion(r: Region): Region[] {
 export function regionDifference(a: Region, b: Region): Region[] {
   if ((a.rings[0]?.length ?? 0) < 3) return [];
   if ((b.rings[0]?.length ?? 0) < 3) return [a];
-  return regionsOf(difference(asGeom(a), asGeom(b)), [...a.rings.flat(), ...b.rings.flat()]);
+  // Heights from `a` alone: the ground is `a`'s, and a vertex `b` had that `a` dropped -- a notch
+  // in a wall, say -- is exactly the height this ground must not borrow.
+  return regionsOf(difference(asGeom(a), asGeom(b)), a.rings.flat());
 }
 
 const flat = (ring: Ring): Geom => [ring.map(v => [v[0], v[2]] as [number, number])];
