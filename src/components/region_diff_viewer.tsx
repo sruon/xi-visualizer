@@ -6,6 +6,7 @@ import { createMapCamera, fitCameraToContents } from "../graphics/camera";
 import { setupBaseScene } from "../graphics/scene";
 import { cleanupNode } from "../graphics/util";
 import { createViewer } from "../graphics/viewer";
+import { buildNavMeshGroup, parseNavMesh } from "../graphics/navmesh";
 import { ColorKind, createZoneMesh, prepareMeshData } from "../graphics/ximesh";
 import { regionDifference } from "../regions";
 import type { Region, RegionsDiff, ZoneSide } from "../regions";
@@ -34,6 +35,8 @@ interface DiffViewerProps {
   focus?: { name?: string; spawn?: string; };
   /** Recorded roam points, xyz flat, of whatever is in focus. */
   trail?: Float32Array;
+  /** The zone's navmesh, drawn in place of the collision mesh while present. */
+  nav?: ArrayBuffer;
   /** Clicking a label on the map is the same act as clicking its row in the list. */
   onPick?: (name: string) => void;
 }
@@ -71,6 +74,27 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
     toastTimer = setTimeout(() => setToast(undefined), 2400);
   };
   onCleanup(() => clearTimeout(toastTimer));
+
+  // The navmesh stands in for the terrain: both at once is unreadable, and the collision mesh is
+  // still there underneath for the cursor to read positions off.
+  createEffect(() => {
+    const bytes = props.nav;
+    if (zoneMesh) zoneMesh.visible = !bytes;
+    if (!bytes) return;
+    const group = buildNavMeshGroup(parseNavMesh(bytes), {
+      showSurface: true,
+      showEdges: true,
+      colorByTile: false,
+      colorByComponent: false,
+      showOffMesh: false,
+      opacity: 0.55,
+    });
+    scene().add(group);
+    onCleanup(() => {
+      scene().remove(group);
+      cleanupNode(group);
+    });
+  });
 
   createMemo(() => {
     const prep = prepareMeshData(props.zoneData.mesh);

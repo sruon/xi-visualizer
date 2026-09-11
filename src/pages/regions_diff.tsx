@@ -5,7 +5,7 @@ import zones from "../data/zones";
 import { diffRegions, parseMobsYaml, parseRegionsYaml, zoneOfMobId } from "../regions";
 import type { RegionsDiff, ZoneSide } from "../regions";
 import { loadRoam, trailOf } from "../roam";
-import { loadZoneMesh } from "../zone_mesh";
+import { loadNavMesh, loadZoneMesh } from "../zone_mesh";
 
 const DEFAULT_REPO = "sruon/server";
 const DEFAULT_BASE = "regions-master";
@@ -152,6 +152,10 @@ export default function RegionsDiffPage() {
     return first ? zoneOfMobId(first.id) : undefined;
   };
   const [mesh] = createResource(zoneId, id => loadZoneMesh(id, setStatus));
+  // The navmesh is what the server walks mobs on, so a vertex that looks fine on the collision
+  // mesh can still be off it. Off by default: it is another few MB a zone.
+  const [showNav, setShowNav] = createSignal(false);
+  const [nav] = createResource(() => (showNav() ? zoneId() : undefined), id => loadNavMesh(id, setStatus));
   const [roam] = createResource(zoneId, loadRoam);
 
   // Where the mob being looked at was actually seen going, or every mob a picked region places.
@@ -241,6 +245,13 @@ export default function RegionsDiffPage() {
         </Show>
         <Show when={zoneId()}>
           <span class="text-slate-500">{roam.error ? "no roam data for this zone" : roam.loading ? "loading roam data…" : ""}</span>
+          <label class="flex items-center gap-2 text-slate-400 cursor-pointer" title="Draw the server's navmesh in place of the collision mesh">
+            <input type="checkbox" checked={showNav()} onChange={e => setShowNav(e.currentTarget.checked)} />
+            navmesh
+            <Show when={showNav() && nav.error}>
+              <span class="text-slate-500">none for this zone</span>
+            </Show>
+          </label>
         </Show>
         <Show when={error()}>
           <span class="text-red-500">{error()}</span>
@@ -300,6 +311,7 @@ export default function RegionsDiffPage() {
               diff={pair()!.diff}
               focus={focus()}
               trail={trail()}
+              nav={showNav() && !nav.loading && !nav.error ? nav() : undefined}
               onPick={name => setFocus({ name })}
             />
             {/* What a maintainer wants off a glance is not the geometry, it is the blast radius:
