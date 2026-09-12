@@ -13,6 +13,7 @@ import { decompress, fetchProgress } from "../util";
 // The wording of a pull request is prose, so it lives in a file that can be edited as prose.
 import prTemplate from "../pr_template.md?raw";
 import { loadRoam } from "../roam";
+import { loadNavMesh } from "../zone_mesh";
 
 // data/zones/<zone>/{regions.yaml,mobs.yaml} straight out of the LSB checkout.
 interface ZoneFiles {
@@ -758,6 +759,11 @@ export default function RegionsPage() {
   const [showRoam, setShowRoam] = createSignal(true);
   const [roam] = createResource(() => (showRoam() ? zoneId() : undefined), loadRoam);
 
+  // The server's navmesh in place of the terrain, for seeing whether a vertex is somewhere a
+  // mob can actually walk. Off by default: another few MB a zone.
+  const [showNav, setShowNav] = createSignal(false);
+  const [nav] = createResource(() => (showNav() ? zoneId() : undefined), id => loadNavMesh(id, setStatus));
+
   const [zoneMesh] = createResource(zoneId, async id => {
     const zone = zones[id];
     if (!zone) throw new Error(`unknown zone id ${id}`);
@@ -867,6 +873,13 @@ export default function RegionsPage() {
               <span class="text-slate-500">
                 {roam.error ? "none for this zone" : roam() ? `${(roam()!.count / 1000).toFixed(0)}k points` : "loading…"}
               </span>
+            </Show>
+          </label>
+          <label class="flex items-center gap-2 text-slate-400 cursor-pointer" title="Draw the server's navmesh in place of the collision mesh">
+            <input type="checkbox" checked={showNav()} onChange={e => setShowNav(e.currentTarget.checked)} />
+            navmesh
+            <Show when={showNav() && nav.error}>
+              <span class="text-slate-500">none for this zone</span>
             </Show>
           </label>
         </Show>
@@ -1079,6 +1092,7 @@ export default function RegionsPage() {
                       assign={restored()?.assign}
                       paths={restored()?.paths}
                       roam={showRoam() && !roam.loading && !roam.error ? roam() : undefined}
+                      nav={showNav() && !nav.loading && !nav.error ? nav() : undefined}
                       onChange={(r, a, p) => {
                         pending = { regions: r, assign: a, paths: p };
                         // Compared against the last saved state, not by re-patching: this runs on

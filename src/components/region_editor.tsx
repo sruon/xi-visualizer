@@ -7,6 +7,7 @@ import { beaconMaterial, cometMaterial, handleMaterial, roamMaterial, spawnMater
 import { setupBaseScene } from "../graphics/scene";
 import { cleanupNode } from "../graphics/util";
 import { createViewer } from "../graphics/viewer";
+import { buildNavMeshGroup, parseNavMesh } from "../graphics/navmesh";
 import { ColorKind, colorMesh, createZoneMesh, mapIdPerVertex, prepareMeshData } from "../graphics/ximesh";
 import type { RoamData } from "../roam";
 import { containsXZ, regionAt, regionHue, regionsFromPoints, repairRegion, routeFromTrail, selfIntersects, simplifyRing, validate } from "../regions";
@@ -41,6 +42,8 @@ interface RegionEditorProps {
   /** Same, for patrol routes. */
   paths?: Record<string, Patrol>;
   roam?: RoamData;
+  /** The zone's navmesh, drawn in place of the collision mesh while present. */
+  nav?: ArrayBuffer;
   onChange: (regions: RegionSet, assign: Record<string, string[]>, paths: Record<string, Patrol>) => void;
 }
 
@@ -848,6 +851,7 @@ const CELL = 12;
     (mesh.geometry.getAttribute("color") as THREE.BufferAttribute).normalized = true;
     (mesh.material as THREE.MeshBasicMaterial).color.setScalar(0.75);
     zoneMesh = mesh;
+    mesh.visible = !untrack(() => props.nav);
     meshPrep = prep;
     floorIndex = buildFloorIndex(mesh, prep);
     setFloors(floorIndex.floors);
@@ -863,6 +867,27 @@ const CELL = 12;
   createEffect(() => {
     const kind = terrainColors() ? ColorKind.Materials : ColorKind.None;
     if (zoneMesh && meshPrep) colorMesh(zoneMesh, meshPrep, kind);
+  });
+
+  // The navmesh stands in for the terrain: both at once is unreadable. The collision mesh stays
+  // underneath, hidden, since clicks and floors still read off it.
+  createEffect(() => {
+    const bytes = props.nav;
+    if (zoneMesh) zoneMesh.visible = !bytes;
+    if (!bytes) return;
+    const group = buildNavMeshGroup(parseNavMesh(bytes), {
+      showSurface: true,
+      showEdges: true,
+      colorByTile: false,
+      colorByComponent: false,
+      showOffMesh: false,
+      opacity: 0.55,
+    });
+    scene().add(group);
+    onCleanup(() => {
+      scene().remove(group);
+      cleanupNode(group);
+    });
   });
 
   /**
