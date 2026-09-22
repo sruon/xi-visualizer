@@ -87,6 +87,7 @@ export default function RegionDiffViewer(props: DiffViewerProps) {
       colorByTile: false,
       colorByComponent: false,
       showOffMesh: false,
+      joinByLinks: false,
       opacity: 0.55,
     });
     scene().add(group);
