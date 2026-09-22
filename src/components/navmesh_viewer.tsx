@@ -29,6 +29,7 @@ export default function NavMeshViewer(props: NavMeshViewerProps) {
   const [colorByTile, setColorByTile] = createSignal(false);
   const [colorByComponent, setColorByComponent] = createSignal(true);
   const [showOffMesh, setShowOffMesh] = createSignal(true);
+  const [joinByLinks, setJoinByLinks] = createSignal(false);
   const [opacity, setOpacity] = createSignal(0.85);
   const [hoverPos, setHoverPos] = createSignal<{ x: number; y: number; z: number; } | null>(null);
   const [coordText, setCoordText] = createSignal("");
@@ -51,6 +52,7 @@ export default function NavMeshViewer(props: NavMeshViewerProps) {
       colorByTile: colorByTile(),
       colorByComponent: colorByComponent(),
       showOffMesh: showOffMesh(),
+      joinByLinks: joinByLinks(),
       opacity: opacity(),
     });
     scene().add(group);
@@ -311,6 +313,10 @@ export default function NavMeshViewer(props: NavMeshViewerProps) {
         <label class="flex items-center gap-2 cursor-pointer">
           <input type="checkbox" checked={showOffMesh()} onChange={e => setShowOffMesh(e.currentTarget.checked)} />
           Off-mesh links <span class="text-rose-400">●</span>
+        </label>
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" checked={joinByLinks()} onChange={e => setJoinByLinks(e.currentTarget.checked)} />
+          Join islands across links
         </label>
         <label class="flex items-center gap-2 cursor-pointer">
           <input type="checkbox" checked={showXimesh()} onChange={e => setShowXimesh(e.currentTarget.checked)} />

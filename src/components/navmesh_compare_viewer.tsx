@@ -29,6 +29,7 @@ export default function NavMeshCompareViewer(props: CompareProps) {
   const [colorByComponent, setColorByComponent] = createSignal(true);
   const [colorByTile, setColorByTile] = createSignal(false);
   const [showOffMesh, setShowOffMesh] = createSignal(true);
+  const [joinByLinks, setJoinByLinks] = createSignal(false);
   const [showEdges, setShowEdges] = createSignal(true);
   const [opacity, setOpacity] = createSignal(1);
   const [copied, setCopied] = createSignal(false);
@@ -43,6 +44,7 @@ export default function NavMeshCompareViewer(props: CompareProps) {
     colorByTile: colorByTile(),
     colorByComponent: colorByComponent(),
     showOffMesh: showOffMesh(),
+    joinByLinks: joinByLinks(),
     opacity: opacity(),
   });
 
@@ -206,6 +208,10 @@ export default function NavMeshCompareViewer(props: CompareProps) {
         <label class="flex items-center gap-1.5">
           <input type="checkbox" class={check} checked={showOffMesh()} onChange={e => setShowOffMesh(e.currentTarget.checked)} />
           Off-mesh links
+        </label>
+        <label class="flex items-center gap-1.5">
+          <input type="checkbox" class={check} checked={joinByLinks()} onChange={e => setJoinByLinks(e.currentTarget.checked)} />
+          Join islands across links
         </label>
         <label class="flex items-center gap-1.5">
           <input type="checkbox" class={check} checked={showEdges()} onChange={e => setShowEdges(e.currentTarget.checked)} />

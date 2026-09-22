@@ -81,7 +81,8 @@ export interface ParsedNavMesh {
     maxPolys: number;
   };
   tiles: NavTile[];
-  components: NavComponents;
+  components: NavComponents; // walk-connected only: what a mob reaches without a drop link
+  linkedComponents: NavComponents; // the same with live drop links joining islands
   stats: { numTiles: number; totalPolys: number; totalVerts: number; offMeshLinks: number; };
 }
 
@@ -286,7 +287,7 @@ function parseTile(dv: DataView, base: number, tileIndex: number, polyBits: numb
 
 // Flood-fill the walkable surface into connected components via shared-edge
 // adjacency, rank them by size, and assign each a display color (specks grey).
-function computeComponents(tiles: NavTile[]): NavComponents {
+function computeComponents(tiles: NavTile[], joinByLinks: boolean): NavComponents {
   // Global index of every drawn poly, keyed the way links name polys.
   const byTile = new Map<number, NavTile>();
   const globalOf = new Map<number, number>();
@@ -327,7 +328,7 @@ function computeComponents(tiles: NavTile[]): NavComponents {
         const state = stateOf(key);
         if (state === 0) {
           union(me, globalOf.get(key)!);
-        } else if (state === 1) {
+        } else if (state === 1 && joinByLinks) {
           const con = byTile.get(Math.floor(key / 0x10000))!;
           for (const end of con.polyLinks[key & 0xffff]) {
             const other = globalOf.get(end);
@@ -426,7 +427,8 @@ export function parseNavMesh(buffer: ArrayBufferLike): ParsedNavMesh {
     off += dataSize;
   }
 
-  const components = computeComponents(tiles);
+  const components = computeComponents(tiles, false);
+  const linkedComponents = computeComponents(tiles, true);
   for (const t of tiles) t.polyLinks = [];
 
   let offMeshLinks = 0;
@@ -437,6 +439,7 @@ export function parseNavMesh(buffer: ArrayBufferLike): ParsedNavMesh {
     params: { orig, tileWidth, tileHeight, maxTiles, maxPolys },
     tiles,
     components,
+    linkedComponents,
     stats: { numTiles: tiles.length, totalPolys, totalVerts, offMeshLinks },
   };
 }
@@ -504,6 +507,7 @@ export interface NavMeshBuildOptions {
   colorByTile: boolean;
   colorByComponent: boolean; // takes precedence over colorByTile when set
   showOffMesh: boolean; // auto-generated drop/step links
+  joinByLinks: boolean; // colour islands as joined by live drop links
   opacity: number;
 }
 
@@ -520,7 +524,7 @@ export function buildNavMeshGroup(parsed: ParsedNavMesh, opts: NavMeshBuildOptio
 
     const positions = new Float32Array(total);
     const colors = new Float32Array(total);
-    const comp = parsed.components;
+    const comp = opts.joinByLinks ? parsed.linkedComponents : parsed.components;
     let o = 0;
     let globalPoly = 0; // index into comp.idOfPoly, in tile/poly emission order
     parsed.tiles.forEach((t, i) => {
