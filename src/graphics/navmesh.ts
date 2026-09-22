@@ -31,7 +31,6 @@ const SZ_OFFMESH_CON = 36; // dtOffMeshConnection: float pos[6], rad, u16 poly, 
 
 // Vertex-weld tolerance (world units) for connectivity analysis. Detour portal
 // verts are bit-identical across tile borders, so this is generous.
-const COMPONENT_WELD = 0.15;
 // Components smaller than this (in polys) are treated as noise "specks" and
 // greyed out rather than given a distinct island color.
 const SPECK_MAX = 3;
@@ -50,15 +49,17 @@ export interface NavTile {
   edges: number[]; // flat xyz line-segment pairs (FFXI coords)
   // Per non-offmesh poly (in emission order): triangle count in `positions`.
   polyTriCounts: number[];
-  // Per non-offmesh poly: quantized base-vert keys, for shared-edge adjacency.
-  // Cleared once components are computed to release memory.
-  polyVKeys: string[][];
+  // Detour's own adjacency, so components follow the same seams and drop links the server paths over.
+  tileIndex: number;
+  polyState: Uint8Array; // per poly: 0 drawn ground, 1 live off-mesh connection, 2 disabled
+  emitIndex: Int32Array; // per poly: index into polyTriCounts, or -1
+  polyLinks: number[][]; // per poly: linked polys as tileIndex * 0x10000 + polyIndex
   // Auto-generated off-mesh (drop/step) links: flat [ax,ay,az, bx,by,bz, ...]
   // in FFXI coords, one endpoint pair per link.
   offMeshLinks: number[];
 }
 
-// Connected-component ("island") analysis of the walkable surface. Two polys
+// Connected-component ("island") analysis of the walkable surface, over the links Detour stored in the tiles. Two polys
 // are connected iff they share an edge (two welded verts); Detour can only path
 // within a single component (LSB navmeshes carry no off-mesh connections).
 export interface NavComponents {
@@ -148,7 +149,7 @@ function readMeshHeader(dv: DataView, off: number): MeshHeader {
   };
 }
 
-function parseTile(dv: DataView, base: number): NavTile | null {
+function parseTile(dv: DataView, base: number, tileIndex: number, polyBits: number, tileBits: number): NavTile | null {
   const h = readMeshHeader(dv, base);
   if (h.magic !== DT_NAVMESH_MAGIC) {
     return null;
@@ -162,7 +163,8 @@ function parseTile(dv: DataView, base: number): NavTile | null {
   const polysOff = off;
   off += align4(h.polyCount * SZ_POLY);
 
-  off += align4(h.maxLinkCount * SZ_LINK); // links (unused)
+  const linksOff = off;
+  off += align4(h.maxLinkCount * SZ_LINK);
 
   const detailMeshOff = off;
   off += align4(h.detailMeshCount * SZ_POLY_DETAIL);
@@ -202,9 +204,21 @@ function parseTile(dv: DataView, base: number): NavTile | null {
   const positions: number[] = [];
   const edges: number[] = [];
   const polyTriCounts: number[] = [];
-  const polyVKeys: string[][] = [];
+  const polyState = new Uint8Array(h.polyCount);
+  const emitIndex = new Int32Array(h.polyCount).fill(-1);
+  const polyLinks: number[][] = [];
 
-  const q = (n: number) => Math.round(n / COMPONENT_WELD);
+  // dtLink: ref(u32), next(u32), edge(u8), side(u8), bmin(u8), bmax(u8); a poly ref is salt | tile | poly
+  const polyMask = (1 << polyBits) - 1;
+  const tileMask = (1 << tileBits) - 1;
+  for (let ip = 0; ip < h.polyCount; ip++) {
+    const links: number[] = [];
+    for (let l = dv.getUint32(polysOff + ip * SZ_POLY, true); l !== 0xffffffff; l = dv.getUint32(linksOff + l * SZ_LINK + 4, true)) {
+      const ref = dv.getUint32(linksOff + l * SZ_LINK, true);
+      links.push(((ref >>> polyBits) & tileMask) * 0x10000 + (ref & polyMask));
+    }
+    polyLinks.push(links);
+  }
 
   for (let ip = 0; ip < h.polyCount; ip++) {
     const pOff = polysOff + ip * SZ_POLY;
@@ -212,24 +226,27 @@ function parseTile(dv: DataView, base: number): NavTile | null {
     const vidxOff = pOff + 4;
     const polyVertCount = dv.getUint8(pOff + 4 + 12 + 12 + 2);
     const areaAndType = dv.getUint8(pOff + 4 + 12 + 12 + 2 + 1);
-    if (areaAndType >> 6 === DT_POLYTYPE_OFFMESH_CONNECTION || polyDisabled(ip)) {
+    if (polyDisabled(ip)) {
+      polyState[ip] = 2;
       continue;
     }
+    if (areaAndType >> 6 === DT_POLYTYPE_OFFMESH_CONNECTION) {
+      polyState[ip] = 1;
+      continue;
+    }
+    emitIndex[ip] = polyTriCounts.length;
 
     const polyVerts: number[] = [];
     for (let k = 0; k < polyVertCount; k++) {
       polyVerts.push(dv.getUint16(vidxOff + k * 2, true));
     }
 
-    // Poly outline edges (base verts, closed loop) + welded keys for adjacency.
-    const vkeys: string[] = [];
+    // Poly outline edges (base verts, closed loop).
     for (let k = 0; k < polyVertCount; k++) {
       const a = readVert(vertsOff, polyVerts[k]);
       const b = readVert(vertsOff, polyVerts[(k + 1) % polyVertCount]);
       edges.push(a[0], a[1], a[2], b[0], b[1], b[2]);
-      vkeys.push(`${q(a[0])},${q(a[1])},${q(a[2])}`);
     }
-    polyVKeys.push(vkeys);
 
     // Detail-mesh triangles for the filled surface.
     const dmOff = detailMeshOff + ip * SZ_POLY_DETAIL;
@@ -259,7 +276,10 @@ function parseTile(dv: DataView, base: number): NavTile | null {
     positions,
     edges,
     polyTriCounts,
-    polyVKeys,
+    tileIndex,
+    polyState,
+    emitIndex,
+    polyLinks,
     offMeshLinks,
   };
 }
@@ -267,27 +287,19 @@ function parseTile(dv: DataView, base: number): NavTile | null {
 // Flood-fill the walkable surface into connected components via shared-edge
 // adjacency, rank them by size, and assign each a display color (specks grey).
 function computeComponents(tiles: NavTile[]): NavComponents {
-  // Weld base verts globally, then list each poly's welded vert ids.
-  const weld = new Map<string, number>();
-  let nextV = 0;
-  const wid = (k: string): number => {
-    let v = weld.get(k);
-    if (v === undefined) {
-      v = nextV++;
-      weld.set(k, v);
-    }
-
-    return v;
-  };
-
-  const polyWverts: number[][] = [];
+  // Global index of every drawn poly, keyed the way links name polys.
+  const byTile = new Map<number, NavTile>();
+  const globalOf = new Map<number, number>();
+  let n = 0;
   for (const t of tiles) {
-    for (const vk of t.polyVKeys) {
-      polyWverts.push(vk.map(wid));
+    byTile.set(t.tileIndex, t);
+    for (let ip = 0; ip < t.polyCount; ip++) {
+      if (t.emitIndex[ip] >= 0) {
+        globalOf.set(t.tileIndex * 0x10000 + ip, n++);
+      }
     }
   }
 
-  const n = polyWverts.length;
   const parent = new Int32Array(n);
   for (let i = 0; i < n; i++) parent[i] = i;
 
@@ -305,26 +317,23 @@ function computeComponents(tiles: NavTile[]): NavComponents {
     if (a !== b) parent[a] = b;
   };
 
-  // Two polys sharing an edge (ordered vert pair) are adjacent.
-  const edgeOwner = new Map<number, number>();
-  for (let i = 0; i < n; i++) {
-    const ids = polyWverts[i];
-    const L = ids.length;
-    for (let k = 0; k < L; k++) {
-      let a = ids[k];
-      let b = ids[(k + 1) % L];
-      if (a > b) {
-        const t = a;
-        a = b;
-        b = t;
-      }
-
-      const key = a * 4000037 + b;
-      const owner = edgeOwner.get(key);
-      if (owner === undefined) {
-        edgeOwner.set(key, i);
-      } else {
-        union(owner, i);
+  // A drawn poly joins every drawn poly it links to, and both ends of every live drop link it touches.
+  const stateOf = (key: number) => byTile.get(Math.floor(key / 0x10000))?.polyState[key & 0xffff] ?? 2;
+  for (const t of tiles) {
+    for (let ip = 0; ip < t.polyCount; ip++) {
+      const me = globalOf.get(t.tileIndex * 0x10000 + ip);
+      if (me === undefined) continue;
+      for (const key of t.polyLinks[ip]) {
+        const state = stateOf(key);
+        if (state === 0) {
+          union(me, globalOf.get(key)!);
+        } else if (state === 1) {
+          const con = byTile.get(Math.floor(key / 0x10000))!;
+          for (const end of con.polyLinks[key & 0xffff]) {
+            const other = globalOf.get(end);
+            if (other !== undefined) union(me, other);
+          }
+        }
       }
     }
   }
@@ -392,6 +401,11 @@ export function parseNavMesh(buffer: ArrayBufferLike): ParsedNavMesh {
   let totalPolys = 0;
   let totalVerts = 0;
 
+  // dtNavMesh packs a ref as salt | tile | poly, sized from the set params.
+  const bitsFor = (count: number) => (count <= 1 ? 0 : Math.ceil(Math.log2(count)));
+  const polyBits = bitsFor(maxPolys);
+  const tileBits = bitsFor(maxTiles);
+
   for (let i = 0; i < numTiles; i++) {
     // NavMeshTileHeader: dtTileRef tileRef(u32), int dataSize
     const tileRef = dv.getUint32(off, true);
@@ -402,7 +416,7 @@ export function parseNavMesh(buffer: ArrayBufferLike): ParsedNavMesh {
       break;
     }
 
-    const tile = parseTile(dv, off);
+    const tile = parseTile(dv, off, (tileRef >>> polyBits) & ((1 << tileBits) - 1), polyBits, tileBits);
     if (tile) {
       tiles.push(tile);
       totalPolys += tile.polyCount;
@@ -413,8 +427,7 @@ export function parseNavMesh(buffer: ArrayBufferLike): ParsedNavMesh {
   }
 
   const components = computeComponents(tiles);
-  // Free the per-poly weld keys now that components are resolved.
-  for (const t of tiles) t.polyVKeys = [];
+  for (const t of tiles) t.polyLinks = [];
 
   let offMeshLinks = 0;
   for (const t of tiles) offMeshLinks += t.offMeshLinks.length / 6;
