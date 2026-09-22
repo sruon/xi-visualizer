@@ -184,10 +184,16 @@ function parseTile(dv: DataView, base: number): NavTile | null {
     -dv.getFloat32(o + i * 12 + 8, true),
   ];
 
+  // Polys the server switched off (SAMPLE_POLYFLAGS_DISABLED) stay in the file; the query filter skips them, so does the drawing.
+  const polyDisabled = (ip: number) => (dv.getUint16(polysOff + ip * SZ_POLY + 4 + 12 + 12, true) & 0x10) !== 0;
+
   // Off-mesh connection endpoints: dtOffMeshConnection.pos[6] = start xyz, end xyz.
   const offMeshLinks: number[] = [];
   for (let c = 0; c < h.offMeshConCount; c++) {
     const o = offMeshConsOff + c * SZ_OFFMESH_CON;
+    if (polyDisabled(dv.getUint16(o + 28, true))) {
+      continue;
+    }
     const a = readVert(o, 0);
     const b = readVert(o, 1);
     offMeshLinks.push(a[0], a[1], a[2], b[0], b[1], b[2]);
@@ -206,7 +212,7 @@ function parseTile(dv: DataView, base: number): NavTile | null {
     const vidxOff = pOff + 4;
     const polyVertCount = dv.getUint8(pOff + 4 + 12 + 12 + 2);
     const areaAndType = dv.getUint8(pOff + 4 + 12 + 12 + 2 + 1);
-    if (areaAndType >> 6 === DT_POLYTYPE_OFFMESH_CONNECTION) {
+    if (areaAndType >> 6 === DT_POLYTYPE_OFFMESH_CONNECTION || polyDisabled(ip)) {
       continue;
     }
 
