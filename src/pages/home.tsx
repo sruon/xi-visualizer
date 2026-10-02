@@ -8,6 +8,9 @@ export default function HomePage() {
       <div class="content">
         <ul>
           <li>
+            <A href="/map">Zone map</A>
+          </li>
+          <li>
             <A href="/regions">Spawn regions editor</A>
           </li>
           <li>

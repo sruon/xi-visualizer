@@ -126,6 +126,19 @@ function RegionsIntro() {
   );
 }
 
+/** What a player sees before a zone is picked. */
+function ZoneMapIntro() {
+  return (
+    <div class="mt-6 max-w-3xl text-sm text-slate-300 space-y-2">
+      <p>Pick a zone above to see where its monsters spawn and roam, its exits, and the game's own map and grid.</p>
+      <p class="text-slate-400">
+        Coloured areas are where a monster can appear; dots are where monsters have actually been seen walking. Click an area or a monster for details. This
+        shows LandSandBoat's data, which may differ from retail.
+      </p>
+    </div>
+  );
+}
+
 /** A zone folder as people know it: "West Ronfaure", not west_ronfaure. */
 const zoneLabel = (folder: string) => zoneOfFolder(folder)?.name ?? folder;
 
@@ -187,7 +200,20 @@ function findDraft(folder: string, source: string): FoundDraft | undefined {
   return best;
 }
 
+/**
+ * The zone map for players: the same page and the same map, read only, with the editing and
+ * reviewing controls left off. Everything drawn on the map is there; what it takes to change it is not.
+ */
+export function ZoneMapPage() {
+  return <RegionsView player />;
+}
+
 export default function RegionsPage() {
+  return <RegionsView />;
+}
+
+function RegionsView(props: { player?: boolean; }) {
+  const player = () => !!props.player;
   // /regions/<zone> picks the zone; ?repo=owner/name&ref=branch override where it comes from.
   const params = useParams<{ zone?: string; }>();
   const [query] = useSearchParams<
@@ -233,6 +259,7 @@ export default function RegionsPage() {
    * base side is drawn under it in the colours of what changed.
    */
   const compareRequest = (): CompareRequest | undefined => {
+    if (player()) return undefined;
     if (query.pr) return parsePr(query.pr, UPSTREAM);
     if (!query.head) return undefined;
     const baseRepo = query.base_repo || UPSTREAM;
@@ -265,11 +292,11 @@ export default function RegionsPage() {
       if (value) carried.set(key, value);
     }
     const rest = carried.toString();
-    return `/regions/${zone}${rest ? `?${rest}` : ""}`;
+    return `/${player() ? "map" : "regions"}/${zone}${rest ? `?${rest}` : ""}`;
   };
   const ref = () => cmp()?.headSha ?? (query.ref || DEFAULT_REF);
   /** Opened from a review link: somebody else's branch, for reading against the roam data. */
-  const reviewing = () => query.review === "1" || comparing();
+  const reviewing = () => query.review === "1" || comparing() || player();
   // The only way in is signing in. api.github.com is CORS-enabled, so the token it yields is used
   // straight from here and needs no help from anybody.
   const [account, setAccount] = createSignal(storedToken());
@@ -1153,7 +1180,7 @@ export default function RegionsPage() {
   return (
     <section class="p-8 plain-ui">
       <div class="flex flex-wrap items-center gap-3 text-sm">
-        <h1 class="text-2xl font-bold mr-2">Spawn Regions</h1>
+        <h1 class="text-2xl font-bold mr-2">{player() ? "Zone Map" : "Spawn Regions"}</h1>
         {/* value depends on folders() so it re-applies once the options exist */}
         <select
           class={`${FIELD} max-w-64`}
@@ -1183,13 +1210,15 @@ export default function RegionsPage() {
             </optgroup>
           </Show>
         </select>
-        <button
-          class={BTN_PLAIN}
-          onClick={listZones}
-          title={local() ? "Re-read the local folder" : `Re-read ${repo()}@${ref()}`}
-        >
-          ⟳
-        </button>
+        <Show when={!player()}>
+          <button
+            class={BTN_PLAIN}
+            onClick={listZones}
+            title={local() ? "Re-read the local folder" : `Re-read ${repo()}@${ref()}`}
+          >
+            ⟳
+          </button>
+        </Show>
         <Show when={!comparing() && !reviewing()}>
           <form class="flex items-center gap-1" onSubmit={e => (e.preventDefault(), reviewPr())}>
             <input
@@ -1283,7 +1312,9 @@ export default function RegionsPage() {
                 : "No changes"}
             </button>
           </Show>
-          <button class={BTN_PLAIN} onClick={copyPatched}>Copy YAML</button>
+          <Show when={!player()}>
+            <button class={BTN_PLAIN} onClick={copyPatched}>Copy YAML</button>
+          </Show>
           <button
             class={BTN_PLAIN}
             title="Copy a link to this zone as it is on screen: the camera, the region picked and the floor"
@@ -1301,13 +1332,15 @@ export default function RegionsPage() {
               Paste YAML
             </button>
           </Show>
-          <button
-            class={showYaml() ? BTN.quiet : BTN.plain}
-            title="Show the files as they would be written"
-            onClick={() => setShowYaml(v => !v)}
-          >
-            {showYaml() ? "Hide YAML" : "View YAML"}
-          </button>
+          <Show when={!player()}>
+            <button
+              class={showYaml() ? BTN.quiet : BTN.plain}
+              title="Show the files as they would be written"
+              onClick={() => setShowYaml(v => !v)}
+            >
+              {showYaml() ? "Hide YAML" : "View YAML"}
+            </button>
+          </Show>
           {/* Neither of these means anything until something is on the branch. */}
           <Show when={sitting()?.ancestor && !reviewing()}>
             <button
@@ -1349,7 +1382,7 @@ export default function RegionsPage() {
         <Show when={files()}>
           <label class="flex items-center gap-2 text-slate-400 cursor-pointer" title="Overlay the recorded roam trails for this zone">
             <input type="checkbox" checked={showRoam()} onChange={e => setShowRoam(e.currentTarget.checked)} />
-            roam data
+            {player() ? "where mobs were seen" : "roam data"}
             <Show when={showRoam()}>
               <span class="text-slate-500">
                 {roam.error
@@ -1360,7 +1393,11 @@ export default function RegionsPage() {
               </span>
             </Show>
           </label>
-          <label class="flex items-center gap-2 text-slate-400 cursor-pointer" title="Draw the server's navmesh in place of the collision mesh">
+          <label
+            class="flex items-center gap-2 text-slate-400 cursor-pointer"
+            classList={{ hidden: player() }}
+            title="Draw the server's navmesh in place of the collision mesh"
+          >
             <input type="checkbox" checked={showNav()} onChange={e => setShowNav(e.currentTarget.checked)} />
             navmesh
             <Show when={showNav() && nav.error}>
@@ -1411,9 +1448,9 @@ export default function RegionsPage() {
           </span>
         </Show>
         <Show
-          when={account()}
+          when={!player() && account()}
           fallback={
-            <Show when={canSignIn()}>
+            <Show when={canSignIn() && !player()}>
               <button class={BTN_GO} disabled={signingIn()} onClick={startSignIn}>
                 {signingIn() ? "Off to GitHub…" : "Sign in with GitHub"}
               </button>
@@ -1545,7 +1582,7 @@ export default function RegionsPage() {
       </Show>
 
       {/* A comparison says what it is reviewing in its own bar. */}
-      <Show when={reviewing() && !comparing()}>
+      <Show when={reviewing() && !comparing() && !player()}>
         <div class="mt-3 flex flex-wrap items-center gap-2 text-sm bg-sky-900/40 border border-sky-700 rounded px-3 py-2">
           <span class="flex-grow">
             Reviewing <b>{repo()}</b> at <b>{ref()}</b>, read only.
@@ -1593,7 +1630,7 @@ export default function RegionsPage() {
       <Show
         when={files()}
         fallback={
-          <Show when={params.zone} fallback={<RegionsIntro />}>
+          <Show when={params.zone} fallback={player() ? <ZoneMapIntro /> : <RegionsIntro />}>
             <div class="mt-4 text-slate-400 flex items-center gap-2">
               <Show when={error()} fallback={<>Loading {zoneLabel(params.zone!)}…</>}>
                 Could not open {zoneLabel(params.zone!)}.
@@ -1658,6 +1695,7 @@ export default function RegionsPage() {
                         compare={compareSides()}
                         wipe={wipe()}
                         onStepZone={stepZone}
+                        player={player()}
                         onChange={(r, a, p) => {
                           pending = { regions: r, assign: a, paths: p };
                           // Compared against the last saved state, not by re-patching: this runs on

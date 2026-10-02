@@ -27,6 +27,8 @@ export default function MapToolbar(props: {
   onSimulate: () => void;
   /** Reviewing: the tools that change shapes go, the spawn simulation stays. */
   readOnly?: boolean;
+  /** The zone map for players: the spawn simulation is a developer's tool. */
+  player?: boolean;
   sheet: boolean;
   onSheet: () => void;
   zoneInfo: boolean;
@@ -78,22 +80,24 @@ export default function MapToolbar(props: {
           Ground
         </button>
       </Show>
-      <button
-        class={`${TOOL} ${props.simulating ? "bg-emerald-600 hover:bg-emerald-500 text-white" : IDLE}`}
-        aria-pressed={props.simulating}
-        disabled={!props.selected}
-        title={props.selected ? "Show where the server would spawn mobs in the selected region, checked against its navmesh" : PICK}
-        onClick={() => props.onSimulate()}
-      >
-        <Icon>
-          <circle cx="4" cy="5" r="1.4" fill="currentColor" stroke="none" />
-          <circle cx="10" cy="4" r="1.4" fill="currentColor" stroke="none" />
-          <circle cx="7" cy="9" r="1.4" fill="currentColor" stroke="none" />
-          <circle cx="12" cy="11" r="1.4" fill="currentColor" stroke="none" />
-          <circle cx="4" cy="12" r="1.4" fill="currentColor" stroke="none" />
-        </Icon>
-        Spawns
-      </button>
+      <Show when={!props.player}>
+        <button
+          class={`${TOOL} ${props.simulating ? "bg-emerald-600 hover:bg-emerald-500 text-white" : IDLE}`}
+          aria-pressed={props.simulating}
+          disabled={!props.selected}
+          title={props.selected ? "Show where the server would spawn mobs in the selected region, checked against its navmesh" : PICK}
+          onClick={() => props.onSimulate()}
+        >
+          <Icon>
+            <circle cx="4" cy="5" r="1.4" fill="currentColor" stroke="none" />
+            <circle cx="10" cy="4" r="1.4" fill="currentColor" stroke="none" />
+            <circle cx="7" cy="9" r="1.4" fill="currentColor" stroke="none" />
+            <circle cx="12" cy="11" r="1.4" fill="currentColor" stroke="none" />
+            <circle cx="4" cy="12" r="1.4" fill="currentColor" stroke="none" />
+          </Icon>
+          Spawns
+        </button>
+      </Show>
       <button
         class={`${TOOL} ${props.sheet ? "bg-amber-600 hover:bg-amber-500 text-white" : IDLE}`}
         aria-pressed={props.sheet}

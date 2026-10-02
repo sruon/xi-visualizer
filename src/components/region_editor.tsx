@@ -84,6 +84,9 @@ interface RegionEditorProps {
   wipe?: boolean;
   /** Step to the next or previous zone the change touches. */
   onStepZone?: (dir: 1 | -1) => void;
+  /** The zone map for players: read only, with the developer tools left off and the game's map and
+   * zone lines on from the start. */
+  player?: boolean;
 }
 
 /** What the server's files place in a zone besides its mobs. */
@@ -205,7 +208,7 @@ export default function RegionEditor(props: RegionEditorProps) {
   /** The game's map grid over the zone, for the floor on screen. Always shown. */
   const grid = createMemo(() => gridOf(props.zoneData.id, mapFloor()));
   /** The game's own map sheet laid over the zone, under the regions. */
-  const [showSheet, setShowSheet] = createSignal(false);
+  const [showSheet, setShowSheet] = createSignal(!!props.player);
   const sheet = createMemo(() => (showSheet() ? sheetOf(props.zoneData.id, mapFloor()) : null), undefined, {
     equals: (a, b) => a?.file === b?.file,
   });
@@ -1501,7 +1504,7 @@ export default function RegionEditor(props: RegionEditorProps) {
 
   // The zone's trigger areas and zone lines, drawn over the map for reference. Trigger areas pink,
   // zone line entrances cyan, the boxes zone lines from elsewhere land in green.
-  const [showZoneInfo, setShowZoneInfo] = createSignal(false);
+  const [showZoneInfo, setShowZoneInfo] = createSignal(!!props.player);
   const zoneInfo = () => (showZoneInfo() ? props.features : undefined);
   const placeName = (folder: string) => zoneOfFolder(folder)?.name ?? folder;
   /** The ground under x/z near a height, or that height when the mesh has nothing there. */
@@ -2925,6 +2928,7 @@ export default function RegionEditor(props: RegionEditorProps) {
         onBuildRegion={buildFrom}
         canBuild={!!props.roam}
         readOnly={props.readOnly}
+        simple={props.player}
       />
       <div class="flex-1 relative">
         <canvas class="block w-full h-full outline-none" ref={canvasElement!} />
@@ -3118,10 +3122,13 @@ export default function RegionEditor(props: RegionEditorProps) {
             </Show>
           </div>
         </Show>
-        <ShortcutsCard />
+        <Show when={!props.player}>
+          <ShortcutsCard />
+        </Show>
         {/* The map's own toolbar: tools that act on the view rather than the lists beside it. */}
         <MapToolbar
           readOnly={props.readOnly}
+          player={props.player}
           selected={!!active()}
           carving={mode() === "obstacles"}
           canGround={!!zoneMesh}
@@ -3333,25 +3340,29 @@ export default function RegionEditor(props: RegionEditorProps) {
           >
             Routes ({Object.keys(paths()).length})
           </button>
-          <button
-            class="flex-1 px-1 py-1 rounded text-xs whitespace-nowrap"
-            classList={{ "bg-slate-600": tab() === "review", "bg-slate-700 text-slate-400": tab() !== "review" }}
-            title="Checks every region and how well each covers its mobs' trails. Runs while this tab is open; ? means the regions have changed since the last check."
-            role="tab"
-            aria-selected={tab() === "review"}
-            onClick={() => setTab("review")}
-          >
-            Review ({reviewStale() ? "?" : findings().filter(f => f.level !== "info").length})
-          </button>
-          <button
-            class="flex-1 px-1 py-1 rounded text-xs whitespace-nowrap"
-            classList={{ "bg-slate-600": tab() === "history", "bg-slate-700 text-slate-400": tab() !== "history" }}
-            role="tab"
-            aria-selected={tab() === "history"}
-            onClick={() => setTab("history")}
-          >
-            History ({undoStack().length})
-          </button>
+          <Show when={!props.player}>
+            <button
+              class="flex-1 px-1 py-1 rounded text-xs whitespace-nowrap"
+              classList={{ "bg-slate-600": tab() === "review", "bg-slate-700 text-slate-400": tab() !== "review" }}
+              title="Checks every region and how well each covers its mobs' trails. Runs while this tab is open; ? means the regions have changed since the last check."
+              role="tab"
+              aria-selected={tab() === "review"}
+              onClick={() => setTab("review")}
+            >
+              Review ({reviewStale() ? "?" : findings().filter(f => f.level !== "info").length})
+            </button>
+          </Show>
+          <Show when={!props.player}>
+            <button
+              class="flex-1 px-1 py-1 rounded text-xs whitespace-nowrap"
+              classList={{ "bg-slate-600": tab() === "history", "bg-slate-700 text-slate-400": tab() !== "history" }}
+              role="tab"
+              aria-selected={tab() === "history"}
+              onClick={() => setTab("history")}
+            >
+              History ({undoStack().length})
+            </button>
+          </Show>
         </div>
 
         <Show when={tab() === "changes" && props.compare}>
@@ -3400,6 +3411,7 @@ export default function RegionEditor(props: RegionEditorProps) {
             onHideAssigned={setHideAssigned}
             left={props.spawns.length - Object.keys(assign()).length}
             terrainColors={terrainColors()}
+            simple={props.player}
             onTerrainColors={setTerrainColors}
             regions={regions().filter(onRegionFloor)}
             colorOf={cssOf}

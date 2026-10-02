@@ -15,6 +15,8 @@ const chipOn = (on: boolean) => (on ? "bg-slate-600 text-white" : "bg-slate-700 
  */
 export default function RegionsTab(props: {
   canEdit: boolean;
+  /** For players: the developer's switches left off. */
+  simple?: boolean;
   drawing: boolean;
   /** The selected region's name. */
   selected: string | null;
@@ -105,14 +107,16 @@ export default function RegionsTab(props: {
         </div>
       </Show>
 
-      <label class="flex items-center gap-2 mb-1 text-xs text-slate-400 cursor-pointer">
-        <input type="checkbox" checked={props.hideAssigned} onChange={e => props.onHideAssigned(e.currentTarget.checked)} />
-        hide mobs that have a region ({props.left} left)
-      </label>
-      <label class="flex items-center gap-2 mb-2 text-xs text-slate-400 cursor-pointer">
-        <input type="checkbox" checked={props.terrainColors} onChange={e => props.onTerrainColors(e.currentTarget.checked)} />
-        terrain materials
-      </label>
+      <Show when={!props.simple}>
+        <label class="flex items-center gap-2 mb-1 text-xs text-slate-400 cursor-pointer">
+          <input type="checkbox" checked={props.hideAssigned} onChange={e => props.onHideAssigned(e.currentTarget.checked)} />
+          hide mobs that have a region ({props.left} left)
+        </label>
+        <label class="flex items-center gap-2 mb-2 text-xs text-slate-400 cursor-pointer">
+          <input type="checkbox" checked={props.terrainColors} onChange={e => props.onTerrainColors(e.currentTarget.checked)} />
+          terrain materials
+        </label>
+      </Show>
 
       <div class="flex-1 overflow-y-auto">
         <For each={props.regions} fallback={<div class="text-slate-500 p-2">No regions yet.</div>}>
@@ -147,7 +151,9 @@ export default function RegionsTab(props: {
                   props.counts[r.name] ?? 0
                 } mobs placed here`}
               >
-                {vertices(r)}v{holes(r) ? `+${holes(r)}h` : ""} · {props.counts[r.name] ?? 0}
+                <Show when={!props.simple} fallback={<>{props.counts[r.name] ?? 0} mobs</>}>
+                  {vertices(r)}v{holes(r) ? `+${holes(r)}h` : ""} · {props.counts[r.name] ?? 0}
+                </Show>
               </span>
               <Show when={props.coverage[r.name] !== undefined}>
                 {/* From the last Review check, and dimmed once the regions have moved on from it. */}

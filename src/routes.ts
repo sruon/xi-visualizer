@@ -32,6 +32,10 @@ export const routes: RouteDefinition[] = [
     component: lazy(() => import("./pages/regions")),
   },
   {
+    path: "/map/:zone?",
+    component: lazy(() => import("./pages/regions").then(m => ({ default: m.ZoneMapPage }))),
+  },
+  {
     path: "**",
     component: lazy(() => import("./errors/404")),
   },

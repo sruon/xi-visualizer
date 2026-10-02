@@ -217,6 +217,13 @@ try {
   assert.match(await text(), /added, \d+ vertices/, "and listed");
   assert.doesNotMatch(await text(), /No changes|Sign in to save/, "with nothing to save, since it is read only");
 
+  // the zone map for players: the same map, with nothing to edit and the developer tools left off
+  await page.goto(URL.replace("#/regions/", "#/map/"), { waitUntil: "domcontentloaded" });
+  await settle(ZONE_READY);
+  assert.match(await text(), /Zone Map/, "the player's page opened");
+  assert.match(await text(), /Regions \(\d+\)/, "with the zone's regions listed");
+  assert.doesNotMatch(await text(), /Sign in|Copy YAML|Carve holes|History \(/, "and none of the editing or developer controls");
+
   assert.deepStrictEqual(errors, [], "no errors on the page");
   console.log("ok");
 } catch (e) {

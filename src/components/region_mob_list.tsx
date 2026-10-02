@@ -40,6 +40,8 @@ interface MobListProps {
   onBuildRegion: (spawns: Spawn[]) => void;
   canBuild: boolean;
   readOnly?: boolean;
+  /** For players: no breakdown by how each mob is placed. */
+  simple?: boolean;
 }
 
 /**
@@ -122,7 +124,7 @@ export default function MobList(props: MobListProps) {
           value={filter()}
           onInput={e => setFilter(e.currentTarget.value)}
         />
-        <div class="flex flex-wrap gap-1 mb-2">
+        <div class="flex flex-wrap gap-1 mb-2" classList={{ hidden: props.simple }}>
           <For each={FILTERS}>
             {f => (
               <button

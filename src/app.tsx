@@ -32,6 +32,11 @@ const App = (props: { children?: JSX.Element; }) => {
             </A>
           </li>
           <li class="py-2 px-4">
+            <A href="/map" class="no-underline hover:underline">
+              Zone Map
+            </A>
+          </li>
+          <li class="py-2 px-4">
             <A href="/regions" class="no-underline hover:underline">
               Regions
             </A>
