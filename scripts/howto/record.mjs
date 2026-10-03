@@ -201,7 +201,8 @@ const stamp = s => {
 };
 
 async function record(scene, browser) {
-  const page = await browser.newPage();
+  // A context of its own, so one scene's unsaved edits are not offered back in the next.
+  const page = await (await browser.createBrowserContext()).newPage();
   await page.setViewport(SIZE);
   page.on("pageerror", e => console.error(`  page error: ${e.message}`));
   const act = actions(page);

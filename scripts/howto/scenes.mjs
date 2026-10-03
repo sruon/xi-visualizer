@@ -43,12 +43,14 @@ const spill = (act, region, count = 6) =>
         return false;
       };
       const moves = [];
+      // Each corner once: moving one twice pushed it out into a spike, where a person spreads the pull.
+      const moved = new Set();
       let focus = null;
       for (let step = 0; step < count; step++) {
         const outside = trail.filter(p => !inRing(ring, p.x, p.z));
         let best = null;
         ring.forEach((v, i) => {
-          if (focus && Math.hypot(v[0] - focus[0], v[2] - focus[2]) > 18) return;
+          if (moved.has(i) || (focus && Math.hypot(v[0] - focus[0], v[2] - focus[2]) > 18)) return;
           const local = trail.filter(p => Math.hypot(p.x - v[0], p.z - v[2]) < 14);
           if (!local.some(p => !inRing(ring, p.x, p.z))) return;
           const before = local.filter(p => inRing(ring, p.x, p.z)).length;
@@ -65,6 +67,7 @@ const spill = (act, region, count = 6) =>
         });
         if (!best || best.gain < 3) break;
         moves.push({ from: [...ring[best.i]], to: best.to });
+        moved.add(best.i);
         ring[best.i] = best.to;
         focus ??= best.to;
       }
