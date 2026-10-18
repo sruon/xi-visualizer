@@ -1,6 +1,5 @@
 import { load } from "js-yaml";
-import { difference, intersection, union } from "polyclip-ts";
-import type { Geom } from "polyclip-ts";
+import { booleanOpD, booleanOpDWithPolyTree, ClipType, FillRule, type PathsD, type PolyPathD, PolyTreeD } from "clipper2-ts";
 import simplify from "simplify-js";
 import { cellOutlines, inRing, ringsIndex, signedArea } from "./geometry.ts";
 
@@ -872,6 +871,8 @@ export function regionsFromPoints(points: TrailPoint[], cell = 6, close = 2): Re
  * Dragging a vertex across an edge is all it takes to make a ring that crosses itself, and the
  * review tab could only ever point at one. Clipping is the one piece of geometry here worth handing
  * to a library: the sweep line handling every way edges can meet is not something to hand roll.
+ * Clipper2, because it snaps to integers first: polyclip-ts, before it, gave up with "Unable to
+ * complete output ring" on two valid shapes whose edges nearly met.
  *
  * Heights come back from the nearest original vertex, since the corners the clipper invents where
  * edges cross are new points that no sample ever stood on.
@@ -879,10 +880,8 @@ export function regionsFromPoints(points: TrailPoint[], cell = 6, close = 2): Re
 export function repairRegion(r: Region): Region[] {
   const outline = r.rings[0] ?? [];
   if (outline.length < 3) return [];
-  let shape = union(flat(outline));
-  const holes = r.rings.slice(1).filter(hole => hole.length >= 3);
-  if (holes.length) shape = difference(shape, ...holes.map(flat));
-  return regionsOf(shape, r.rings.flat());
+  // NonZero: a bowtie's two lobes are both inside, whichever way each one winds.
+  return regionsOf(ClipType.Difference, flat([outline]), flat(r.rings.slice(1).filter(hole => hole.length >= 3)), r.rings.flat());
 }
 
 /**
@@ -895,28 +894,30 @@ export function regionDifference(a: Region, b: Region): Region[] {
   if ((b.rings[0]?.length ?? 0) < 3) return [a];
   // Heights from `a` alone: the ground is `a`'s, and a vertex `b` had that `a` dropped -- a notch
   // in a wall, say -- is exactly the height this ground must not borrow.
-  return regionsOf(difference(asGeom(a), asGeom(b)), a.rings.flat());
+  return regionsOf(ClipType.Difference, asPaths(a), asPaths(b), a.rings.flat());
 }
 
 /** The ground `a` and `b` both cover: what cutting `a` out of `b` would take away. Heights from `b`. */
 export function regionIntersection(a: Region, b: Region): Region[] {
   if ((a.rings[0]?.length ?? 0) < 3 || (b.rings[0]?.length ?? 0) < 3) return [];
-  return regionsOf(intersection(asGeom(a), asGeom(b)), b.rings.flat());
+  return regionsOf(ClipType.Intersection, asPaths(a), asPaths(b), b.rings.flat());
 }
 
-const flat = (ring: Ring): Geom => [ring.map(v => [v[0], v[2]] as [number, number])];
+/** Decimal places the clipper keeps: a thousandth of a yalm. */
+const PRECISION = 3;
+const flat = (rings: Ring[]): PathsD => rings.map(ring => ring.map(v => ({ x: v[0], y: v[2] })));
 
-/** A region as the clipper sees it: its outline with its holes, flattened onto x/z. */
-function asGeom(r: Region): Geom {
+/** A region as the clipper sees it: its outline with its holes cut out, flattened onto x/z. */
+function asPaths(r: Region): PathsD {
   const holes = r.rings.slice(1).filter(hole => hole.length >= 3);
-  return holes.length ? difference(flat(r.rings[0]), ...holes.map(flat)) : flat(r.rings[0]);
+  return holes.length ? booleanOpD(ClipType.Difference, flat([r.rings[0]]), flat(holes), FillRule.NonZero, PRECISION) : flat([r.rings[0]]);
 }
 
 /**
  * Clipper output back into regions. Heights come back from the nearest known vertex, since the
  * corners the clipper invents where edges cross are new points that no sample ever stood on.
  */
-function regionsOf(shape: Geom, known: Vertex[]): Region[] {
+function regionsOf(op: ClipType, subject: PathsD, clip: PathsD, known: Vertex[]): Region[] {
   const heightAt = (x: number, z: number) => {
     let best = known[0]?.[1] ?? 0;
     let nearest = Infinity;
@@ -926,17 +927,21 @@ function regionsOf(shape: Geom, known: Vertex[]): Region[] {
     }
     return best;
   };
-  // A single polygon comes back as ring[], several as ring[][]; the clipper gives whichever fits.
-  const polygons = (typeof shape[0]?.[0]?.[0] === "number" ? [shape] : shape) as [number, number][][][];
-  return polygons.map(polygon => ({
-    rings: polygon.map(ring => {
-      // The clipper repeats the first vertex to close a ring; ours are closed by being rings.
-      const open = ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]
-        ? ring.slice(0, -1)
-        : ring;
-      return open.map(([x, z]) => [x, heightAt(x, z), z] as Vertex);
-    }),
-  })).filter(out => (out.rings[0]?.length ?? 0) >= 3);
+  const tree = new PolyTreeD();
+  booleanOpDWithPolyTree(op, subject, clip, tree, FillRule.NonZero, PRECISION);
+  // The tree nests outline, hole, island in a hole, and so on; each outline is a region of its own.
+  const out: { region: Region; area: number; }[] = [];
+  const walk = (node: PolyPathD) => {
+    for (let i = 0; i < node.count; i++) {
+      const outer = node.child(i);
+      const holes = Array.from({ length: outer.count }, (_, j) => outer.child(j));
+      const rings = [outer, ...holes].map(n => n.poly!.map(p => [p.x, heightAt(p.x, p.y), p.y] as Vertex));
+      out.push({ region: { rings }, area: outer.area() });
+      holes.forEach(walk);
+    }
+  };
+  walk(tree);
+  return out.filter(o => o.region.rings[0].length >= 3).sort((a, b) => b.area - a.area).map(o => o.region);
 }
 
 // ponytail: O(n^2) edge pairs, fine for the few dozen vertices a simplified region carries.
