@@ -3,7 +3,7 @@ import * as THREE from "three";
 import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from "three-mesh-bvh";
 import { MapControls } from "three/examples/jsm/Addons.js";
 import { createMapCamera } from "../graphics/camera";
-import { buildNavMeshGroup, nearestIsland, parseNavMesh } from "../graphics/navmesh";
+import { buildNavMeshGroup, navMeshBox, nearestIsland, parseNavMesh } from "../graphics/navmesh";
 import { setupBaseScene } from "../graphics/scene";
 import { cleanupNode } from "../graphics/util";
 import { createViewer } from "../graphics/viewer";
@@ -116,13 +116,7 @@ export default function NavMeshViewer(props: NavMeshViewerProps) {
   const fitToView = () => {
     if (!controls) return;
 
-    const box = new THREE.Box3();
-    scene().traverse(obj => {
-      // Only the navmesh itself, not the 2000-unit background GridHelper.
-      if (obj.name === "navmesh-surface" || obj.name === "navmesh-edges") {
-        box.expandByObject(obj);
-      }
-    });
+    const box = navMeshBox(scene());
     if (box.isEmpty()) return;
 
     // The scene is scaled (1, -1, -1), so undo that when framing.

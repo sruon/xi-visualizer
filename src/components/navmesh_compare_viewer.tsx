@@ -1,7 +1,7 @@
 import { createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import * as THREE from "three";
 import { createMapCamera } from "../graphics/camera";
-import { buildNavMeshGroup, NavMeshBuildOptions, parseNavMesh } from "../graphics/navmesh";
+import { buildNavMeshGroup, NavMeshBuildOptions, navMeshBox, parseNavMesh } from "../graphics/navmesh";
 import { setupBaseScene } from "../graphics/scene";
 import { cleanupNode } from "../graphics/util";
 import { createViewer } from "../graphics/viewer";
@@ -73,12 +73,7 @@ export default function NavMeshCompareViewer(props: CompareProps) {
       return;
     }
 
-    const box = new THREE.Box3();
-    scene.traverse(obj => {
-      if (obj.name === "navmesh-surface" || obj.name === "navmesh-edges") {
-        box.expandByObject(obj);
-      }
-    });
+    const box = navMeshBox(scene);
     if (box.isEmpty()) {
       return;
     }

@@ -501,6 +501,20 @@ function tileColor(i: number, out: THREE.Color): THREE.Color {
 
 const BASE_SURFACE = new THREE.Color(0x4a8fe0);
 
+/**
+ * What there is of the navmesh to frame: its polygon outlines when drawn, else its surface. Not the
+ * surface first, since a detail vertex the generator left at Recast's unset height (0xffff cells,
+ * some 13000 yalms down) would frame the zone out of sight. Never the background grid.
+ */
+export function navMeshBox(scene: THREE.Object3D): THREE.Box3 {
+  const box = new THREE.Box3();
+  for (const name of ["navmesh-edges", "navmesh-surface"]) {
+    scene.traverse(obj => obj.name === name && box.expandByObject(obj));
+    if (!box.isEmpty()) break;
+  }
+  return box;
+}
+
 export interface NavMeshBuildOptions {
   showSurface: boolean;
   showEdges: boolean;
