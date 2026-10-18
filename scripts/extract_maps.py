@@ -11,7 +11,8 @@
 # belong to other zones; theirs come by name too, floor by floor, saved as z<zone>_<floor>.webp.
 #
 # A sheet is a 512x512 8-bit paletted bitmap after a 48-byte header: the flag byte and 16-byte name,
-# a BITMAPINFOHEADER, a BGRA palette with alpha out of 128, then rows bottom to top.
+# a BITMAPINFOHEADER, a BGRA palette with alpha out of 128, then rows bottom to top. Some are DXT3
+# blocks instead of the palette and rows, which the file size alone gives away (262416, not 263424).
 import json
 import os
 import re
@@ -65,6 +66,14 @@ def decode(data: bytes) -> Image.Image | None:
     bits = struct.unpack_from("<H", data, at + 14)[0]
     if bits != 8 or width <= 0 or height == 0:
         return None
+    # Some sheets are DXT3 in place of the palette: its fourcc, the data's size, a word, then blocks.
+    if data[at + 40 : at + 44] == b"3TXD":
+        blocks = data[at + 52 : at + 52 + struct.unpack_from("<I", data, at + 44)[0]]
+        # Top to bottom, whatever the height's sign says.
+        image = Image.frombytes("RGBA", (width, abs(height)), blocks, "bcn", 2)
+        # Alpha out of 128 here too.
+        image.putalpha(image.getchannel("A").point(lambda a: min(255, a * 2)))
+        return image
     palette = data[at + 40 : at + 40 + 1024]
     pixels = data[at + 40 + 1024 : at + 40 + 1024 + width * abs(height)]
     rgba = bytearray()
